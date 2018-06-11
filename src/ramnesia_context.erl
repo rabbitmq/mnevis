@@ -6,10 +6,16 @@
          filter_read_from_context/4,
          filter_match_from_context/4,
          filter_index_from_context/5,
+         filter_all_keys_from_context/3,
          transaction_id/1,
          writes/1,
          deletes/1,
-         deletes_object/1]).
+         deletes_object/1,
+         writes/2,
+         deletes/2,
+         deletes_object/2,
+         key_deleted/3,
+         delete_object_for_key/3]).
 
 % Keeps track of deletes and writes.
 
@@ -63,8 +69,6 @@
 %         Run index filter on write_set cache
 %         Run index filter on write_bag cache
 
-
-
 -record(context, {
     transaction_id,
     delete = #{},
@@ -72,18 +76,65 @@
     write_set = #{},
     write_bag = #{}}).
 
+-type context() :: #context{}.
+-type record() :: tuple().
+-type lock_kind() :: read | write.
+-type key() :: term().
+-type table() :: atom().
+-type transaction_id() :: integer().
+-type delete_item() :: {table(), key(), lock_kind()}.
+-type item() :: {table(), record(), lock_kind()}.
+
+-export_type([context/0]).
+
+-spec init(transaction_id()) -> context().
 init(Tid) -> #context{transaction_id = Tid}.
 
 transaction_id(#context{transaction_id = Tid}) -> Tid.
 
-deletes(#context{delete = Delete}) -> Delete.
+-spec deletes(context()) -> [delete_item()].
+deletes(#context{delete = Delete}) -> maps:values(Delete).
 
-deletes_object(#context{delete_object = DeleteObject}) -> DeleteObject.
+-spec deletes(context(), table()) -> [delete_item()].
+deletes(#context{delete = Delete}, Tab) ->
+    for_table(Tab, Delete).
 
+-spec deletes_object(context()) -> [item()].
+deletes_object(#context{delete_object = DeleteObject}) ->
+    lists:append(maps:values(DeleteObject)).
+
+-spec deletes_object(context(), table()) -> [item()].
+deletes_object(#context{delete_object = DeleteObject}, Tab) ->
+    lists:append(for_table(Tab, DeleteObject)).
+
+-spec writes(context()) -> [item()].
 writes(#context{write_set = WriteSet, write_bag = WriteBag}) ->
     maps:values(WriteSet) ++ lists:append(maps:values(WriteBag)).
 
-%% TODO: writes before/after delete, delte before/after write.
+-spec writes(context(), table()) -> [item()].
+writes(#context{write_set = WriteSet, write_bag = WriteBag}, Tab) ->
+    for_table(Tab, WriteSet) ++ lists:append(for_table(Tab, WriteBag)).
+
+-spec for_table(table(), #{{table(), key()} => Item}) -> [Item].
+for_table(Tab, Map) ->
+    maps:fold(fun({Table, _}, V, Acc) when Table == Tab -> [V | Acc];
+                 (_, _, Acc) -> Acc
+              end,
+              [],
+              Map).
+
+-spec key_deleted(context(), table(), key()) -> boolean().
+key_deleted(#context{delete = Delete}, Tab, Key) ->
+    case maps:get({Tab, Key}, Delete, not_found) of
+        not_found -> false;
+        _Item     -> true
+    end.
+
+-spec delete_object_for_key(context(), table(), key()) -> [item()].
+delete_object_for_key(#context{delete_object = DeleteObject}, Tab, Key) ->
+    maps:get({Tab, Key}, DeleteObject, []).
+
+-spec add_write_set(context(), table(), record(), lock_kind()) -> context().
 add_write_set(#context{write_set = WriteSet,
                        delete = Delete,
                        delete_object = DeleteObject} = Context,
@@ -94,6 +145,7 @@ add_write_set(#context{write_set = WriteSet,
                     delete = maps:remove({Tab, Key}, Delete),
                     delete_object = maps:remove({Tab, Key}, DeleteObject)}.
 
+-spec add_write_bag(context(), table(), record(), lock_kind()) -> context().
 add_write_bag(#context{write_bag = WriteBag,
                        delete_object = DeleteObject} = Context,
               Tab, Rec, LockKind) ->
@@ -104,6 +156,7 @@ add_write_bag(#context{write_bag = WriteBag,
     Context#context{write_bag = maps:put({Tab, Key}, [Item | OldBag], WriteBag),
                     delete_object = maps:put({Tab, Key}, DeleteObjectItems, DeleteObject)}.
 
+-spec add_delete(context(), table(), key(), lock_kind()) -> context().
 add_delete(#context{delete = Delete,
                     write_set = WriteSet,
                     write_bag = WriteBag,
@@ -114,6 +167,7 @@ add_delete(#context{delete = Delete,
                     write_bag = maps:remove({Tab, Key}, WriteBag),
                     delete_object = maps:remove({Tab, Key}, DeleteObject)}.
 
+-spec add_delete_object(context(), table(), record(), lock_kind()) -> context().
 add_delete_object(#context{write_set = WriteSet} = Context, Tab, Rec, LockKind) ->
     Key = ramnesia:record_key(Rec),
     case maps:get({Tab, Key}, WriteSet, not_found) of
@@ -144,6 +198,11 @@ add_delete_object_1(#context{delete_object = DeleteObject,
     Context#context{delete_object = maps:put({Tab, Key}, [Item | OldDeleteItems], DeleteObject),
                     write_bag = maps:put({Tab, Key}, WriteBagItems, WriteBag)}.
 
+-spec read_from_context(context(), table(), key()) ->
+    not_found |
+    deleted |
+    {written, set, record()} |
+    {deleted_and_written, bag, [record()]}.
 read_from_context(#context{write_set = WriteSet,
                            delete = Delete,
                            write_bag = WriteBag},
@@ -161,6 +220,7 @@ read_from_context(#context{write_set = WriteSet,
             end
     end.
 
+-spec filter_read_from_context(context(), table(), key(), [record()]) -> [record()].
 filter_read_from_context(Context, Tab, Key, RecList) ->
     #context{write_bag = WriteBag,
              delete_object = DeleteObject} = Context,
@@ -168,6 +228,7 @@ filter_read_from_context(Context, Tab, Key, RecList) ->
     Added = get_records(maps:get({Tab, Key}, WriteBag, [])),
     lists:usort(RecList ++ Added) -- Deleted.
 
+-spec filter_from_context(context(), fun((record()) -> boolean()), table(), [record()]) -> [record()].
 filter_from_context(Context, Fun, Tab, RecList) ->
     #context{write_set = WriteSet,
              write_bag = WriteBag,
@@ -206,15 +267,23 @@ filter_from_context(Context, Fun, Tab, RecList) ->
                      Fun(Rec)],
     lists:usort(RecListNotDeleted ++ WriteSetItems ++ WriteBagItems).
 
+-spec filter_match_from_context(context(), table(), term(), [record()]) -> [record()].
 filter_match_from_context(Context, Tab, Pattern, RecList) ->
     Predicate = fun(Rec) -> match_pattern(Pattern, Rec) end,
     filter_from_context(Context, Predicate, Tab, RecList).
 
-
+-spec filter_index_from_context(context(), table(), term(), integer(), [record()]) -> [record()].
 filter_index_from_context(Context, Tab, SecondaryKey, Pos, RecList) ->
     Predicate = fun(Rec) -> element(Pos, Rec) == SecondaryKey end,
     filter_from_context(Context, Predicate, Tab, RecList).
 
+-spec filter_all_keys_from_context(context(), table(), [key()]) -> [key()].
+filter_all_keys_from_context(Context, Tab, Keys) ->
+    DeleteKeys = [ Key || {_, Key, _} <- deletes(Context, Tab) ],
+    WriteKeys = [ ramnesia:record_key(Rec) || {_, Rec, _} <- writes(Context, Tab) ],
+    Keys ++ WriteKeys -- DeleteKeys.
+
+-spec get_records([item()]) -> [record()].
 get_records(Items) ->
     lists:map(fun({_, Rec, _}) -> Rec end, Items).
 

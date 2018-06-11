@@ -44,9 +44,13 @@ transaction(Fun, Args, Retries, _Err) ->
             ok = execute_command(Context, commit, [Writes, Deletes, DeletesObject]),
             clean_transaction_context(),
             Res
-    %% TODO: check for abort error
-    catch error:Reason ->
-        transaction(Fun, Args, Retries - 1, Reason)
+    catch
+        exit:{aborted, locked} ->
+            io:format("Transaction locked. Retrying ~p times ~n", [Retries]),
+            transaction(Fun, Args, Retries - 1, {aborted, locked});
+        exit:{aborted, Reason} ->
+            io:format("Transaction failed. Reason ~p Stacktrace ~p ~n", [Reason, erlang:get_stacktrace()]),
+            rollback_transaction({aborted, Reason})
     end.
 
 rollback_transaction(Err) ->
@@ -108,21 +112,95 @@ match_object(_ActivityId, _Opaque, Tab, Pattern, LockKind) ->
     RecList = execute_command(Context, match_object, [Tab, Pattern, LockKind]),
     ramnesia_context:filter_match_from_context(Context, Tab, Pattern, RecList).
 
-all_keys(_ActivityId, _Opaque, Tab, LockKind) ->
-    execute_command(all_keys, [Tab, LockKind]).
+all_keys(ActivityId, Opaque, Tab, LockKind) ->
+    Context = get_transaction_context(),
+    AllKeys = execute_command(Context, all_keys, [Tab, LockKind]),
+    case ramnesia_context:deletes_object(Context, Tab) of
+        [] ->
+            ramnesia_context:filter_all_keys_from_context(Context, Tab, AllKeys);
+        Deletes ->
+            DeletedKeys = lists:filtermap(fun({_, Rec, _}) ->
+                Key = record_key(Rec),
+                case read(ActivityId, Opaque, Tab, Key, LockKind) of
+                    [] -> false;
+                    _  -> {true, Key}
+                end
+            end,
+            Deletes),
+            ramnesia_context:filter_all_keys_from_context(Context, Tab, AllKeys -- DeletedKeys)
+    end.
 
-%% TODO consider cache of written/deleted
-first(_ActivityId, _Opaque, Tab) ->
-    execute_command(first, [Tab]).
+first(ActivityId, Opaque, Tab) ->
+    Context = get_transaction_context(),
+    Key = execute_command(Context, first, [Tab]),
+    check_key(ActivityId, Opaque, Tab, Key, '$end_of_table', next, Context).
 
-last(_ActivityId, _Opaque, Tab) ->
-    execute_command(last, [Tab]).
+check_key(ActivityId, Opaque, Tab, Key, PrevKey, Direction, Context) ->
+    NextFun = case Direction of
+        next -> fun next/4;
+        prev -> fun prev/4
+    end,
+    case {Key, key_inserted_between(Tab, PrevKey, Key, Direction, Context)} of
+        {_, {ok, NewKey}}       -> NewKey;
+        {'$end_of_table', none} -> '$end_of_table';
+        {_, none} ->
+            case ramnesia_context:key_deleted(Context, Tab, Key) of
+                true ->
+                    NextFun(ActivityId, Opaque, Tab, Key);
+                false ->
+                    case ramnesia_context:delete_object_for_key(Context, Tab, Key) of
+                        [] -> Key;
+                        _Recs ->
+                            case read(ActivityId, Opaque, Tab, Key, read) of
+                                [] -> NextFun(ActivityId, Opaque, Tab, Key);
+                                _  -> Key
+                            end
+                    end
+            end
+    end.
 
-prev(_ActivityId, _Opaque, Tab, Key) ->
-    execute_command(prev, [Tab, Key]).
+-type table() :: atom().
+-type context() :: ramnesia_context:context().
+-type key() :: term().
 
-next(_ActivityId, _Opaque, Tab, Key) ->
-    execute_command(next, [Tab, Key]).
+-spec key_inserted_between(table(),
+                           key() | '$end_of_table',
+                           key() | '$end_of_table',
+                           prev | next,
+                           context()) -> {ok, key()} | none.
+key_inserted_between(Tab, PrevKey, Key, Direction, Context) ->
+    WriteKeys = lists:filter(fun(WKey) ->
+        case Direction of
+            next ->
+                (PrevKey == '$end_of_table' orelse WKey > PrevKey)
+                andalso
+                (Key == '$end_of_table' orelse WKey =< Key);
+            prev ->
+                (PrevKey == '$end_of_table' orelse WKey < PrevKey)
+                andalso
+                (Key == '$end_of_table' orelse WKey >= Key)
+        end
+    end,
+    [record_key(Rec) || {_, Rec, _} <- ramnesia_context:writes(Context, Tab)]),
+    case WriteKeys of
+        [] -> none;
+        [NewKey | _] -> {ok, NewKey}
+    end.
+
+last(ActivityId, Opaque, Tab) ->
+    Context = get_transaction_context(),
+    Key = execute_command(Context, last, [Tab]),
+    check_key(ActivityId, Opaque, Tab, Key, '$end_of_table', prev, Context).
+
+prev(ActivityId, Opaque, Tab, Key) ->
+    Context = get_transaction_context(),
+    NewKey = execute_command(Context, prev, [Tab]),
+    check_key(ActivityId, Opaque, Tab, NewKey, Key, prev, Context).
+
+next(ActivityId, Opaque, Tab, Key) ->
+    Context = get_transaction_context(),
+    NewKey = execute_command(Context, next, [Tab]),
+    check_key(ActivityId, Opaque, Tab, NewKey, Key, next, Context).
 
 index_match_object(_ActivityId, _Opaque, Tab, Pattern, Pos, LockKind) ->
     Context = get_transaction_context(),
@@ -149,7 +227,6 @@ run_ra_command(Command) ->
     NodeId = ramnesia_node:node_id(),
     case ra:send_and_await_consensus(NodeId, Command) of
         {ok, {ok, Result}, _}    -> Result;
-        %% TODO: some errors should restart, not abort.
         {ok, {error, Reason}, _} -> mnesia:abort(Reason);
         {error, Reason}          -> mnesia:abort(Reason);
         {timeout, _}             -> mnesia:abort(timeout)

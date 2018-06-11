@@ -80,7 +80,7 @@ apply(_RaftIdx, {read, Tid, Source, [Tab, Key, LockKind]}, State) ->
                     try mnesia:dirty_read(Tab, Key) of
                         RecList ->
                             {State1, Effects, {ok, RecList}}
-                    catch error:{aborted, Reason} ->
+                    catch exit:{aborted, Reason} ->
                         {State, [], {error, {aborted, Reason}}}
                     end;
                 Other -> Other
@@ -95,7 +95,7 @@ apply(_RaftIdx, {index_read, Tid, Source, [Tab, SecondaryKey, Pos, LockKind]}, S
                     try mnesia:dirty_index_read(Tab, SecondaryKey, Pos) of
                         RecList ->
                             {State1, Effects, {ok, RecList}}
-                    catch error:{aborted, Reason} ->
+                    catch exit:{aborted, Reason} ->
                         {State, [], {error, {aborted, Reason}}}
                     end;
                 Other -> Other
@@ -110,7 +110,7 @@ apply(_RaftIdx, {match_object, Tid, Source, [Tab, Pattern, LockKind]}, State) ->
                     try mnesia:dirty_match_object(Tab, Pattern) of
                         RecList ->
                             {State1, Effects, {ok, RecList}}
-                    catch error:{aborted, Reason} ->
+                    catch exit:{aborted, Reason} ->
                         {State, [], {error, {aborted, Reason}}}
                     end;
                 Other -> Other
@@ -125,7 +125,7 @@ apply(_RaftIdx, {index_match_object, Tid, Source, [Tab, Pattern, Pos, LockKind]}
                     try mnesia:dirty_index_match_object(Tab, Pattern, Pos) of
                         RecList ->
                             {State1, Effects, {ok, RecList}}
-                    catch error:{aborted, Reason} ->
+                    catch exit:{aborted, Reason} ->
                         {State, [], {error, {aborted, Reason}}}
                     end;
                 Other -> Other
@@ -140,7 +140,7 @@ apply(_RaftIdx, {all_keys, Tid, Source, [Tab, LockKind]}, State) ->
                     try mnesia:dirty_all_keys(Tab) of
                         RecList ->
                             {State1, Effects, {ok, RecList}}
-                    catch error:{aborted, Reason} ->
+                    catch exit:{aborted, Reason} ->
                         {State, [], {error, {aborted, Reason}}}
                     end;
                 Other -> Other
@@ -155,7 +155,7 @@ apply(_RaftIdx, {first, Tid, Source, [Tab]}, State) ->
                     try mnesia:dirty_first(Tab) of
                         RecList ->
                             {State1, Effects, {ok, RecList}}
-                    catch error:{aborted, Reason} ->
+                    catch exit:{aborted, Reason} ->
                         {State, [], {error, {aborted, Reason}}}
                     end;
                 Other -> Other
@@ -170,7 +170,7 @@ apply(_RaftIdx, {last, Tid, Source, [Tab]}, State) ->
                     try mnesia:dirty_last(Tab) of
                         RecList ->
                             {State1, Effects, {ok, RecList}}
-                    catch error:{aborted, Reason} ->
+                    catch exit:{aborted, Reason} ->
                         {State, [], {error, {aborted, Reason}}}
                     end;
                 Other -> Other
@@ -185,7 +185,7 @@ apply(_RaftIdx, {prev, Tid, Source, [Tab, Key]}, State) ->
                     try mnesia:dirty_prev(Tab, Key) of
                         RecList ->
                             {State1, Effects, {ok, RecList}}
-                    catch error:{aborted, Reason} ->
+                    catch exit:{aborted, Reason} ->
                         {State, [], {error, {aborted, Reason}}}
                     end;
                 Other -> Other
@@ -200,7 +200,7 @@ apply(_RaftIdx, {next, Tid, Source, [Tab, Key]}, State) ->
                     try mnesia:dirty_next(Tab, Key) of
                         RecList ->
                             {State1, Effects, {ok, RecList}}
-                    catch error:{aborted, Reason} ->
+                    catch exit:{aborted, Reason} ->
                         {State, [], {error, {aborted, Reason}}}
                     end;
                 Other -> Other
