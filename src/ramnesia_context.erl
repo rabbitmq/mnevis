@@ -207,7 +207,7 @@ filter_from_context(Context, Fun, Tab, RecList) ->
     lists:usort(RecListNotDeleted ++ WriteSetItems ++ WriteBagItems).
 
 filter_match_from_context(Context, Tab, Pattern, RecList) ->
-    Predicate = fun(Rec) -> match_pattern(Pattern, [Rec]) == [Rec] end,
+    Predicate = fun(Rec) -> match_pattern(Pattern, Rec) end,
     filter_from_context(Context, Predicate, Tab, RecList).
 
 
@@ -218,9 +218,9 @@ filter_index_from_context(Context, Tab, SecondaryKey, Pos, RecList) ->
 get_records(Items) ->
     lists:map(fun({_, Rec, _}) -> Rec end, Items).
 
-match_pattern(_Pattern, []) -> [];
-match_pattern(Pattern, RecList) ->
+-spec match_pattern(term(), tuple()) -> boolean().
+match_pattern(Pattern, Rec) ->
     MatchSpec = [{Pattern, [], ['$_']}],
     CompiledMatchSpec = ets:match_spec_compile(MatchSpec),
-    ets:match_spec_run(RecList, CompiledMatchSpec).
+    ets:match_spec_run([Rec], CompiledMatchSpec) == [Rec].
 

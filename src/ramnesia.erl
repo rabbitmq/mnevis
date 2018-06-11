@@ -142,8 +142,8 @@ execute_command(Command, Args) ->
     execute_command(Context, Command, Args).
 
 execute_command(Context, Command, Args) ->
-    Command = {Command, ramnesia_context:transaction_id(Context), self(), Args},
-    run_ra_command(Command).
+    RaCommand = {Command, ramnesia_context:transaction_id(Context), self(), Args},
+    run_ra_command(RaCommand).
 
 run_ra_command(Command) ->
     NodeId = ramnesia_node:node_id(),
