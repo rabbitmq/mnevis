@@ -1,6 +1,15 @@
 -module(ramnesia).
 
--export([transaction/3]).
+-export([start/0]).
+-export([start/2]).
+-export([stop/1]).
+
+-behaviour(application).
+
+-export([transaction/3, transaction/1]).
+
+-export([is_transaction/0]).
+
 % -behaviour(mnesia_access).
 
 %% mnesia_access behaviour
@@ -24,38 +33,98 @@
     next/4
     ]).
 
+-type table() :: atom().
+-type context() :: ramnesia_context:context().
+-type key() :: term().
+
 -export([record_key/1]).
+
+start() ->
+    ok = application:load(ra),
+    application:set_env(ra, data_dir, "/tmp/ramnesia"),
+    application:ensure_all_started(ramnesia).
+
+start(_Type, _Args) ->
+    ramnesia_node:start(),
+    ramnesia_sup:start_link().
+
+stop(_State) ->
+    ok.
+
+transaction(Fun) ->
+    transaction(Fun, [], infinity).
 
 transaction(Fun, Args, Retries) ->
     transaction(Fun, Args, Retries, none).
 
 transaction(_Fun, _Args, 0, Err) ->
-    rollback_transaction(Err);
+    ok = maybe_rollback_transaction(),
+    clean_transaction_context(),
+    {aborted, Err};
 transaction(Fun, Args, Retries, _Err) ->
-    try
-        start_transaction_context(),
-        mnesia:activity(ets, Fun, Args, ramnesia)
-    of
-        Res ->
-            Context = get_transaction_context(),
-            Writes = ramnesia_context:writes(Context),
-            Deletes = ramnesia_context:deletes(Context),
-            DeletesObject = ramnesia_context:deletes_object(Context),
-            ok = execute_command(Context, commit, [Writes, Deletes, DeletesObject]),
-            clean_transaction_context(),
-            Res
-    catch
-        exit:{aborted, locked} ->
-            io:format("Transaction locked. Retrying ~p times ~n", [Retries]),
-            transaction(Fun, Args, Retries - 1, {aborted, locked});
-        exit:{aborted, Reason} ->
-            io:format("Transaction failed. Reason ~p Stacktrace ~p ~n", [Reason, erlang:get_stacktrace()]),
-            rollback_transaction({aborted, Reason})
+    case is_transaction() of
+        true ->
+            io:format("Nested transaction"),
+            {atomic, mnesia:activity(ets, Fun, Args, ramnesia)};
+        false ->
+            try
+                start_transaction_context(),
+                Res = mnesia:activity(ets, Fun, Args, ramnesia),
+                commit_transaction(Res)
+            catch
+                exit:{aborted, locked} ->
+                    io:format("Transaction locked. Retrying ~p times ~n",
+                              [Retries]),
+                    retry_transaction(Fun, Args, Retries, locked);
+                exit:{aborted, Reason} ->
+                    io:format("Transaction failed. Reason ~p Stacktrace ~p ~n",
+                              [Reason, erlang:get_stacktrace()]),
+                    ok = maybe_rollback_transaction(),
+                    {aborted, Reason};
+                Type:Reason ->
+                    io:format("Error during transaction. Type ~p Reason ~p~n",
+                              [Type, Reason]),
+                    ok = maybe_rollback_transaction(),
+                    {aborted, {Reason, erlang:get_stacktrace()}}
+            after
+                clean_transaction_context()
+            end
     end.
 
-rollback_transaction(Err) ->
-    ok = execute_command(get_transaction_context(), rollback, []),
-    Err.
+retry_transaction(Fun, Args, Retries, Reason) ->
+    NextRetries = case Retries of
+        infinity -> infinity;
+        R when is_integer(R) -> R - 1
+    end,
+
+    ok = maybe_rollback_transaction(),
+    clean_transaction_context(),
+    transaction(Fun, Args, NextRetries, Reason).
+
+is_transaction() ->
+    case get_transaction_context() of
+        undefined -> false;
+        _ -> true
+    end.
+
+commit_transaction(Res) ->
+    Context = get_transaction_context(),
+    Writes = ramnesia_context:writes(Context),
+    Deletes = ramnesia_context:deletes(Context),
+    DeletesObject = ramnesia_context:deletes_object(Context),
+    ok = execute_command(Context, commit, [Writes, Deletes, DeletesObject]),
+    {atomic, Res}.
+
+maybe_rollback_transaction() ->
+    case is_transaction() of
+        true ->
+            rollback_transaction();
+        false ->
+            ok
+    end.
+
+rollback_transaction() ->
+    ok = execute_command(get_transaction_context(), rollback, []).
 
 start_transaction_context() ->
     Tid = run_ra_command({start_transaction, self()}),
@@ -135,58 +204,6 @@ first(ActivityId, Opaque, Tab) ->
     Key = execute_command(Context, first, [Tab]),
     check_key(ActivityId, Opaque, Tab, Key, '$end_of_table', next, Context).
 
-check_key(ActivityId, Opaque, Tab, Key, PrevKey, Direction, Context) ->
-    NextFun = case Direction of
-        next -> fun next/4;
-        prev -> fun prev/4
-    end,
-    case {Key, key_inserted_between(Tab, PrevKey, Key, Direction, Context)} of
-        {_, {ok, NewKey}}       -> NewKey;
-        {'$end_of_table', none} -> '$end_of_table';
-        {_, none} ->
-            case ramnesia_context:key_deleted(Context, Tab, Key) of
-                true ->
-                    NextFun(ActivityId, Opaque, Tab, Key);
-                false ->
-                    case ramnesia_context:delete_object_for_key(Context, Tab, Key) of
-                        [] -> Key;
-                        _Recs ->
-                            case read(ActivityId, Opaque, Tab, Key, read) of
-                                [] -> NextFun(ActivityId, Opaque, Tab, Key);
-                                _  -> Key
-                            end
-                    end
-            end
-    end.
-
--type table() :: atom().
--type context() :: ramnesia_context:context().
--type key() :: term().
-
--spec key_inserted_between(table(),
-                           key() | '$end_of_table',
-                           key() | '$end_of_table',
-                           prev | next,
-                           context()) -> {ok, key()} | none.
-key_inserted_between(Tab, PrevKey, Key, Direction, Context) ->
-    WriteKeys = lists:filter(fun(WKey) ->
-        case Direction of
-            next ->
-                (PrevKey == '$end_of_table' orelse WKey > PrevKey)
-                andalso
-                (Key == '$end_of_table' orelse WKey =< Key);
-            prev ->
-                (PrevKey == '$end_of_table' orelse WKey < PrevKey)
-                andalso
-                (Key == '$end_of_table' orelse WKey >= Key)
-        end
-    end,
-    [record_key(Rec) || {_, Rec, _} <- ramnesia_context:writes(Context, Tab)]),
-    case WriteKeys of
-        [] -> none;
-        [NewKey | _] -> {ok, NewKey}
-    end.
-
 last(ActivityId, Opaque, Tab) ->
     Context = get_transaction_context(),
     Key = execute_command(Context, last, [Tab]),
@@ -194,12 +211,12 @@ last(ActivityId, Opaque, Tab) ->
 
 prev(ActivityId, Opaque, Tab, Key) ->
     Context = get_transaction_context(),
-    NewKey = execute_command(Context, prev, [Tab]),
+    NewKey = execute_command(Context, prev, [Tab, Key]),
     check_key(ActivityId, Opaque, Tab, NewKey, Key, prev, Context).
 
 next(ActivityId, Opaque, Tab, Key) ->
     Context = get_transaction_context(),
-    NewKey = execute_command(Context, next, [Tab]),
+    NewKey = execute_command(Context, next, [Tab, Key]),
     check_key(ActivityId, Opaque, Tab, NewKey, Key, next, Context).
 
 index_match_object(_ActivityId, _Opaque, Tab, Pattern, Pos, LockKind) ->
@@ -238,5 +255,53 @@ do_index_read(Context, Tab, SecondaryKey, Pos, LockKind) ->
 record_key(Record) ->
     element(2, Record).
 
+check_key(ActivityId, Opaque, Tab, Key, PrevKey, Direction, Context) ->
+    NextFun = case Direction of
+        next -> fun next/4;
+        prev -> fun prev/4
+    end,
+    case {Key, key_inserted_between(Tab, PrevKey, Key, Direction, Context)} of
+        {_, {ok, NewKey}}       -> NewKey;
+        {'$end_of_table', none} -> '$end_of_table';
+        {_, none} ->
+            case ramnesia_context:key_deleted(Context, Tab, Key) of
+                true ->
+                    NextFun(ActivityId, Opaque, Tab, Key);
+                false ->
+                    case ramnesia_context:delete_object_for_key(Context, Tab, Key) of
+                        [] -> Key;
+                        _Recs ->
+                            %% read will take cached deletes into account
+                            case read(ActivityId, Opaque, Tab, Key, read) of
+                                [] -> NextFun(ActivityId, Opaque, Tab, Key);
+                                _  -> Key
+                            end
+                    end
+            end
+    end.
+
+-spec key_inserted_between(table(),
+                           key() | '$end_of_table',
+                           key() | '$end_of_table',
+                           prev | next,
+                           context()) -> {ok, key()} | none.
+key_inserted_between(Tab, PrevKey, Key, Direction, Context) ->
+    WriteKeys = lists:filter(fun(WKey) ->
+        case Direction of
+            next ->
+                (PrevKey == '$end_of_table' orelse WKey > PrevKey)
+                andalso
+                (Key == '$end_of_table' orelse WKey =< Key);
+            prev ->
+                (PrevKey == '$end_of_table' orelse WKey < PrevKey)
+                andalso
+                (Key == '$end_of_table' orelse WKey >= Key)
+        end
+    end,
+    [record_key(Rec) || {_, Rec, _} <- ramnesia_context:writes(Context, Tab)]),
+    case WriteKeys of
+        [] -> none;
+        [NewKey | _] -> {ok, NewKey}
+    end.
 
 

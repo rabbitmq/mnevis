@@ -45,14 +45,12 @@ init(_Conf) ->
 
 apply(_RaftIdx, {start_transaction, Source}, State) ->
     %% Cleanup stale transactions for the source.
-    {State1, Effects, _} = case transaction_for_source(Source, State) of
-        %% TODO: cleanup monitors
+    %% Ignore demonitor effect, because there will be a monitor effect
+    {State1, _, _} = case transaction_for_source(Source, State) of
         {ok, OldTid}            -> cleanup(OldTid, Source, State);
         {error, no_transaction} -> {State, [], ok}
     end,
-    {State2, Effects1, Reply} = start_transaction(State1, Source),
-    %% TODO: how do I apply demonitor and monitor?
-    {State2, Effects ++ Effects1, Reply};
+    start_transaction(State1, Source);
 
 apply(_RaftIdx, {rollback, Tid, Source, []}, State) ->
     with_transaction(Tid, Source, State,
@@ -225,7 +223,6 @@ tick(_Time, _State) -> [].
 -spec overview(state()) -> map().
 overview(_State) -> #{}.
 
-%% TODO: table locks should lock all records in the table
 -spec lock(lock_item(), lock_kind(), transaction_id(), state()) ->
         {state(), ra_machine:effects(), reply(ok, locked)}.
 lock(LockItem, LockKind, Tid, State) ->
@@ -333,7 +330,7 @@ cleanup(Tid, Source, State) ->
 
 -spec with_transaction(transaction_id(), pid(), state(), fun(() -> {state(), ra_machine:effects(), reply()})) -> {state(), ra_machine:effects(), reply() | {error, {wrong_transaction_id, transaction_id()} | {error, no_transaction_for_pid}}}.
 with_transaction(Tid, Source, State = #state{transactions = Transactions}, Fun) ->
-    %% TODO: maybe check if transaction ID exists.
+    %% TODO: maybe check if transaction ID exists for other source.
     case maps:get(Source, Transactions, not_found) of
         not_found    -> {State, [], {error, no_transaction_for_pid}};
         Tid          -> Fun();
@@ -392,7 +389,7 @@ start_transaction_cleanup_test() ->
     Source = self(),
     InitState = #state{transactions = #{Source => 1}, last_transaction_id = 1},
     {#state{transactions = #{Source := Tid}, last_transaction_id = Tid},
-     [{demonitor, Source}, {monitor, process, Source}],
+     [{monitor, process, Source}],
      {ok, Tid}} = ramnesia_machine:apply(none, {start_transaction, Source}, InitState),
     true = Tid =/= 1.
 
@@ -416,7 +413,7 @@ start_transaction_cleanup_locks_test() ->
             last_transaction_id = NewTid,
             write_locks = WLocks,
             read_locks = RLocks},
-     [{demonitor, Source}, {monitor, process, Source}],
+     [{monitor, process, Source}],
      {ok, NewTid}} = ramnesia_machine:apply(none, {start_transaction, Source}, InitState),
     true = Tid =/= NewTid,
     WLocks = #{writelock_1 => Tid1},
