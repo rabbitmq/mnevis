@@ -183,8 +183,20 @@ apply(_RaftIdx, {prev, Tid, Source, [Tab, Key]}, State) ->
                     try mnesia:dirty_prev(Tab, Key) of
                         RecList ->
                             {State1, Effects, {ok, RecList}}
-                    catch exit:{aborted, Reason} ->
-                        {State, [], {error, {aborted, Reason}}}
+                    catch
+                        exit:{aborted, {badarg, [Tab, Key]}} ->
+                            case mnesia:table_info(Tab, type) of
+                                ordered_set ->
+                                    {State, [], {error, {aborted,
+                                        {key_not_found,
+                                         closest_prev(Tab, Key)}}}};
+                                _ ->
+                                    {State, [], {error, {aborted,
+                                        {key_not_found,
+                                         mnesia:dirty_last(Tab)}}}}
+                            end;
+                        exit:{aborted, Reason} ->
+                            {State, [], {error, {aborted, Reason}}}
                     end;
                 Other -> Other
             end
@@ -198,8 +210,20 @@ apply(_RaftIdx, {next, Tid, Source, [Tab, Key]}, State) ->
                     try mnesia:dirty_next(Tab, Key) of
                         RecList ->
                             {State1, Effects, {ok, RecList}}
-                    catch exit:{aborted, Reason} ->
-                        {State, [], {error, {aborted, Reason}}}
+                    catch
+                        exit:{aborted, {badarg, [Tab, Key]}} ->
+                            case mnesia:table_info(Tab, type) of
+                                ordered_set ->
+                                    {State, [], {error, {aborted,
+                                        {key_not_found,
+                                         closest_next(Tab, Key)}}}};
+                                _ ->
+                                    {State, [], {error, {aborted,
+                                        {key_not_found,
+                                         mnesia:dirty_first(Tab)}}}}
+                            end;
+                        exit:{aborted, Reason} ->
+                            {State, [], {error, {aborted, Reason}}}
                     end;
                 Other -> Other
             end
@@ -209,6 +233,34 @@ apply(_RaftIdx, {down, Source, _Reason}, State) ->
     case transaction_for_source(Source, State) of
         {ok, Tid}               -> cleanup(Tid, Source, State);
         {error, no_transaction} -> {State, [], ok}
+    end.
+
+-spec closest_next(table(), Key) -> Key.
+closest_next(Tab, Key) ->
+    First = mnesia:dirty_first(Tab),
+    closest_next(Tab, Key, First).
+
+-spec closest_next(table(), Key, Key) -> Key.
+closest_next(_Tab, _Key, '$end_of_table') ->
+    '$end_of_table';
+closest_next(Tab, Key, CurrentKey) ->
+    case Key < CurrentKey of
+        true  -> CurrentKey;
+        false -> closest_next(Tab, Key, mnesia:dirty_next(Tab, CurrentKey))
+    end.
+
+-spec closest_prev(table(), Key) -> Key.
+closest_prev(Tab, Key) ->
+    First = mnesia:dirty_last(Tab),
+    closest_prev(Tab, Key, First).
+
+-spec closest_prev(table(), Key, Key) -> Key.
+closest_prev(_Tab, _Key, '$end_of_table') ->
+    '$end_of_table';
+closest_prev(Tab, Key, CurrentKey) ->
+    case Key > CurrentKey of
+        true  -> CurrentKey;
+        false -> closest_prev(Tab, Key, mnesia:dirty_prev(Tab, CurrentKey))
     end.
 
 -spec leader_effects(state()) -> ra_machine:effects().
@@ -285,8 +337,8 @@ read_locked(LockItem, Tid, #state{read_locks = RLocks}) ->
 commit(Tid, Source, Writes, Deletes, DeletesObject, State) ->
     case mnesia:transaction(fun() ->
             _ = apply_deletes(Deletes),
-            _ = apply_deletes_object(DeletesObject),
             _ = apply_writes(Writes),
+            _ = apply_deletes_object(DeletesObject),
             ok
         end) of
         {atomic, ok} ->

@@ -15,7 +15,9 @@
          deletes/2,
          deletes_object/2,
          key_deleted/3,
-         delete_object_for_key/3]).
+         delete_object_for_key/3,
+         prev_cached_key/3,
+         next_cached_key/3]).
 
 % Keeps track of deletes and writes.
 
@@ -38,7 +40,7 @@
 
 % Delete object:
 %     Skip if write_set changed the record
-%     Clean write_set if the same object
+%     Skip if write_set has different record
 %     Clean same objects from write_bag
 
 
@@ -175,8 +177,7 @@ add_delete_object(#context{write_set = WriteSet} = Context, Tab, Rec, LockKind) 
             add_delete_object_1(Context, Tab, Rec, LockKind);
         %% Delete matches the changed object
         {Tab, Rec, _LockKind} ->
-            Context1 = add_delete_object_1(Context, Tab, Rec, LockKind),
-            Context1#context{write_set = maps:remove({Tab, Key}, WriteSet)};
+            add_delete_object_1(Context, Tab, Rec, LockKind);
         %% Record have changed. No delete required.
         {Tab, _NotRec, _LockKind} ->
             Context
@@ -260,12 +261,16 @@ filter_from_context(Context, Fun, Tab, RecList) ->
     WriteSetItems = [Item
                      || Item = {Table, Rec, _} <- maps:values(WriteSet),
                      Table == Tab,
-                     Fun(Rec)],
+                     Fun(Rec),
+                     not record_deleted_object(Rec, Table, DeleteObject)],
     WriteBagItems = [Item
                      || Item = {Table, Rec, _} <- lists:append(maps:values(WriteBag)),
                      Table == Tab,
                      Fun(Rec)],
-    lists:usort(RecListNotDeleted ++ WriteSetItems ++ WriteBagItems).
+    lists:usort(RecListNotDeleted ++ get_records(WriteSetItems) ++ get_records(WriteBagItems)).
+
+record_deleted_object(Rec, Table, DeleteObject) ->
+    lists:member(Rec, get_records(maps:get({Table, ramnesia:record_key(Rec)}, DeleteObject, []))).
 
 -spec filter_match_from_context(context(), table(), term(), [record()]) -> [record()].
 filter_match_from_context(Context, Tab, Pattern, RecList) ->
@@ -279,9 +284,11 @@ filter_index_from_context(Context, Tab, SecondaryKey, Pos, RecList) ->
 
 -spec filter_all_keys_from_context(context(), table(), [key()]) -> [key()].
 filter_all_keys_from_context(Context, Tab, Keys) ->
+    #context{delete_object = DeleteObject} = Context,
     DeleteKeys = [ Key || {_, Key, _} <- deletes(Context, Tab) ],
-    WriteKeys = [ ramnesia:record_key(Rec) || {_, Rec, _} <- writes(Context, Tab) ],
-    Keys ++ WriteKeys -- DeleteKeys.
+    WriteKeys = [ ramnesia:record_key(Rec) || {_, Rec, _} <- writes(Context, Tab),
+                  not record_deleted_object(Rec, Tab, DeleteObject) ],
+    lists:usort(Keys ++ WriteKeys) -- DeleteKeys.
 
 -spec get_records([item()]) -> [record()].
 get_records(Items) ->
@@ -292,4 +299,60 @@ match_pattern(Pattern, Rec) ->
     MatchSpec = [{Pattern, [], ['$_']}],
     CompiledMatchSpec = ets:match_spec_compile(MatchSpec),
     ets:match_spec_run([Rec], CompiledMatchSpec) == [Rec].
+
+
+-spec prev_cached_key(context(), table(), key()) -> key().
+prev_cached_key(Context, Tab, Key) ->
+    #context{write_bag = WriteBag,
+             write_set = WriteSet,
+             delete_object = DeleteObject} = Context,
+    BagKeys = [K || {T, K} <- maps:keys(WriteBag), T == Tab, K < Key],
+    SetKeys = maps:fold(fun({T, K}, Rec, Acc) ->
+        case T of
+            Tab ->
+                case K < Key andalso not record_deleted_object(Rec, Tab, DeleteObject) of
+                    true  -> [K | Acc];
+                    false -> Acc
+                end;
+            _ -> Acc
+        end
+    end,
+    [],
+    WriteSet),
+    case BagKeys ++ SetKeys of
+        []   -> '$end_of_table';
+        Keys -> lists:max(Keys)
+    end.
+
+-spec next_cached_key(context(), table(), key()) -> key().
+next_cached_key(Context, Tab, Key) ->
+    #context{write_bag = WriteBag,
+             write_set = WriteSet,
+             delete_object = DeleteObject} = Context,
+    BagKeys = [K || {T, K} <- maps:keys(WriteBag), T == Tab, K > Key],
+    SetKeys = maps:fold(fun({T, K}, Rec, Acc) ->
+        case T of
+            Tab ->
+                case K > Key andalso not record_deleted_object(Rec, Tab, DeleteObject) of
+                    true  -> [K | Acc];
+                    false -> Acc
+                end;
+            _ -> Acc
+        end
+    end,
+    [],
+    WriteSet),
+    case BagKeys ++ SetKeys of
+        []   -> '$end_of_table';
+        Keys -> lists:min(Keys)
+    end.
+
+
+
+
+
+
+
+
+
 

@@ -30,7 +30,9 @@
     index_read/6,
     table_info/4,
     prev/4,
-    next/4
+    next/4,
+    foldl/6,
+    foldr/6
     ]).
 
 -type table() :: atom().
@@ -64,7 +66,6 @@ transaction(_Fun, _Args, 0, Err) ->
 transaction(Fun, Args, Retries, _Err) ->
     case is_transaction() of
         true ->
-            io:format("Nested transaction"),
             {atomic, mnesia:activity(ets, Fun, Args, ramnesia)};
         false ->
             try
@@ -73,17 +74,11 @@ transaction(Fun, Args, Retries, _Err) ->
                 commit_transaction(Res)
             catch
                 exit:{aborted, locked} ->
-                    io:format("Transaction locked. Retrying ~p times ~n",
-                              [Retries]),
                     retry_transaction(Fun, Args, Retries, locked);
                 exit:{aborted, Reason} ->
-                    io:format("Transaction failed. Reason ~p Stacktrace ~p ~n",
-                              [Reason, erlang:get_stacktrace()]),
                     ok = maybe_rollback_transaction(),
                     {aborted, Reason};
-                Type:Reason ->
-                    io:format("Error during transaction. Type ~p Reason ~p~n",
-                              [Type, Reason]),
+                _:Reason ->
                     ok = maybe_rollback_transaction(),
                     {aborted, {Reason, erlang:get_stacktrace()}}
             after
@@ -168,7 +163,8 @@ delete_object(_ActivityId, _Opaque, Tab, Rec, LockKind) ->
 read(_ActivityId, _Opaque, Tab, Key, LockKind) ->
     Context = get_transaction_context(),
     case ramnesia_context:read_from_context(Context, Tab, Key) of
-        {written, set, Record} -> [Record];
+        {written, set, Record} ->
+            ramnesia_context:filter_read_from_context(Context, Tab, Key, [Record]);
         deleted -> [];
         {deleted_and_written, bag, Recs} -> Recs;
         _ ->
@@ -191,8 +187,8 @@ all_keys(ActivityId, Opaque, Tab, LockKind) ->
             DeletedKeys = lists:filtermap(fun({_, Rec, _}) ->
                 Key = record_key(Rec),
                 case read(ActivityId, Opaque, Tab, Key, LockKind) of
-                    [] -> false;
-                    _  -> {true, Key}
+                    [] -> {true, Key};
+                    _  -> false
                 end
             end,
             Deletes),
@@ -211,13 +207,52 @@ last(ActivityId, Opaque, Tab) ->
 
 prev(ActivityId, Opaque, Tab, Key) ->
     Context = get_transaction_context(),
-    NewKey = execute_command(Context, prev, [Tab, Key]),
+    NewKey = try
+        execute_command(Context, prev, [Tab, Key])
+    catch
+        exit:{aborted, {key_not_found, ClosestKey}} ->
+            ClosestKey;
+        exit:{aborted, key_not_found} ->
+            ramnesia_context:prev_cached_key(Context, Tab, Key)
+    end,
     check_key(ActivityId, Opaque, Tab, NewKey, Key, prev, Context).
 
 next(ActivityId, Opaque, Tab, Key) ->
     Context = get_transaction_context(),
-    NewKey = execute_command(Context, next, [Tab, Key]),
+    % NewKey = execute_command(Context, next, [Tab, Key]),
+    NewKey = try
+        execute_command(Context, next, [Tab, Key])
+    catch exit:{aborted, {key_not_found, ClosestKey}} ->
+            ClosestKey;
+        exit:{aborted, key_not_found} ->
+            ramnesia_context:next_cached_key(Context, Tab, Key)
+    end,
     check_key(ActivityId, Opaque, Tab, NewKey, Key, next, Context).
+
+foldl(ActivityId, Opaque, Fun, Acc, Tab, LockKind) ->
+    First = first(ActivityId, Opaque, Tab),
+    do_foldl(ActivityId, Opaque, Fun, Acc, Tab, LockKind, First).
+
+do_foldl(_ActivityId, _Opaque, _Fun, Acc, _Tab, _LockKind, '$end_of_table') ->
+    Acc;
+do_foldl(ActivityId, Opaque, Fun, Acc, Tab, LockKind, Key) ->
+    Recs = read(ActivityId, Opaque, Tab, Key, LockKind),
+    NewAcc = lists:foldl(Fun, Acc, Recs),
+    Next = next(ActivityId, Opaque, Tab, Key),
+    do_foldl(ActivityId, Opaque, Fun, NewAcc, Tab, LockKind, Next).
+
+foldr(ActivityId, Opaque, Fun, Acc, Tab, LockKind) ->
+    First = last(ActivityId, Opaque, Tab),
+    do_foldr(ActivityId, Opaque, Fun, Acc, Tab, LockKind, First).
+
+do_foldr(_ActivityId, _Opaque, _Fun, Acc, _Tab, _LockKind, '$end_of_table') ->
+    Acc;
+do_foldr(ActivityId, Opaque, Fun, Acc, Tab, LockKind, Key) ->
+    Recs = read(ActivityId, Opaque, Tab, Key, LockKind),
+    NewAcc = lists:foldr(Fun, Acc, Recs),
+    Prev = prev(ActivityId, Opaque, Tab, Key),
+    do_foldr(ActivityId, Opaque, Fun, NewAcc, Tab, LockKind, Prev).
+
 
 index_match_object(_ActivityId, _Opaque, Tab, Pattern, Pos, LockKind) ->
     Context = get_transaction_context(),
@@ -286,7 +321,7 @@ check_key(ActivityId, Opaque, Tab, Key, PrevKey, Direction, Context) ->
                            prev | next,
                            context()) -> {ok, key()} | none.
 key_inserted_between(Tab, PrevKey, Key, Direction, Context) ->
-    WriteKeys = lists:filter(fun(WKey) ->
+    WriteKeys = lists:usort(lists:filter(fun(WKey) ->
         case Direction of
             next ->
                 (PrevKey == '$end_of_table' orelse WKey > PrevKey)
@@ -298,10 +333,17 @@ key_inserted_between(Tab, PrevKey, Key, Direction, Context) ->
                 (Key == '$end_of_table' orelse WKey >= Key)
         end
     end,
-    [record_key(Rec) || {_, Rec, _} <- ramnesia_context:writes(Context, Tab)]),
+    [record_key(Rec) || {_, Rec, _} <-
+        ramnesia_context:writes(Context, Tab) --
+            ramnesia_context:deletes_object(Context, Tab)
+    ])),
     case WriteKeys of
         [] -> none;
-        [NewKey | _] -> {ok, NewKey}
+        _  ->
+            case Direction of
+                next -> {ok, hd(WriteKeys)};
+                prev -> {ok, lists:last(WriteKeys)}
+            end
     end.
 
 
