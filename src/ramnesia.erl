@@ -42,7 +42,7 @@
 -export([record_key/1]).
 
 start() ->
-    ok = application:load(ra),
+    application:load(ra),
     application:set_env(ra, data_dir, "/tmp/ramnesia"),
     application:ensure_all_started(ramnesia).
 

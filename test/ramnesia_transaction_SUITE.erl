@@ -728,7 +728,6 @@ foldl_cached_state(_Config) ->
     {aborted, foo} = ramnesia:transaction(fun() ->
         KeysFold = fun(Tab) ->
             mnesia:foldl(fun(R, Acc) ->
-                ct:pal("R ~p~n", [R]),
                 {_, K, _} = R,
                 Acc ++ [K]
             end,
@@ -738,7 +737,6 @@ foldl_cached_state(_Config) ->
 
         KeysFoldR = fun(Tab) ->
             mnesia:foldr(fun(R, Acc) ->
-                ct:pal("R ~p~n", [R]),
                 {_, K, _} = R,
                 Acc ++ [K]
             end,
@@ -783,15 +781,19 @@ foldl_cached_state(_Config) ->
 
         ok = mnesia:write({sample_ordered_set, baz, baz}),
         [bar, baz, foo] = KeysFold(sample_ordered_set),
+        [foo, baz, bar] = KeysFoldR(sample_ordered_set),
 
         ok = mnesia:delete_object({sample_ordered_set, baz, bazz}),
         [bar, baz, foo] = KeysFold(sample_ordered_set),
+        [foo, baz, bar] = KeysFoldR(sample_ordered_set),
 
         ok = mnesia:delete_object({sample_ordered_set, foo, bar}),
         [bar, baz] = KeysFold(sample_ordered_set),
+        [baz, bar] = KeysFoldR(sample_ordered_set),
 
         ok = mnesia:delete({sample_ordered_set, bar}),
         [baz] = KeysFold(sample_ordered_set),
+        [baz] = KeysFoldR(sample_ordered_set),
         mnesia:abort(foo)
     end).
 
