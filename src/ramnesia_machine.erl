@@ -5,7 +5,7 @@
 
 -export([
          init/1,
-         apply/3,
+         apply/4,
          leader_effects/1,
          eol_effects/1,
          tick/2,
@@ -40,200 +40,221 @@
 init(_Conf) ->
     {#state{}, []}.
 
--spec apply(ra_index(), command(), state()) ->
+-spec apply(map(), command(), ra_machine:effects(), state()) ->
     {state(), ra_machine:effects()} | {state(), ra_machine:effects(), reply()}.
 
-apply(_RaftIdx, {start_transaction, Source}, State) ->
+apply(_RaftIdx, {start_transaction, Source}, Effects0, State) ->
     %% Cleanup stale transactions for the source.
     %% Ignore demonitor effect, because there will be a monitor effect
     {State1, _, _} = case transaction_for_source(Source, State) of
         {ok, OldTid}            -> cleanup(OldTid, Source, State);
         {error, no_transaction} -> {State, [], ok}
     end,
-    start_transaction(State1, Source);
+    with_pre_effects(Effects0, start_transaction(State1, Source));
 
-apply(_RaftIdx, {rollback, Tid, Source, []}, State) ->
-    with_transaction(Tid, Source, State,
-        fun() ->
-            cleanup(Tid, Source, State)
-        end);
+apply(_RaftIdx, {rollback, Tid, Source, []}, Effects0, State) ->
+ct:pal("Rollback ~p~n", [{Tid, Source}]),
+    with_pre_effects(Effects0,
+        with_transaction(Tid, Source, State,
+            fun() ->
+                cleanup(Tid, Source, State)
+            end));
 
-apply(_RaftIdx, {commit, Tid, Source, [Writes, Deletes, DeletesObject]}, State) ->
-    with_transaction(Tid, Source, State,
-        fun() ->
-            commit(Tid, Source, Writes, Deletes, DeletesObject, State)
-        end);
+apply(_RaftIdx, {commit, Tid, Source, [Writes, Deletes, DeletesObject]}, Effects0, State) ->
+ct:pal("Commit ~p~n", [{Tid, Source}]),
+    with_pre_effects(Effects0,
+        with_transaction(Tid, Source, State,
+            fun() ->
+                commit(Tid, Source, Writes, Deletes, DeletesObject, State)
+            end));
 
-apply(_RaftIdx, {lock, Tid, Source, [LockItem, LockKind]}, State) ->
-    with_transaction(Tid, Source, State,
-        fun() ->
-            lock(LockItem, LockKind, Tid, State)
-        end);
+apply(_RaftIdx, {lock, Tid, Source, [LockItem, LockKind]}, Effects0, State) ->
+    with_pre_effects(Effects0,
+        with_transaction(Tid, Source, State,
+            fun() ->
+                lock(LockItem, LockKind, Tid, State)
+            end));
 
-apply(_RaftIdx, {read, Tid, Source, [Tab, Key, LockKind]}, State) ->
-    with_transaction(Tid, Source, State,
-        fun() ->
-            case lock({Tab, Key}, LockKind, Tid, State) of
-                {State1, Effects, {ok, ok}} ->
-                    try mnesia:dirty_read(Tab, Key) of
-                        RecList ->
-                            {State1, Effects, {ok, RecList}}
-                    catch exit:{aborted, Reason} ->
-                        {State, [], {error, {aborted, Reason}}}
-                    end;
-                Other -> Other
-            end
-        end);
-
-apply(_RaftIdx, {index_read, Tid, Source, [Tab, SecondaryKey, Pos, LockKind]}, State) ->
-    with_transaction(Tid, Source, State,
-        fun() ->
-            case lock({table, Tab}, LockKind, Tid, State) of
-                {State1, Effects, {ok, ok}} ->
-                    try mnesia:dirty_index_read(Tab, SecondaryKey, Pos) of
-                        RecList ->
-                            {State1, Effects, {ok, RecList}}
-                    catch exit:{aborted, Reason} ->
-                        {State, [], {error, {aborted, Reason}}}
-                    end;
-                Other -> Other
-            end
-        end);
-
-apply(_RaftIdx, {match_object, Tid, Source, [Tab, Pattern, LockKind]}, State) ->
-    with_transaction(Tid, Source, State,
-        fun() ->
-            case lock({table, Tab}, LockKind, Tid, State) of
-                {State1, Effects, {ok, ok}} ->
-                    try mnesia:dirty_match_object(Tab, Pattern) of
-                        RecList ->
-                            {State1, Effects, {ok, RecList}}
-                    catch exit:{aborted, Reason} ->
-                        {State, [], {error, {aborted, Reason}}}
-                    end;
-                Other -> Other
-            end
-        end);
-
-apply(_RaftIdx, {index_match_object, Tid, Source, [Tab, Pattern, Pos, LockKind]}, State) ->
-    with_transaction(Tid, Source, State,
-        fun() ->
-            case lock({table, Tab}, LockKind, Tid, State) of
-                {State1, Effects, {ok, ok}} ->
-                    try mnesia:dirty_index_match_object(Tab, Pattern, Pos) of
-                        RecList ->
-                            {State1, Effects, {ok, RecList}}
-                    catch exit:{aborted, Reason} ->
-                        {State, [], {error, {aborted, Reason}}}
-                    end;
-                Other -> Other
-            end
-        end);
-
-apply(_RaftIdx, {all_keys, Tid, Source, [Tab, LockKind]}, State) ->
-    with_transaction(Tid, Source, State,
-        fun() ->
-            case lock({table, Tab}, LockKind, Tid, State) of
-                {State1, Effects, {ok, ok}} ->
-                    try mnesia:dirty_all_keys(Tab) of
-                        RecList ->
-                            {State1, Effects, {ok, RecList}}
-                    catch exit:{aborted, Reason} ->
-                        {State, [], {error, {aborted, Reason}}}
-                    end;
-                Other -> Other
-            end
-        end);
-
-apply(_RaftIdx, {first, Tid, Source, [Tab]}, State) ->
-    with_transaction(Tid, Source, State,
-        fun() ->
-            case lock({table, Tab}, read, Tid, State) of
-                {State1, Effects, {ok, ok}} ->
-                    try mnesia:dirty_first(Tab) of
-                        RecList ->
-                            {State1, Effects, {ok, RecList}}
-                    catch exit:{aborted, Reason} ->
-                        {State, [], {error, {aborted, Reason}}}
-                    end;
-                Other -> Other
-            end
-        end);
-
-apply(_RaftIdx, {last, Tid, Source, [Tab]}, State) ->
-    with_transaction(Tid, Source, State,
-        fun() ->
-            case lock({table, Tab}, read, Tid, State) of
-                {State1, Effects, {ok, ok}} ->
-                    try mnesia:dirty_last(Tab) of
-                        RecList ->
-                            {State1, Effects, {ok, RecList}}
-                    catch exit:{aborted, Reason} ->
-                        {State, [], {error, {aborted, Reason}}}
-                    end;
-                Other -> Other
-            end
-        end);
-
-apply(_RaftIdx, {prev, Tid, Source, [Tab, Key]}, State) ->
-    with_transaction(Tid, Source, State,
-        fun() ->
-            case lock({table, Tab}, read, Tid, State) of
-                {State1, Effects, {ok, ok}} ->
-                    try mnesia:dirty_prev(Tab, Key) of
-                        RecList ->
-                            {State1, Effects, {ok, RecList}}
-                    catch
-                        exit:{aborted, {badarg, [Tab, Key]}} ->
-                            case mnesia:table_info(Tab, type) of
-                                ordered_set ->
-                                    {State, [], {error, {aborted,
-                                        {key_not_found,
-                                         closest_prev(Tab, Key)}}}};
-                                _ ->
-                                    {State, [], {error, {aborted,
-                                        {key_not_found,
-                                         mnesia:dirty_last(Tab)}}}}
-                            end;
-                        exit:{aborted, Reason} ->
+apply(_RaftIdx, {read, Tid, Source, [Tab, Key, LockKind]}, Effects0, State) ->
+    with_pre_effects(Effects0,
+        with_transaction(Tid, Source, State,
+            fun() ->
+                case lock({Tab, Key}, LockKind, Tid, State) of
+                    {State1, Effects, {ok, ok}} ->
+                        try mnesia:dirty_read(Tab, Key) of
+                            RecList ->
+                                {State1, Effects, {ok, RecList}}
+                        catch exit:{aborted, Reason} ->
                             {State, [], {error, {aborted, Reason}}}
-                    end;
-                Other -> Other
-            end
-        end);
+                        end;
+                    Other -> Other
+                end
+            end));
 
-apply(_RaftIdx, {next, Tid, Source, [Tab, Key]}, State) ->
-    with_transaction(Tid, Source, State,
-        fun() ->
-            case lock({table, Tab}, read, Tid, State) of
-                {State1, Effects, {ok, ok}} ->
-                    try mnesia:dirty_next(Tab, Key) of
-                        RecList ->
-                            {State1, Effects, {ok, RecList}}
-                    catch
-                        exit:{aborted, {badarg, [Tab, Key]}} ->
-                            case mnesia:table_info(Tab, type) of
-                                ordered_set ->
-                                    {State, [], {error, {aborted,
-                                        {key_not_found,
-                                         closest_next(Tab, Key)}}}};
-                                _ ->
-                                    {State, [], {error, {aborted,
-                                        {key_not_found,
-                                         mnesia:dirty_first(Tab)}}}}
-                            end;
-                        exit:{aborted, Reason} ->
+apply(_RaftIdx, {index_read, Tid, Source, [Tab, SecondaryKey, Pos, LockKind]}, Effects0, State) ->
+    with_pre_effects(Effects0,
+        with_transaction(Tid, Source, State,
+            fun() ->
+                case lock({table, Tab}, LockKind, Tid, State) of
+                    {State1, Effects, {ok, ok}} ->
+                        try mnesia:dirty_index_read(Tab, SecondaryKey, Pos) of
+                            RecList ->
+                                {State1, Effects, {ok, RecList}}
+                        catch exit:{aborted, Reason} ->
                             {State, [], {error, {aborted, Reason}}}
-                    end;
-                Other -> Other
-            end
-        end);
+                        end;
+                    Other -> Other
+                end
+            end));
 
-apply(_RaftIdx, {down, Source, _Reason}, State) ->
+apply(_RaftIdx, {match_object, Tid, Source, [Tab, Pattern, LockKind]}, Effects0, State) ->
+    with_pre_effects(Effects0,
+        with_transaction(Tid, Source, State,
+            fun() ->
+                case lock({table, Tab}, LockKind, Tid, State) of
+                    {State1, Effects, {ok, ok}} ->
+                        try mnesia:dirty_match_object(Tab, Pattern) of
+                            RecList ->
+                                {State1, Effects, {ok, RecList}}
+                        catch exit:{aborted, Reason} ->
+                            {State, [], {error, {aborted, Reason}}}
+                        end;
+                    Other -> Other
+                end
+            end));
+
+apply(_RaftIdx, {index_match_object, Tid, Source, [Tab, Pattern, Pos, LockKind]}, Effects0, State) ->
+    with_pre_effects(Effects0,
+        with_transaction(Tid, Source, State,
+            fun() ->
+                case lock({table, Tab}, LockKind, Tid, State) of
+                    {State1, Effects, {ok, ok}} ->
+                        try mnesia:dirty_index_match_object(Tab, Pattern, Pos) of
+                            RecList ->
+                                {State1, Effects, {ok, RecList}}
+                        catch exit:{aborted, Reason} ->
+                            {State, [], {error, {aborted, Reason}}}
+                        end;
+                    Other -> Other
+                end
+            end));
+
+apply(_RaftIdx, {all_keys, Tid, Source, [Tab, LockKind]}, Effects0, State) ->
+    with_pre_effects(Effects0,
+        with_transaction(Tid, Source, State,
+            fun() ->
+                case lock({table, Tab}, LockKind, Tid, State) of
+                    {State1, Effects, {ok, ok}} ->
+                        try mnesia:dirty_all_keys(Tab) of
+                            RecList ->
+                                {State1, Effects, {ok, RecList}}
+                        catch exit:{aborted, Reason} ->
+                            {State, [], {error, {aborted, Reason}}}
+                        end;
+                    Other -> Other
+                end
+            end));
+
+apply(_RaftIdx, {first, Tid, Source, [Tab]}, Effects0, State) ->
+    with_pre_effects(Effects0,
+        with_transaction(Tid, Source, State,
+            fun() ->
+                case lock({table, Tab}, read, Tid, State) of
+                    {State1, Effects, {ok, ok}} ->
+                        try mnesia:dirty_first(Tab) of
+                            RecList ->
+                                {State1, Effects, {ok, RecList}}
+                        catch exit:{aborted, Reason} ->
+                            {State, [], {error, {aborted, Reason}}}
+                        end;
+                    Other -> Other
+                end
+            end));
+
+apply(_RaftIdx, {last, Tid, Source, [Tab]}, Effects0, State) ->
+    with_pre_effects(Effects0,
+        with_transaction(Tid, Source, State,
+            fun() ->
+                case lock({table, Tab}, read, Tid, State) of
+                    {State1, Effects, {ok, ok}} ->
+                        try mnesia:dirty_last(Tab) of
+                            RecList ->
+                                {State1, Effects, {ok, RecList}}
+                        catch exit:{aborted, Reason} ->
+                            {State, [], {error, {aborted, Reason}}}
+                        end;
+                    Other -> Other
+                end
+            end));
+
+apply(_RaftIdx, {prev, Tid, Source, [Tab, Key]}, Effects0, State) ->
+    with_pre_effects(Effects0,
+        with_transaction(Tid, Source, State,
+            fun() ->
+                case lock({table, Tab}, read, Tid, State) of
+                    {State1, Effects, {ok, ok}} ->
+                        try mnesia:dirty_prev(Tab, Key) of
+                            RecList ->
+                                {State1, Effects, {ok, RecList}}
+                        catch
+                            exit:{aborted, {badarg, [Tab, Key]}} ->
+                                case mnesia:table_info(Tab, type) of
+                                    ordered_set ->
+                                        {State, [], {error, {aborted,
+                                            {key_not_found,
+                                             closest_prev(Tab, Key)}}}};
+                                    _ ->
+                                        {State, [], {error, {aborted,
+                                            {key_not_found,
+                                             mnesia:dirty_last(Tab)}}}}
+                                end;
+                            exit:{aborted, Reason} ->
+                                {State, [], {error, {aborted, Reason}}}
+                        end;
+                    Other -> Other
+                end
+            end));
+
+apply(_RaftIdx, {next, Tid, Source, [Tab, Key]}, Effects0, State) ->
+    with_pre_effects(Effects0,
+        with_transaction(Tid, Source, State,
+            fun() ->
+                case lock({table, Tab}, read, Tid, State) of
+                    {State1, Effects, {ok, ok}} ->
+                        try mnesia:dirty_next(Tab, Key) of
+                            RecList ->
+                                {State1, Effects, {ok, RecList}}
+                        catch
+                            exit:{aborted, {badarg, [Tab, Key]}} ->
+                                case mnesia:table_info(Tab, type) of
+                                    ordered_set ->
+                                        {State, [], {error, {aborted,
+                                            {key_not_found,
+                                             closest_next(Tab, Key)}}}};
+                                    _ ->
+                                        {State, [], {error, {aborted,
+                                            {key_not_found,
+                                             mnesia:dirty_first(Tab)}}}}
+                                end;
+                            exit:{aborted, Reason} ->
+                                {State, [], {error, {aborted, Reason}}}
+                        end;
+                    Other -> Other
+                end
+            end));
+
+apply(_RaftIdx, {down, Source, _Reason}, Effects0, State) ->
     case transaction_for_source(Source, State) of
-        {ok, Tid}               -> cleanup(Tid, Source, State);
-        {error, no_transaction} -> {State, [], ok}
+        {ok, Tid}               ->
+            with_pre_effects(Effects0, cleanup(Tid, Source, State));
+        {error, no_transaction} ->
+            {State, Effects0, ok}
     end.
+
+with_pre_effects(Effects0, {State, Effects, Result}) ->
+    {State, Effects0 ++ Effects, Result};
+with_pre_effects(Effects0, {State, Effects}) ->
+    {State, Effects0 ++ Effects}.
 
 -spec closest_next(table(), Key) -> Key.
 closest_next(Tab, Key) ->
@@ -279,7 +300,11 @@ overview(_State) -> #{}.
         {state(), ra_machine:effects(), reply(ok, locked)}.
 lock(LockItem, LockKind, Tid, State) ->
     case is_locked(LockItem, LockKind, Tid, State) of
-        true  -> {State, [], {error, locked}};
+        true  ->
+            ct:pal("Locked ~p~n", [{LockItem, LockKind}]),
+            %% TODO: report a locking transaction ID to be able to wait until it
+            %% finishes. Check for never-finifhing transactions.
+            {State, [], {error, locked}};
         false -> {apply_lock(LockItem, LockKind, Tid, State), [], {ok, ok}}
     end.
 
@@ -377,7 +402,7 @@ cleanup(Tid, Source, State) ->
     {State#state{transactions = Transactions1,
                  read_locks = RLocks1,
                  write_locks = WLocks1},
-     [{demonitor, Source}],
+     [{demonitor, process, Source}],
      {ok, ok}}.
 
 -spec with_transaction(transaction_id(), pid(), state(), fun(() -> {state(), ra_machine:effects(), reply()})) -> {state(), ra_machine:effects(), reply() | {error, {wrong_transaction_id, transaction_id()} | {error, no_transaction_for_pid}}}.
@@ -505,7 +530,7 @@ rollback_cleanup_test() ->
     InitState = #state{},
     {State = #state{last_transaction_id = LastTid}, [{monitor, process, Source}], {ok, Tid}} =
         ramnesia_machine:apply(none, {start_transaction, Source}, InitState),
-    {State1, [{demonitor, Source}], _} =
+    {State1, [{demonitor, process, Source}], _} =
         ramnesia_machine:apply(none, {rollback, Tid, Source, []}, State),
     Expected = #state{last_transaction_id = LastTid},
     Expected = State1.
@@ -527,16 +552,16 @@ rollback_cleanup_locks_test() ->
                        read_locks = #{readlock => [Tid],
                                       readlock_1 => [Tid, Tid1],
                                       readlock_2 => [Tid2]}},
-    {State1, [{demonitor, Source}], _} =
+    {State1, [{demonitor, process, Source}], _} =
         ramnesia_machine:apply(none, {rollback, Tid, Source, []}, InitState),
     Expected = #state{last_transaction_id = LastTid,
                       transactions = #{Source1 => Tid1, Source2 => Tid2},
                       write_locks = #{writelock_1 => Tid1},
                       read_locks = #{readlock_1 => [Tid1], readlock_2 => [Tid2]}},
     Expected = State1,
-    {State2, [{demonitor, Source1}], _} =
+    {State2, [{demonitor, process, Source1}], _} =
         ramnesia_machine:apply(none, {rollback, Tid1, Source1, []}, State1),
-    {State3, [{demonitor, Source2}], _} =
+    {State3, [{demonitor, process, Source2}], _} =
         ramnesia_machine:apply(none, {rollback, Tid2, Source2, []}, State2),
     State3 = #state{last_transaction_id = LastTid}.
 
@@ -568,7 +593,7 @@ commit_cleanup_test() ->
     InitState = #state{},
     {State = #state{last_transaction_id = LastTid}, [{monitor, process, Source}], {ok, Tid}} =
         ramnesia_machine:apply(none, {start_transaction, Source}, InitState),
-    {State1, [{demonitor, Source}], _} =
+    {State1, [{demonitor, process, Source}], _} =
         ramnesia_machine:apply(none, {commit, Tid, Source, [[], [], []]}, State),
     Expected = #state{last_transaction_id = LastTid},
     Expected = State1.
@@ -591,16 +616,16 @@ commit_cleanup_locks_test() ->
                        read_locks = #{readlock => [Tid],
                                       readlock_1 => [Tid, Tid1],
                                       readlock_2 => [Tid2]}},
-    {State1, [{demonitor, Source}], _} =
+    {State1, [{demonitor, process, Source}], _} =
         ramnesia_machine:apply(none, {commit, Tid, Source, [[], [], []]}, InitState),
     Expected = #state{last_transaction_id = LastTid,
                       transactions = #{Source1 => Tid1, Source2 => Tid2},
                       write_locks = #{writelock_1 => Tid1},
                       read_locks = #{readlock_1 => [Tid1], readlock_2 => [Tid2]}},
     Expected = State1,
-    {State2, [{demonitor, Source1}], _} =
+    {State2, [{demonitor, process, Source1}], _} =
         ramnesia_machine:apply(none, {commit, Tid1, Source1, [[], [], []]}, State1),
-    {State3, [{demonitor, Source2}], _} =
+    {State3, [{demonitor, process, Source2}], _} =
         ramnesia_machine:apply(none, {commit, Tid2, Source2, [[], [], []]}, State2),
     State3 = #state{last_transaction_id = LastTid}.
 
@@ -1259,7 +1284,7 @@ down_cleanup_test() ->
     InitState = #state{},
     {State = #state{last_transaction_id = LastTid}, [{monitor, process, Source}], _} =
         ramnesia_machine:apply(none, {start_transaction, Source}, InitState),
-    {State1, [{demonitor, Source}], _} =
+    {State1, [{demonitor, process, Source}], _} =
         ramnesia_machine:apply(none, {down, Source, reason}, State),
     Expected = #state{last_transaction_id = LastTid},
     Expected = State1.
@@ -1281,16 +1306,16 @@ down_cleanup_locks_test() ->
                        read_locks = #{readlock => [Tid],
                                       readlock_1 => [Tid, Tid1],
                                       readlock_2 => [Tid2]}},
-    {State1, [{demonitor, Source}], _} =
+    {State1, [{demonitor, process, Source}], _} =
         ramnesia_machine:apply(none, {down, Source, reason}, InitState),
     Expected = #state{last_transaction_id = LastTid,
                       transactions = #{Source1 => Tid1, Source2 => Tid2},
                       write_locks = #{writelock_1 => Tid1},
                       read_locks = #{readlock_1 => [Tid1], readlock_2 => [Tid2]}},
     Expected = State1,
-    {State2, [{demonitor, Source1}], _} =
+    {State2, [{demonitor, process, Source1}], _} =
         ramnesia_machine:apply(none, {down, Source1, reason}, State1),
-    {State3, [{demonitor, Source2}], _} =
+    {State3, [{demonitor, process, Source2}], _} =
         ramnesia_machine:apply(none, {down, Source2, reason}, State2),
     State3 = #state{last_transaction_id = LastTid}.
 
