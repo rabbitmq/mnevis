@@ -116,11 +116,11 @@ init_per_testcase(all_keys_cached_state, Config) ->
     add_sample({sample_bag, foo, baj}),
     add_sample({sample_ordered_set, foo, bar}),
     Config;
-init_per_testcase(Test, Config) ->
+init_per_testcase(_Test, Config) ->
     create_sample_tables(),
     Config.
 
-end_per_testcase(Test, Config) ->
+end_per_testcase(_Test, Config) ->
     delete_sample_tables(),
     Config.
 
