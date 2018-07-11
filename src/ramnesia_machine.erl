@@ -573,7 +573,7 @@ rollback_no_transaction_error_test() ->
     Source = self(),
     Tid = 1,
     {InitState, [], {error, no_transaction_for_pid}} =
-        ramnesia_machine:apply(none, {rollback, Tid, Source, []}, InitState).
+        ramnesia_machine:apply(none, {rollback, Tid, Source, []}, [], InitState).
 
 rollback_wrong_transaction_error_test() ->
     Source = self(),
@@ -581,15 +581,15 @@ rollback_wrong_transaction_error_test() ->
     DifferentTid = 1,
     InitState = #state{transactions = #{Source => DifferentTid}, last_transaction_id = DifferentTid},
     {InitState, [], {error, {wrong_transaction_id, DifferentTid}}} =
-        ramnesia_machine:apply(none, {rollback, Tid, Source, []}, InitState).
+        ramnesia_machine:apply(none, {rollback, Tid, Source, []}, [], InitState).
 
 rollback_cleanup_test() ->
     Source = self(),
     InitState = #state{},
     {State = #state{last_transaction_id = LastTid}, [{monitor, process, Source}], {ok, Tid}} =
-        ramnesia_machine:apply(none, {start_transaction, Source}, InitState),
+        ramnesia_machine:apply(none, {start_transaction, Source}, [], InitState),
     {State1, [{demonitor, process, Source}], _} =
-        ramnesia_machine:apply(none, {rollback, Tid, Source, []}, State),
+        ramnesia_machine:apply(none, {rollback, Tid, Source, []}, [], State),
     Expected = #state{last_transaction_id = LastTid},
     Expected = State1.
 
@@ -611,16 +611,16 @@ rollback_cleanup_locks_test() ->
                                       readlock_1 => [Tid, Tid1],
                                       readlock_2 => [Tid2]}},
     {State1, [{demonitor, process, Source}], _} =
-        ramnesia_machine:apply(none, {rollback, Tid, Source, []}, InitState),
+        ramnesia_machine:apply(none, {rollback, Tid, Source, []}, [], InitState),
     Expected = #state{last_transaction_id = LastTid,
                       transactions = #{Source1 => Tid1, Source2 => Tid2},
                       write_locks = #{writelock_1 => Tid1},
                       read_locks = #{readlock_1 => [Tid1], readlock_2 => [Tid2]}},
     Expected = State1,
     {State2, [{demonitor, process, Source1}], _} =
-        ramnesia_machine:apply(none, {rollback, Tid1, Source1, []}, State1),
+        ramnesia_machine:apply(none, {rollback, Tid1, Source1, []}, [], State1),
     {State3, [{demonitor, process, Source2}], _} =
-        ramnesia_machine:apply(none, {rollback, Tid2, Source2, []}, State2),
+        ramnesia_machine:apply(none, {rollback, Tid2, Source2, []}, [], State2),
     State3 = #state{last_transaction_id = LastTid}.
 
 
@@ -634,7 +634,7 @@ commit_no_transaction_error_test() ->
     Source = self(),
     Tid = 1,
     {InitState, [], {error, no_transaction_for_pid}} =
-        ramnesia_machine:apply(none, {commit, Tid, Source, [[], [], []]}, InitState).
+        ramnesia_machine:apply(none, {commit, Tid, Source, [[], [], []]}, [], InitState).
 
 commit_wrong_transaction_error_test() ->
     mnesia:start(),
@@ -643,16 +643,16 @@ commit_wrong_transaction_error_test() ->
     DifferentTid = 1,
     InitState = #state{transactions = #{Source => DifferentTid}, last_transaction_id = DifferentTid},
     {InitState, [], {error, {wrong_transaction_id, DifferentTid}}} =
-        ramnesia_machine:apply(none, {commit, Tid, Source, [[], [], []]}, InitState).
+        ramnesia_machine:apply(none, {commit, Tid, Source, [[], [], []]}, [], InitState).
 
 commit_cleanup_test() ->
     mnesia:start(),
     Source = self(),
     InitState = #state{},
     {State = #state{last_transaction_id = LastTid}, [{monitor, process, Source}], {ok, Tid}} =
-        ramnesia_machine:apply(none, {start_transaction, Source}, InitState),
+        ramnesia_machine:apply(none, {start_transaction, Source}, [], InitState),
     {State1, [{demonitor, process, Source}], _} =
-        ramnesia_machine:apply(none, {commit, Tid, Source, [[], [], []]}, State),
+        ramnesia_machine:apply(none, {commit, Tid, Source, [[], [], []]}, [], State),
     Expected = #state{last_transaction_id = LastTid},
     Expected = State1.
 
@@ -675,16 +675,16 @@ commit_cleanup_locks_test() ->
                                       readlock_1 => [Tid, Tid1],
                                       readlock_2 => [Tid2]}},
     {State1, [{demonitor, process, Source}], _} =
-        ramnesia_machine:apply(none, {commit, Tid, Source, [[], [], []]}, InitState),
+        ramnesia_machine:apply(none, {commit, Tid, Source, [[], [], []]}, [], InitState),
     Expected = #state{last_transaction_id = LastTid,
                       transactions = #{Source1 => Tid1, Source2 => Tid2},
                       write_locks = #{writelock_1 => Tid1},
                       read_locks = #{readlock_1 => [Tid1], readlock_2 => [Tid2]}},
     Expected = State1,
     {State2, [{demonitor, process, Source1}], _} =
-        ramnesia_machine:apply(none, {commit, Tid1, Source1, [[], [], []]}, State1),
+        ramnesia_machine:apply(none, {commit, Tid1, Source1, [[], [], []]}, [], State1),
     {State3, [{demonitor, process, Source2}], _} =
-        ramnesia_machine:apply(none, {commit, Tid2, Source2, [[], [], []]}, State2),
+        ramnesia_machine:apply(none, {commit, Tid2, Source2, [[], [], []]}, [], State2),
     State3 = #state{last_transaction_id = LastTid}.
 
 commit_write_test() ->
@@ -701,7 +701,7 @@ commit_write_test() ->
     Source = self(),
     InitState = #state{},
     {State1, _, {ok, Tid}} =
-        ramnesia_machine:apply(none, {start_transaction, Source}, InitState),
+        ramnesia_machine:apply(none, {start_transaction, Source}, [], InitState),
     %% Writes are of {Table, Record, LockKind} format
     Writes = [{foo, {foo, to_rewrite, other_val}, write},
               {foo, {foo, to_write, val}, write}],
@@ -714,7 +714,7 @@ commit_write_test() ->
                             {foo, to_write, val},
                             {foo, to_not_delete_object, not_val}]),
     {_State2, _, _} =
-        ramnesia_machine:apply(none, {commit, Tid, Source, [Writes, Deletes, DeletesObject]}, State1),
+        ramnesia_machine:apply(none, {commit, Tid, Source, [Writes, Deletes, DeletesObject]}, [], State1),
     Table = lists:usort(ets:tab2list(foo)),
     Expected = Table.
 
@@ -733,7 +733,7 @@ lock_no_transaction_error_test() ->
     Source = self(),
     Tid = 1,
     {InitState, [], {error, no_transaction_for_pid}} =
-        ramnesia_machine:apply(none, {lock, Tid, Source, [{table, foo}, read]}, InitState).
+        ramnesia_machine:apply(none, {lock, Tid, Source, [{table, foo}, read]}, [], InitState).
 
 lock_wrong_transaction_error_test() ->
     Source = self(),
@@ -741,15 +741,15 @@ lock_wrong_transaction_error_test() ->
     DifferentTid = 1,
     InitState = #state{transactions = #{Source => DifferentTid}, last_transaction_id = DifferentTid},
     {InitState, [], {error, {wrong_transaction_id, DifferentTid}}} =
-        ramnesia_machine:apply(none, {lock, Tid, Source, [{table, foo}, read]}, InitState).
+        ramnesia_machine:apply(none, {lock, Tid, Source, [{table, foo}, read]}, [], InitState).
 
 lock_aquire_read_test() ->
     InitState = #state{},
     Source = self(),
     {State, _, {ok, Tid}} =
-        ramnesia_machine:apply(none, {start_transaction, Source}, InitState),
+        ramnesia_machine:apply(none, {start_transaction, Source}, [], InitState),
     {#state{read_locks = RLocks, write_locks = WLocks}, _, {ok, ok}} =
-        ramnesia_machine:apply(none, {lock, Tid, Source, [{table, foo}, read]}, State),
+        ramnesia_machine:apply(none, {lock, Tid, Source, [{table, foo}, read]}, [], State),
     ExpectedW = #{},
     ExpectedR = #{{table, foo} => [Tid]},
     ExpectedW = WLocks,
@@ -760,17 +760,17 @@ lock_aquire_read_multiple_test() ->
     Source = self(),
     Source1 = spawn(fun() -> ok end),
     {State, _, {ok, Tid}} =
-        ramnesia_machine:apply(none, {start_transaction, Source}, InitState),
+        ramnesia_machine:apply(none, {start_transaction, Source}, [], InitState),
     {State1, _, {ok, Tid1}} =
-        ramnesia_machine:apply(none, {start_transaction, Source1}, State),
+        ramnesia_machine:apply(none, {start_transaction, Source1}, [], State),
     {State2 = #state{read_locks = RLocks, write_locks = WLocks}, _, {ok, ok}} =
-        ramnesia_machine:apply(none, {lock, Tid, Source, [{table, foo}, read]}, State1),
+        ramnesia_machine:apply(none, {lock, Tid, Source, [{table, foo}, read]}, [], State1),
     ExpectedW = #{},
     ExpectedR = #{{table, foo} => [Tid]},
     ExpectedW = WLocks,
     ExpectedR = RLocks,
     {#state{read_locks = RLocks1, write_locks = WLocks1}, _, {ok, ok}} =
-        ramnesia_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, read]}, State2),
+        ramnesia_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, read]}, [], State2),
     ExpectedW1 = #{},
     ExpectedR1 = #{{table, foo} => [Tid1, Tid]},
     ExpectedW1 = WLocks1,
@@ -780,9 +780,9 @@ lock_aquire_write_test() ->
     InitState = #state{},
     Source = self(),
     {State, _, {ok, Tid}} =
-        ramnesia_machine:apply(none, {start_transaction, Source}, InitState),
+        ramnesia_machine:apply(none, {start_transaction, Source}, [], InitState),
     {#state{read_locks = RLocks, write_locks = WLocks}, _, {ok, ok}} =
-        ramnesia_machine:apply(none, {lock, Tid, Source, [{table, foo}, write]}, State),
+        ramnesia_machine:apply(none, {lock, Tid, Source, [{table, foo}, write]}, [], State),
     WLocks = #{{table, foo} => Tid},
     RLocks = #{}.
 
@@ -791,84 +791,84 @@ lock_read_blocked_by_write_test() ->
     Source = self(),
     Source1 = spawn(fun() -> ok end),
     {State, _, {ok, Tid}} =
-        ramnesia_machine:apply(none, {start_transaction, Source}, InitState),
+        ramnesia_machine:apply(none, {start_transaction, Source}, [], InitState),
     {State1, _, {ok, Tid1}} =
-        ramnesia_machine:apply(none, {start_transaction, Source1}, State),
+        ramnesia_machine:apply(none, {start_transaction, Source1}, [], State),
     {State2, _, {ok, ok}} =
-        ramnesia_machine:apply(none, {lock, Tid1, Source1, [{foo, bar}, write]}, State1),
+        ramnesia_machine:apply(none, {lock, Tid1, Source1, [{foo, bar}, write]}, [], State1),
     %% State should not change
     {State2, _, {error, locked}} =
-        ramnesia_machine:apply(none, {lock, Tid, Source, [{foo, bar}, read]}, State2).
+        ramnesia_machine:apply(none, {lock, Tid, Source, [{foo, bar}, read]}, [], State2).
 
 lock_read_blocked_by_table_write_test() ->
     InitState = #state{},
     Source = self(),
     Source1 = spawn(fun() -> ok end),
     {State, _, {ok, Tid}} =
-        ramnesia_machine:apply(none, {start_transaction, Source}, InitState),
+        ramnesia_machine:apply(none, {start_transaction, Source}, [], InitState),
     {State1, _, {ok, Tid1}} =
-        ramnesia_machine:apply(none, {start_transaction, Source1}, State),
+        ramnesia_machine:apply(none, {start_transaction, Source1}, [], State),
     {State2, _, {ok, ok}} =
-        ramnesia_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, State1),
+        ramnesia_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, [], State1),
     %% State should not change
     {State2, _, {error, locked}} =
-        ramnesia_machine:apply(none, {lock, Tid, Source, [{foo, bar}, read]}, State2).
+        ramnesia_machine:apply(none, {lock, Tid, Source, [{foo, bar}, read]}, [], State2).
 
 lock_write_blocked_by_write_test() ->
     InitState = #state{},
     Source = self(),
     Source1 = spawn(fun() -> ok end),
     {State, _, {ok, Tid}} =
-        ramnesia_machine:apply(none, {start_transaction, Source}, InitState),
+        ramnesia_machine:apply(none, {start_transaction, Source}, [], InitState),
     {State1, _, {ok, Tid1}} =
-        ramnesia_machine:apply(none, {start_transaction, Source1}, State),
+        ramnesia_machine:apply(none, {start_transaction, Source1}, [], State),
     {State2, _, {ok, ok}} =
-        ramnesia_machine:apply(none, {lock, Tid1, Source1, [{foo, bar}, write]}, State1),
+        ramnesia_machine:apply(none, {lock, Tid1, Source1, [{foo, bar}, write]}, [], State1),
     %% State should not change
     {State2, _, {error, locked}} =
-        ramnesia_machine:apply(none, {lock, Tid, Source, [{foo, bar}, write]}, State2).
+        ramnesia_machine:apply(none, {lock, Tid, Source, [{foo, bar}, write]}, [], State2).
 
 lock_write_blocked_by_table_write_test() ->
     InitState = #state{},
     Source = self(),
     Source1 = spawn(fun() -> ok end),
     {State, _, {ok, Tid}} =
-        ramnesia_machine:apply(none, {start_transaction, Source}, InitState),
+        ramnesia_machine:apply(none, {start_transaction, Source}, [], InitState),
     {State1, _, {ok, Tid1}} =
-        ramnesia_machine:apply(none, {start_transaction, Source1}, State),
+        ramnesia_machine:apply(none, {start_transaction, Source1}, [], State),
     {State2, _, {ok, ok}} =
-        ramnesia_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, State1),
+        ramnesia_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, [], State1),
     %% State should not change
     {State2, _, {error, locked}} =
-        ramnesia_machine:apply(none, {lock, Tid, Source, [{foo, bar}, write]}, State2).
+        ramnesia_machine:apply(none, {lock, Tid, Source, [{foo, bar}, write]}, [], State2).
 
 lock_write_blocked_by_read_test() ->
     InitState = #state{},
     Source = self(),
     Source1 = spawn(fun() -> ok end),
     {State, _, {ok, Tid}} =
-        ramnesia_machine:apply(none, {start_transaction, Source}, InitState),
+        ramnesia_machine:apply(none, {start_transaction, Source}, [], InitState),
     {State1, _, {ok, Tid1}} =
-        ramnesia_machine:apply(none, {start_transaction, Source1}, State),
+        ramnesia_machine:apply(none, {start_transaction, Source1}, [], State),
     {State2, _, {ok, ok}} =
-        ramnesia_machine:apply(none, {lock, Tid1, Source1, [{foo, bar}, read]}, State1),
+        ramnesia_machine:apply(none, {lock, Tid1, Source1, [{foo, bar}, read]}, [], State1),
     %% State should not change
     {State2, _, {error, locked}} =
-        ramnesia_machine:apply(none, {lock, Tid, Source, [{foo, bar}, write]}, State2).
+        ramnesia_machine:apply(none, {lock, Tid, Source, [{foo, bar}, write]}, [], State2).
 
 lock_write_blocked_by_table_read_test() ->
     InitState = #state{},
     Source = self(),
     Source1 = spawn(fun() -> ok end),
     {State, _, {ok, Tid}} =
-        ramnesia_machine:apply(none, {start_transaction, Source}, InitState),
+        ramnesia_machine:apply(none, {start_transaction, Source}, [], InitState),
     {State1, _, {ok, Tid1}} =
-        ramnesia_machine:apply(none, {start_transaction, Source1}, State),
+        ramnesia_machine:apply(none, {start_transaction, Source1}, [], State),
     {State2, _, {ok, ok}} =
-        ramnesia_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, read]}, State1),
+        ramnesia_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, read]}, [], State1),
     %% State should not change
     {State2, _, {error, locked}} =
-        ramnesia_machine:apply(none, {lock, Tid, Source, [{foo, bar}, write]}, State2).
+        ramnesia_machine:apply(none, {lock, Tid, Source, [{foo, bar}, write]}, [], State2).
 
 % read:
 %     fail if no transaction
@@ -880,7 +880,7 @@ read_no_transaction_error_test() ->
     Source = self(),
     Tid = 1,
     {InitState, [], {error, no_transaction_for_pid}} =
-        ramnesia_machine:apply(none, {read, Tid, Source, [table, foo, read]}, InitState).
+        ramnesia_machine:apply(none, {read, Tid, Source, [table, foo, read]}, [], InitState).
 
 read_wrong_transaction_error_test() ->
     Source = self(),
@@ -888,35 +888,35 @@ read_wrong_transaction_error_test() ->
     DifferentTid = 1,
     InitState = #state{transactions = #{Source => DifferentTid}, last_transaction_id = DifferentTid},
     {InitState, [], {error, {wrong_transaction_id, DifferentTid}}} =
-        ramnesia_machine:apply(none, {read, Tid, Source, [table, foo, read]}, InitState).
+        ramnesia_machine:apply(none, {read, Tid, Source, [table, foo, read]}, [], InitState).
 
 read_locked_by_write_test() ->
     InitState = #state{},
     Source = self(),
     Source1 = spawn(fun() -> ok end),
     {State, _, {ok, Tid}} =
-        ramnesia_machine:apply(none, {start_transaction, Source}, InitState),
+        ramnesia_machine:apply(none, {start_transaction, Source}, [], InitState),
     {State1, _, {ok, Tid1}} =
-        ramnesia_machine:apply(none, {start_transaction, Source1}, State),
+        ramnesia_machine:apply(none, {start_transaction, Source1}, [], State),
     {State2, _, {ok, ok}} =
-        ramnesia_machine:apply(none, {lock, Tid1, Source1, [{foo, foo}, write]}, State1),
+        ramnesia_machine:apply(none, {lock, Tid1, Source1, [{foo, foo}, write]}, [], State1),
     %% State should not change
     {State2, _, {error, locked}} =
-        ramnesia_machine:apply(none, {read, Tid, Source, [foo, foo, read]}, State2).
+        ramnesia_machine:apply(none, {read, Tid, Source, [foo, foo, read]}, [], State2).
 
 read_with_write_lock_locked_by_read_test() ->
     InitState = #state{},
     Source = self(),
     Source1 = spawn(fun() -> ok end),
     {State, _, {ok, Tid}} =
-        ramnesia_machine:apply(none, {start_transaction, Source}, InitState),
+        ramnesia_machine:apply(none, {start_transaction, Source}, [], InitState),
     {State1, _, {ok, Tid1}} =
-        ramnesia_machine:apply(none, {start_transaction, Source1}, State),
+        ramnesia_machine:apply(none, {start_transaction, Source1}, [], State),
     {State2, _, {ok, ok}} =
-        ramnesia_machine:apply(none, {lock, Tid1, Source1, [{foo, foo}, read]}, State1),
+        ramnesia_machine:apply(none, {lock, Tid1, Source1, [{foo, foo}, read]}, [], State1),
     %% State should not change
     {State2, _, {error, locked}} =
-        ramnesia_machine:apply(none, {read, Tid, Source, [foo, foo, write]}, State2).
+        ramnesia_machine:apply(none, {read, Tid, Source, [foo, foo, write]}, [], State2).
 
 read_returns_and_aquires_lock_test() ->
     mnesia:start(),
@@ -926,10 +926,10 @@ read_returns_and_aquires_lock_test() ->
     InitState = #state{},
     Source = self(),
     {State, _, {ok, Tid}} =
-        ramnesia_machine:apply(none, {start_transaction, Source}, InitState),
+        ramnesia_machine:apply(none, {start_transaction, Source}, [], InitState),
     %% State should not change
     {#state{read_locks = RLocks}, _, {ok, [{foo, foo, val}]}} =
-        ramnesia_machine:apply(none, {read, Tid, Source, [foo, foo, read]}, State),
+        ramnesia_machine:apply(none, {read, Tid, Source, [foo, foo, read]}, [], State),
     ExpectedR = #{{foo, foo} => [Tid]},
     ExpectedR = RLocks.
 
@@ -945,7 +945,7 @@ index_read_no_transaction_error_test() ->
     Source = self(),
     Tid = 1,
     {InitState, [], {error, no_transaction_for_pid}} =
-        ramnesia_machine:apply(none, {index_read, Tid, Source, [foo, foo, 1, read]}, InitState).
+        ramnesia_machine:apply(none, {index_read, Tid, Source, [foo, foo, 1, read]}, [], InitState).
 
 index_read_wrong_transaction_error_test() ->
     Source = self(),
@@ -953,21 +953,21 @@ index_read_wrong_transaction_error_test() ->
     DifferentTid = 1,
     InitState = #state{transactions = #{Source => DifferentTid}, last_transaction_id = DifferentTid},
     {InitState, [], {error, {wrong_transaction_id, DifferentTid}}} =
-        ramnesia_machine:apply(none, {index_read, Tid, Source, [foo, foo, 1, read]}, InitState).
+        ramnesia_machine:apply(none, {index_read, Tid, Source, [foo, foo, 1, read]}, [], InitState).
 
 index_read_locked_by_write_test() ->
     InitState = #state{},
     Source = self(),
     Source1 = spawn(fun() -> ok end),
     {State, _, {ok, Tid}} =
-        ramnesia_machine:apply(none, {start_transaction, Source}, InitState),
+        ramnesia_machine:apply(none, {start_transaction, Source}, [], InitState),
     {State1, _, {ok, Tid1}} =
-        ramnesia_machine:apply(none, {start_transaction, Source1}, State),
+        ramnesia_machine:apply(none, {start_transaction, Source1}, [], State),
     {State2, _, {ok, ok}} =
-        ramnesia_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, State1),
+        ramnesia_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, [], State1),
     %% State should not change
     {State2, _, {error, locked}} =
-        ramnesia_machine:apply(none, {index_read, Tid, Source, [foo, foo, 1, read]}, State2).
+        ramnesia_machine:apply(none, {index_read, Tid, Source, [foo, foo, 1, read]}, [], State2).
 
 index_read_returns_and_aquires_lock_test() ->
     mnesia:start(),
@@ -978,10 +978,10 @@ index_read_returns_and_aquires_lock_test() ->
     InitState = #state{},
     Source = self(),
     {State, _, {ok, Tid}} =
-        ramnesia_machine:apply(none, {start_transaction, Source}, InitState),
+        ramnesia_machine:apply(none, {start_transaction, Source}, [], InitState),
     %% State should not change
     {#state{read_locks = RLocks}, _, {ok, [{foo, foo, val}]}} =
-        ramnesia_machine:apply(none, {index_read, Tid, Source, [foo, val, 3, read]}, State),
+        ramnesia_machine:apply(none, {index_read, Tid, Source, [foo, val, 3, read]}, [], State),
     ExpectedR = #{{table, foo} => [Tid]},
     ExpectedR = RLocks.
 
@@ -993,7 +993,7 @@ match_object_no_transaction_error_test() ->
     Source = self(),
     Tid = 1,
     {InitState, [], {error, no_transaction_for_pid}} =
-        ramnesia_machine:apply(none, {match_object, Tid, Source, [foo, Pattern, read]}, InitState).
+        ramnesia_machine:apply(none, {match_object, Tid, Source, [foo, Pattern, read]}, [], InitState).
 
 match_object_wrong_transaction_error_test() ->
     Pattern = {foo, '_', val},
@@ -1002,7 +1002,7 @@ match_object_wrong_transaction_error_test() ->
     DifferentTid = 1,
     InitState = #state{transactions = #{Source => DifferentTid}, last_transaction_id = DifferentTid},
     {InitState, [], {error, {wrong_transaction_id, DifferentTid}}} =
-        ramnesia_machine:apply(none, {match_object, Tid, Source, [foo, Pattern, read]}, InitState).
+        ramnesia_machine:apply(none, {match_object, Tid, Source, [foo, Pattern, read]}, [], InitState).
 
 match_object_locked_by_write_test() ->
     Pattern = {foo, '_', val},
@@ -1010,14 +1010,14 @@ match_object_locked_by_write_test() ->
     Source = self(),
     Source1 = spawn(fun() -> ok end),
     {State, _, {ok, Tid}} =
-        ramnesia_machine:apply(none, {start_transaction, Source}, InitState),
+        ramnesia_machine:apply(none, {start_transaction, Source}, [], InitState),
     {State1, _, {ok, Tid1}} =
-        ramnesia_machine:apply(none, {start_transaction, Source1}, State),
+        ramnesia_machine:apply(none, {start_transaction, Source1}, [], State),
     {State2, _, {ok, ok}} =
-        ramnesia_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, State1),
+        ramnesia_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, [], State1),
     %% State should not change
     {State2, _, {error, locked}} =
-        ramnesia_machine:apply(none, {match_object, Tid, Source, [foo, Pattern, read]}, State2).
+        ramnesia_machine:apply(none, {match_object, Tid, Source, [foo, Pattern, read]}, [], State2).
 
 match_object_returns_and_aquires_lock_test() ->
     Pattern = {foo, '_', val},
@@ -1028,10 +1028,10 @@ match_object_returns_and_aquires_lock_test() ->
     InitState = #state{},
     Source = self(),
     {State, _, {ok, Tid}} =
-        ramnesia_machine:apply(none, {start_transaction, Source}, InitState),
+        ramnesia_machine:apply(none, {start_transaction, Source}, [], InitState),
     %% State should not change
     {#state{read_locks = RLocks}, _, {ok, [{foo, foo, val}]}} =
-        ramnesia_machine:apply(none, {match_object, Tid, Source, [foo, Pattern, read]}, State),
+        ramnesia_machine:apply(none, {match_object, Tid, Source, [foo, Pattern, read]}, [], State),
     ExpectedR = #{{table, foo} => [Tid]},
     ExpectedR = RLocks.
 
@@ -1043,7 +1043,7 @@ index_match_object_no_transaction_error_test() ->
     Source = self(),
     Tid = 1,
     {InitState, [], {error, no_transaction_for_pid}} =
-        ramnesia_machine:apply(none, {index_match_object, Tid, Source, [foo, Pattern, 3, read]}, InitState).
+        ramnesia_machine:apply(none, {index_match_object, Tid, Source, [foo, Pattern, 3, read]}, [], InitState).
 
 index_match_object_wrong_transaction_error_test() ->
     Pattern = {foo, '_', val},
@@ -1052,7 +1052,7 @@ index_match_object_wrong_transaction_error_test() ->
     DifferentTid = 1,
     InitState = #state{transactions = #{Source => DifferentTid}, last_transaction_id = DifferentTid},
     {InitState, [], {error, {wrong_transaction_id, DifferentTid}}} =
-        ramnesia_machine:apply(none, {index_match_object, Tid, Source, [foo, Pattern, 3, read]}, InitState).
+        ramnesia_machine:apply(none, {index_match_object, Tid, Source, [foo, Pattern, 3, read]}, [], InitState).
 
 index_match_object_locked_by_write_test() ->
     Pattern = {foo, '_', val},
@@ -1060,14 +1060,14 @@ index_match_object_locked_by_write_test() ->
     Source = self(),
     Source1 = spawn(fun() -> ok end),
     {State, _, {ok, Tid}} =
-        ramnesia_machine:apply(none, {start_transaction, Source}, InitState),
+        ramnesia_machine:apply(none, {start_transaction, Source}, [], InitState),
     {State1, _, {ok, Tid1}} =
-        ramnesia_machine:apply(none, {start_transaction, Source1}, State),
+        ramnesia_machine:apply(none, {start_transaction, Source1}, [], State),
     {State2, _, {ok, ok}} =
-        ramnesia_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, State1),
+        ramnesia_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, [], State1),
     %% State should not change
     {State2, _, {error, locked}} =
-        ramnesia_machine:apply(none, {index_match_object, Tid, Source, [foo, Pattern, 3, read]}, State2).
+        ramnesia_machine:apply(none, {index_match_object, Tid, Source, [foo, Pattern, 3, read]}, [], State2).
 
 index_match_object_returns_and_aquires_lock_test() ->
     Pattern = {foo, '_', val},
@@ -1079,10 +1079,10 @@ index_match_object_returns_and_aquires_lock_test() ->
     InitState = #state{},
     Source = self(),
     {State, _, {ok, Tid}} =
-        ramnesia_machine:apply(none, {start_transaction, Source}, InitState),
+        ramnesia_machine:apply(none, {start_transaction, Source}, [], InitState),
     %% State should not change
     {#state{read_locks = RLocks}, _, {ok, [{foo, foo, val}]}} =
-        ramnesia_machine:apply(none, {index_match_object, Tid, Source, [foo, Pattern, 3, read]}, State),
+        ramnesia_machine:apply(none, {index_match_object, Tid, Source, [foo, Pattern, 3, read]}, [], State),
     ExpectedR = #{{table, foo} => [Tid]},
     ExpectedR = RLocks.
 
@@ -1093,7 +1093,7 @@ all_keys_no_transaction_error_test() ->
     Source = self(),
     Tid = 1,
     {InitState, [], {error, no_transaction_for_pid}} =
-        ramnesia_machine:apply(none, {all_keys, Tid, Source, [foo, read]}, InitState).
+        ramnesia_machine:apply(none, {all_keys, Tid, Source, [foo, read]}, [], InitState).
 
 all_keys_wrong_transaction_error_test() ->
     Source = self(),
@@ -1101,21 +1101,21 @@ all_keys_wrong_transaction_error_test() ->
     DifferentTid = 1,
     InitState = #state{transactions = #{Source => DifferentTid}, last_transaction_id = DifferentTid},
     {InitState, [], {error, {wrong_transaction_id, DifferentTid}}} =
-        ramnesia_machine:apply(none, {all_keys, Tid, Source, [foo, read]}, InitState).
+        ramnesia_machine:apply(none, {all_keys, Tid, Source, [foo, read]}, [], InitState).
 
 all_keys_locked_by_write_test() ->
     InitState = #state{},
     Source = self(),
     Source1 = spawn(fun() -> ok end),
     {State, _, {ok, Tid}} =
-        ramnesia_machine:apply(none, {start_transaction, Source}, InitState),
+        ramnesia_machine:apply(none, {start_transaction, Source}, [], InitState),
     {State1, _, {ok, Tid1}} =
-        ramnesia_machine:apply(none, {start_transaction, Source1}, State),
+        ramnesia_machine:apply(none, {start_transaction, Source1}, [], State),
     {State2, _, {ok, ok}} =
-        ramnesia_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, State1),
+        ramnesia_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, [], State1),
     %% State should not change
     {State2, _, {error, locked}} =
-        ramnesia_machine:apply(none, {all_keys, Tid, Source, [foo, read]}, State2).
+        ramnesia_machine:apply(none, {all_keys, Tid, Source, [foo, read]}, [], State2).
 
 all_keys_returns_and_aquires_lock_test() ->
     mnesia:start(),
@@ -1127,10 +1127,10 @@ all_keys_returns_and_aquires_lock_test() ->
     InitState = #state{},
     Source = self(),
     {State, _, {ok, Tid}} =
-        ramnesia_machine:apply(none, {start_transaction, Source}, InitState),
+        ramnesia_machine:apply(none, {start_transaction, Source}, [], InitState),
     %% State should not change
     {#state{read_locks = RLocks}, _, {ok, Keys}} =
-        ramnesia_machine:apply(none, {all_keys, Tid, Source, [foo, read]}, State),
+        ramnesia_machine:apply(none, {all_keys, Tid, Source, [foo, read]}, [], State),
     ExpectedR = #{{table, foo} => [Tid]},
     ExpectedR = RLocks,
     Expected = lists:usort([foo, bar, baz]),
@@ -1148,7 +1148,7 @@ first_no_transaction_error_test() ->
     Source = self(),
     Tid = 1,
     {InitState, [], {error, no_transaction_for_pid}} =
-        ramnesia_machine:apply(none, {first, Tid, Source, [foo]}, InitState).
+        ramnesia_machine:apply(none, {first, Tid, Source, [foo]}, [], InitState).
 
 first_wrong_transaction_error_test() ->
     Source = self(),
@@ -1156,21 +1156,21 @@ first_wrong_transaction_error_test() ->
     DifferentTid = 1,
     InitState = #state{transactions = #{Source => DifferentTid}, last_transaction_id = DifferentTid},
     {InitState, [], {error, {wrong_transaction_id, DifferentTid}}} =
-        ramnesia_machine:apply(none, {first, Tid, Source, [foo]}, InitState).
+        ramnesia_machine:apply(none, {first, Tid, Source, [foo]}, [], InitState).
 
 first_locked_by_write_test() ->
     InitState = #state{},
     Source = self(),
     Source1 = spawn(fun() -> ok end),
     {State, _, {ok, Tid}} =
-        ramnesia_machine:apply(none, {start_transaction, Source}, InitState),
+        ramnesia_machine:apply(none, {start_transaction, Source}, [], InitState),
     {State1, _, {ok, Tid1}} =
-        ramnesia_machine:apply(none, {start_transaction, Source1}, State),
+        ramnesia_machine:apply(none, {start_transaction, Source1}, [], State),
     {State2, _, {ok, ok}} =
-        ramnesia_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, State1),
+        ramnesia_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, [], State1),
     %% State should not change
     {State2, _, {error, locked}} =
-        ramnesia_machine:apply(none, {first, Tid, Source, [foo]}, State2).
+        ramnesia_machine:apply(none, {first, Tid, Source, [foo]}, [], State2).
 
 first_returns_and_aquires_lock_test() ->
     mnesia:start(),
@@ -1180,10 +1180,10 @@ first_returns_and_aquires_lock_test() ->
     InitState = #state{},
     Source = self(),
     {State, _, {ok, Tid}} =
-        ramnesia_machine:apply(none, {start_transaction, Source}, InitState),
+        ramnesia_machine:apply(none, {start_transaction, Source}, [], InitState),
     %% State should not change
     {#state{read_locks = RLocks}, _, {ok, bar}} =
-        ramnesia_machine:apply(none, {first, Tid, Source, [foo]}, State),
+        ramnesia_machine:apply(none, {first, Tid, Source, [foo]}, [], State),
     ExpectedR = #{{table, foo} => [Tid]},
     ExpectedR = RLocks.
 
@@ -1194,7 +1194,7 @@ last_no_transaction_error_test() ->
     Source = self(),
     Tid = 1,
     {InitState, [], {error, no_transaction_for_pid}} =
-        ramnesia_machine:apply(none, {last, Tid, Source, [foo]}, InitState).
+        ramnesia_machine:apply(none, {last, Tid, Source, [foo]}, [], InitState).
 
 last_wrong_transaction_error_test() ->
     Source = self(),
@@ -1202,21 +1202,21 @@ last_wrong_transaction_error_test() ->
     DifferentTid = 1,
     InitState = #state{transactions = #{Source => DifferentTid}, last_transaction_id = DifferentTid},
     {InitState, [], {error, {wrong_transaction_id, DifferentTid}}} =
-        ramnesia_machine:apply(none, {last, Tid, Source, [foo]}, InitState).
+        ramnesia_machine:apply(none, {last, Tid, Source, [foo]}, [], InitState).
 
 last_locked_by_write_test() ->
     InitState = #state{},
     Source = self(),
     Source1 = spawn(fun() -> ok end),
     {State, _, {ok, Tid}} =
-        ramnesia_machine:apply(none, {start_transaction, Source}, InitState),
+        ramnesia_machine:apply(none, {start_transaction, Source}, [], InitState),
     {State1, _, {ok, Tid1}} =
-        ramnesia_machine:apply(none, {start_transaction, Source1}, State),
+        ramnesia_machine:apply(none, {start_transaction, Source1}, [], State),
     {State2, _, {ok, ok}} =
-        ramnesia_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, State1),
+        ramnesia_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, [], State1),
     %% State should not change
     {State2, _, {error, locked}} =
-        ramnesia_machine:apply(none, {last, Tid, Source, [foo]}, State2).
+        ramnesia_machine:apply(none, {last, Tid, Source, [foo]}, [], State2).
 
 last_returns_and_aquires_lock_test() ->
     mnesia:start(),
@@ -1226,10 +1226,10 @@ last_returns_and_aquires_lock_test() ->
     InitState = #state{},
     Source = self(),
     {State, _, {ok, Tid}} =
-        ramnesia_machine:apply(none, {start_transaction, Source}, InitState),
+        ramnesia_machine:apply(none, {start_transaction, Source}, [], InitState),
     %% State should not change
     {#state{read_locks = RLocks}, _, {ok, bar}} =
-        ramnesia_machine:apply(none, {last, Tid, Source, [foo]}, State),
+        ramnesia_machine:apply(none, {last, Tid, Source, [foo]}, [], State),
     ExpectedR = #{{table, foo} => [Tid]},
     ExpectedR = RLocks.
 
@@ -1240,7 +1240,7 @@ prev_no_transaction_error_test() ->
     Source = self(),
     Tid = 1,
     {InitState, [], {error, no_transaction_for_pid}} =
-        ramnesia_machine:apply(none, {prev, Tid, Source, [foo, bar]}, InitState).
+        ramnesia_machine:apply(none, {prev, Tid, Source, [foo, bar]}, [], InitState).
 
 prev_wrong_transaction_error_test() ->
     Source = self(),
@@ -1248,21 +1248,21 @@ prev_wrong_transaction_error_test() ->
     DifferentTid = 1,
     InitState = #state{transactions = #{Source => DifferentTid}, last_transaction_id = DifferentTid},
     {InitState, [], {error, {wrong_transaction_id, DifferentTid}}} =
-        ramnesia_machine:apply(none, {prev, Tid, Source, [foo, bar]}, InitState).
+        ramnesia_machine:apply(none, {prev, Tid, Source, [foo, bar]}, [], InitState).
 
 prev_locked_by_write_test() ->
     InitState = #state{},
     Source = self(),
     Source1 = spawn(fun() -> ok end),
     {State, _, {ok, Tid}} =
-        ramnesia_machine:apply(none, {start_transaction, Source}, InitState),
+        ramnesia_machine:apply(none, {start_transaction, Source}, [], InitState),
     {State1, _, {ok, Tid1}} =
-        ramnesia_machine:apply(none, {start_transaction, Source1}, State),
+        ramnesia_machine:apply(none, {start_transaction, Source1}, [], State),
     {State2, _, {ok, ok}} =
-        ramnesia_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, State1),
+        ramnesia_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, [], State1),
     %% State should not change
     {State2, _, {error, locked}} =
-        ramnesia_machine:apply(none, {prev, Tid, Source, [foo, bar]}, State2).
+        ramnesia_machine:apply(none, {prev, Tid, Source, [foo, bar]}, [], State2).
 
 prev_returns_and_aquires_lock_test() ->
     mnesia:start(),
@@ -1273,10 +1273,10 @@ prev_returns_and_aquires_lock_test() ->
     InitState = #state{},
     Source = self(),
     {State, _, {ok, Tid}} =
-        ramnesia_machine:apply(none, {start_transaction, Source}, InitState),
+        ramnesia_machine:apply(none, {start_transaction, Source}, [], InitState),
     %% State should not change
     {#state{read_locks = RLocks}, _, {ok, baz}} =
-        ramnesia_machine:apply(none, {prev, Tid, Source, [foo, bar]}, State),
+        ramnesia_machine:apply(none, {prev, Tid, Source, [foo, bar]}, [], State),
     ExpectedR = #{{table, foo} => [Tid]},
     ExpectedR = RLocks.
 
@@ -1287,7 +1287,7 @@ next_no_transaction_error_test() ->
     Source = self(),
     Tid = 1,
     {InitState, [], {error, no_transaction_for_pid}} =
-        ramnesia_machine:apply(none, {next, Tid, Source, [foo, bar]}, InitState).
+        ramnesia_machine:apply(none, {next, Tid, Source, [foo, bar]}, [], InitState).
 
 next_wrong_transaction_error_test() ->
     Source = self(),
@@ -1295,21 +1295,21 @@ next_wrong_transaction_error_test() ->
     DifferentTid = 1,
     InitState = #state{transactions = #{Source => DifferentTid}, last_transaction_id = DifferentTid},
     {InitState, [], {error, {wrong_transaction_id, DifferentTid}}} =
-        ramnesia_machine:apply(none, {next, Tid, Source, [foo, bar]}, InitState).
+        ramnesia_machine:apply(none, {next, Tid, Source, [foo, bar]}, [], InitState).
 
 next_locked_by_write_test() ->
     InitState = #state{},
     Source = self(),
     Source1 = spawn(fun() -> ok end),
     {State, _, {ok, Tid}} =
-        ramnesia_machine:apply(none, {start_transaction, Source}, InitState),
+        ramnesia_machine:apply(none, {start_transaction, Source}, [], InitState),
     {State1, _, {ok, Tid1}} =
-        ramnesia_machine:apply(none, {start_transaction, Source1}, State),
+        ramnesia_machine:apply(none, {start_transaction, Source1}, [], State),
     {State2, _, {ok, ok}} =
-        ramnesia_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, State1),
+        ramnesia_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, [], State1),
     %% State should not change
     {State2, _, {error, locked}} =
-        ramnesia_machine:apply(none, {next, Tid, Source, [foo, bar]}, State2).
+        ramnesia_machine:apply(none, {next, Tid, Source, [foo, bar]}, [], State2).
 
 next_returns_and_aquires_lock_test() ->
     mnesia:start(),
@@ -1320,10 +1320,10 @@ next_returns_and_aquires_lock_test() ->
     InitState = #state{},
     Source = self(),
     {State, _, {ok, Tid}} =
-        ramnesia_machine:apply(none, {start_transaction, Source}, InitState),
+        ramnesia_machine:apply(none, {start_transaction, Source}, [], InitState),
     %% State should not change
     {#state{read_locks = RLocks}, _, {ok, baz}} =
-        ramnesia_machine:apply(none, {next, Tid, Source, [foo, bar]}, State),
+        ramnesia_machine:apply(none, {next, Tid, Source, [foo, bar]}, [], State),
     ExpectedR = #{{table, foo} => [Tid]},
     ExpectedR = RLocks.
 
@@ -1335,15 +1335,15 @@ down_no_transaction_test() ->
     Source = self(),
     %% The return value is ignored
     {InitState, [], _} =
-        ramnesia_machine:apply(none, {down, Source, reason}, InitState).
+        ramnesia_machine:apply(none, {down, Source, reason}, [], InitState).
 
 down_cleanup_test() ->
     Source = self(),
     InitState = #state{},
     {State = #state{last_transaction_id = LastTid}, [{monitor, process, Source}], _} =
-        ramnesia_machine:apply(none, {start_transaction, Source}, InitState),
+        ramnesia_machine:apply(none, {start_transaction, Source}, [], InitState),
     {State1, [{demonitor, process, Source}], _} =
-        ramnesia_machine:apply(none, {down, Source, reason}, State),
+        ramnesia_machine:apply(none, {down, Source, reason}, [], State),
     Expected = #state{last_transaction_id = LastTid},
     Expected = State1.
 
@@ -1365,16 +1365,16 @@ down_cleanup_locks_test() ->
                                       readlock_1 => [Tid, Tid1],
                                       readlock_2 => [Tid2]}},
     {State1, [{demonitor, process, Source}], _} =
-        ramnesia_machine:apply(none, {down, Source, reason}, InitState),
+        ramnesia_machine:apply(none, {down, Source, reason}, [], InitState),
     Expected = #state{last_transaction_id = LastTid,
                       transactions = #{Source1 => Tid1, Source2 => Tid2},
                       write_locks = #{writelock_1 => Tid1},
                       read_locks = #{readlock_1 => [Tid1], readlock_2 => [Tid2]}},
     Expected = State1,
     {State2, [{demonitor, process, Source1}], _} =
-        ramnesia_machine:apply(none, {down, Source1, reason}, State1),
+        ramnesia_machine:apply(none, {down, Source1, reason}, [], State1),
     {State3, [{demonitor, process, Source2}], _} =
-        ramnesia_machine:apply(none, {down, Source2, reason}, State2),
+        ramnesia_machine:apply(none, {down, Source2, reason}, [], State2),
     State3 = #state{last_transaction_id = LastTid}.
 
 -endif.
