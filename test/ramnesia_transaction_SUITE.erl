@@ -223,9 +223,13 @@ delete_object_aborted(_Config) ->
 
 lock_aborts_if_no_retries(_Config) ->
     lock_for(2000, {sample, foo}, write),
-    {aborted, locked} = ramnesia:transaction(fun() ->
-        mnesia:lock({sample, foo}, write)
-    end, [], 10).
+    receive locked ->
+        {aborted, locked} = ramnesia:transaction(fun() ->
+            mnesia:lock({sample, foo}, write)
+        end, [], 10)
+    after 2000 ->
+        error(not_locked)
+    end.
 lock_succedes_eventually_on_retries(_Config) ->
     lock_for(2000, {sample, foo}, write),
     {atomic, ok} = ramnesia:transaction(fun() ->
@@ -233,9 +237,11 @@ lock_succedes_eventually_on_retries(_Config) ->
     end).
 
 lock_for(Time, LockItem, LockKind) ->
+    Pid = self(),
     spawn(fun() ->
         ramnesia:transaction(fun() ->
             mnesia:lock(LockItem, LockKind),
+            Pid ! locked,
             timer:sleep(Time)
         end)
     end).

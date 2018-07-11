@@ -17,7 +17,9 @@
          key_deleted/3,
          delete_object_for_key/3,
          prev_cached_key/3,
-         next_cached_key/3]).
+         next_cached_key/3,
+         set_retry/1,
+         is_retry/1]).
 
 % Keeps track of deletes and writes.
 
@@ -76,7 +78,8 @@
     delete = #{},
     delete_object = #{},
     write_set = #{},
-    write_bag = #{}}).
+    write_bag = #{},
+    retry = false}).
 
 -type context() :: #context{}.
 -type record() :: tuple().
@@ -347,9 +350,11 @@ next_cached_key(Context, Tab, Key) ->
         Keys -> lists:min(Keys)
     end.
 
+-spec set_retry(context()) -> context().
+set_retry(Context) -> Context#context{retry = true}.
 
-
-
+-spec is_retry(context()) -> boolean().
+is_retry(#context{retry = Retry}) -> Retry == true.
 
 
 

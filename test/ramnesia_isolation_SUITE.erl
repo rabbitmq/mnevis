@@ -8,7 +8,8 @@ groups() ->
     [
      {tests, [], [
         write_invisible_outside_transaction,
-        delete_invisible_outside_transaction,
+        delete_invisible_outside_transaction
+        ,
         consistent_counter
         %,
         % conststent_register
@@ -18,7 +19,8 @@ init_per_suite(Config) ->
     ramnesia:start(),
     Config.
 
-end_per_suite(Config) -> Config.
+end_per_suite(Config) ->
+    Config.
 
 
 init_per_testcase(_Test, Config) ->
@@ -50,46 +52,60 @@ add_sample(Key, Val) ->
 
 write_invisible_outside_transaction(_Config) ->
     add_sample(foo, bar),
+    Pid = self(),
     BackgroundTransaction = spawn_link(fun() ->
         ramnesia:transaction(fun() ->
             %% Update foo key
+            % ct:pal("Write invisible ~p~n", [self()]),
             mnesia:write({sample, foo, baz}),
             %% Add a new key
             mnesia:write({sample, bar, baz}),
+            Pid ! ready,
             receive stop -> ok
             end
         end)
     end),
-    ramnesia:transaction(fun() ->
-        [{sample, foo, bar}] = mnesia:read(sample, foo),
-        [] = mnesia:read(sample, bar)
-    end),
+    receive ready -> ok
+    after 1000 -> error(background_transaction_not_ready)
+    end,
+
+    % ct:pal("Read write ~p~n", [self()]),
+    [{sample, foo, bar}] = mnesia:dirty_read(sample, foo),
+    [] = mnesia:dirty_read(sample, bar),
+
     BackgroundTransaction ! stop.
 
 delete_invisible_outside_transaction(_Config) ->
     add_sample(foo, bar),
     add_sample(bar, baz),
+    Pid = self(),
     BackgroundTransaction = spawn_link(fun() ->
         ramnesia:transaction(fun() ->
+            % ct:pal("Delete invisible ~p~n", [self()]),
             mnesia:delete({sample, foo}),
             mnesia:delete_object({sample, bar, baz}),
+            Pid ! ready,
             receive stop -> ok
             end
         end)
     end),
-    ramnesia:transaction(fun() ->
-        [{sample, foo, bar}] = mnesia:read(sample, foo),
-        [{sample, bar, baz}] = mnesia:read(sample, bar)
-    end),
+    receive ready -> ok
+    after 1000 -> error(background_transaction_not_ready)
+    end,
+    % ct:pal("Read delete ~p~n", [self()]),
+    [{sample, foo, bar}] = mnesia:dirty_read(sample, foo),
+    [{sample, bar, baz}] = mnesia:dirty_read(sample, bar),
     BackgroundTransaction ! stop.
 
 consistent_counter(_Config) ->
-    add_sample(foo, 0),
+    add_sample(counter, 0),
     UpdateCounter = fun() ->
         timer:sleep(100),
-        [{sample, foo, N}] = mnesia:read(sample, foo),
+        % ct:pal("Read ~p~n", [self()]),
+        [{sample, counter, N}] = mnesia:read(sample, counter),
         timer:sleep(100),
-        ok = mnesia:write({sample, foo, N+1}),
+        % ct:pal("Write ~p~n", [self()]),
+        ok = mnesia:write({sample, counter, N+1}),
         % timer:sleep(100),
         ok
     end,
@@ -97,14 +113,15 @@ consistent_counter(_Config) ->
     Updates = [ spawn_link(fun() ->
                     {atomic, ok} = ramnesia:transaction(UpdateCounter)
                 end)
-                || _ <- lists:seq(1, 10) ],
-    timer:sleep(600),
-    wait_for_finish(Updates),
+                || _ <- lists:seq(1, 100) ],
+    % timer:sleep(600),
+    ct:pal("Time: ~p~n", [timer:tc(fun() -> wait_for_finish(Updates) end)]),
     {atomic, ok} = ramnesia:transaction(fun() ->
-        [{sample, foo, 100}] = mnesia:read(sample, foo),
+        [{sample, counter, 100}] = mnesia:read(sample, counter),
         ok
     end).
 
+wait_for_finish([]) -> ok;
 wait_for_finish([Pid | Pids]) ->
     case process_info(Pid) of
         undefined -> wait_for_finish(Pids);

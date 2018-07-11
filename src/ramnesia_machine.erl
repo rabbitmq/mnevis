@@ -22,7 +22,9 @@
 -record(state, {last_transaction_id = 0,
                 transactions = #{},
                 read_locks = #{},
-                write_locks = #{}}).
+                write_locks = #{},
+                locked_by_tid = #{},
+                locks_tid = #{}}).
 
 -ifdef (TEST).
 -include_lib("eunit/include/eunit.hrl").
@@ -53,7 +55,6 @@ apply(_RaftIdx, {start_transaction, Source}, Effects0, State) ->
     with_pre_effects(Effects0, start_transaction(State1, Source));
 
 apply(_RaftIdx, {rollback, Tid, Source, []}, Effects0, State) ->
-ct:pal("Rollback ~p~n", [{Tid, Source}]),
     with_pre_effects(Effects0,
         with_transaction(Tid, Source, State,
             fun() ->
@@ -61,7 +62,6 @@ ct:pal("Rollback ~p~n", [{Tid, Source}]),
             end));
 
 apply(_RaftIdx, {commit, Tid, Source, [Writes, Deletes, DeletesObject]}, Effects0, State) ->
-ct:pal("Commit ~p~n", [{Tid, Source}]),
     with_pre_effects(Effects0,
         with_transaction(Tid, Source, State,
             fun() ->
@@ -72,14 +72,14 @@ apply(_RaftIdx, {lock, Tid, Source, [LockItem, LockKind]}, Effects0, State) ->
     with_pre_effects(Effects0,
         with_transaction(Tid, Source, State,
             fun() ->
-                lock(LockItem, LockKind, Tid, State)
+                lock(LockItem, LockKind, Tid, Source, State)
             end));
 
 apply(_RaftIdx, {read, Tid, Source, [Tab, Key, LockKind]}, Effects0, State) ->
     with_pre_effects(Effects0,
         with_transaction(Tid, Source, State,
             fun() ->
-                case lock({Tab, Key}, LockKind, Tid, State) of
+                case lock({Tab, Key}, LockKind, Tid, Source, State) of
                     {State1, Effects, {ok, ok}} ->
                         try mnesia:dirty_read(Tab, Key) of
                             RecList ->
@@ -95,7 +95,7 @@ apply(_RaftIdx, {index_read, Tid, Source, [Tab, SecondaryKey, Pos, LockKind]}, E
     with_pre_effects(Effects0,
         with_transaction(Tid, Source, State,
             fun() ->
-                case lock({table, Tab}, LockKind, Tid, State) of
+                case lock({table, Tab}, LockKind, Tid, Source, State) of
                     {State1, Effects, {ok, ok}} ->
                         try mnesia:dirty_index_read(Tab, SecondaryKey, Pos) of
                             RecList ->
@@ -111,7 +111,7 @@ apply(_RaftIdx, {match_object, Tid, Source, [Tab, Pattern, LockKind]}, Effects0,
     with_pre_effects(Effects0,
         with_transaction(Tid, Source, State,
             fun() ->
-                case lock({table, Tab}, LockKind, Tid, State) of
+                case lock({table, Tab}, LockKind, Tid, Source, State) of
                     {State1, Effects, {ok, ok}} ->
                         try mnesia:dirty_match_object(Tab, Pattern) of
                             RecList ->
@@ -127,7 +127,7 @@ apply(_RaftIdx, {index_match_object, Tid, Source, [Tab, Pattern, Pos, LockKind]}
     with_pre_effects(Effects0,
         with_transaction(Tid, Source, State,
             fun() ->
-                case lock({table, Tab}, LockKind, Tid, State) of
+                case lock({table, Tab}, LockKind, Tid, Source, State) of
                     {State1, Effects, {ok, ok}} ->
                         try mnesia:dirty_index_match_object(Tab, Pattern, Pos) of
                             RecList ->
@@ -143,7 +143,7 @@ apply(_RaftIdx, {all_keys, Tid, Source, [Tab, LockKind]}, Effects0, State) ->
     with_pre_effects(Effects0,
         with_transaction(Tid, Source, State,
             fun() ->
-                case lock({table, Tab}, LockKind, Tid, State) of
+                case lock({table, Tab}, LockKind, Tid, Source, State) of
                     {State1, Effects, {ok, ok}} ->
                         try mnesia:dirty_all_keys(Tab) of
                             RecList ->
@@ -159,7 +159,7 @@ apply(_RaftIdx, {first, Tid, Source, [Tab]}, Effects0, State) ->
     with_pre_effects(Effects0,
         with_transaction(Tid, Source, State,
             fun() ->
-                case lock({table, Tab}, read, Tid, State) of
+                case lock({table, Tab}, read, Tid, Source, State) of
                     {State1, Effects, {ok, ok}} ->
                         try mnesia:dirty_first(Tab) of
                             RecList ->
@@ -175,7 +175,7 @@ apply(_RaftIdx, {last, Tid, Source, [Tab]}, Effects0, State) ->
     with_pre_effects(Effects0,
         with_transaction(Tid, Source, State,
             fun() ->
-                case lock({table, Tab}, read, Tid, State) of
+                case lock({table, Tab}, read, Tid, Source, State) of
                     {State1, Effects, {ok, ok}} ->
                         try mnesia:dirty_last(Tab) of
                             RecList ->
@@ -191,7 +191,7 @@ apply(_RaftIdx, {prev, Tid, Source, [Tab, Key]}, Effects0, State) ->
     with_pre_effects(Effects0,
         with_transaction(Tid, Source, State,
             fun() ->
-                case lock({table, Tab}, read, Tid, State) of
+                case lock({table, Tab}, read, Tid, Source, State) of
                     {State1, Effects, {ok, ok}} ->
                         try mnesia:dirty_prev(Tab, Key) of
                             RecList ->
@@ -219,7 +219,7 @@ apply(_RaftIdx, {next, Tid, Source, [Tab, Key]}, Effects0, State) ->
     with_pre_effects(Effects0,
         with_transaction(Tid, Source, State,
             fun() ->
-                case lock({table, Tab}, read, Tid, State) of
+                case lock({table, Tab}, read, Tid, Source, State) of
                     {State1, Effects, {ok, ok}} ->
                         try mnesia:dirty_next(Tab, Key) of
                             RecList ->
@@ -296,17 +296,39 @@ tick(_Time, _State) -> [].
 -spec overview(state()) -> map().
 overview(_State) -> #{}.
 
--spec lock(lock_item(), lock_kind(), transaction_id(), state()) ->
+-spec lock(lock_item(), lock_kind(), transaction_id(), pid(), state()) ->
         {state(), ra_machine:effects(), reply(ok, locked)}.
-lock(LockItem, LockKind, Tid, State) ->
-    case is_locked(LockItem, LockKind, Tid, State) of
-        true  ->
-            ct:pal("Locked ~p~n", [{LockItem, LockKind}]),
-            %% TODO: report a locking transaction ID to be able to wait until it
-            %% finishes. Check for never-finifhing transactions.
-            {State, [], {error, locked}};
-        false -> {apply_lock(LockItem, LockKind, Tid, State), [], {ok, ok}}
+lock(LockItem, LockKind, Tid, Source, State) ->
+    case locking_transactions(LockItem, LockKind, Tid, State) of
+        [] ->
+            {apply_lock(LockItem, LockKind, Tid, State), [], {ok, ok}};
+        Tids ->
+            schedule_lock_release_event(Tid, Source, Tids, State)
     end.
+
+schedule_lock_release_event(LockedTid, Source, LockingTids0, State) ->
+    LockingTids = lists:filter(fun(LockingTid) -> LockingTid > LockedTid end,
+                               LockingTids0),
+    LocksTid = lists:foldl(
+        fun(LockingTid, LocksTid0) ->
+            LockedTids =  maps:get(LockingTid, LocksTid0, []),
+            maps:put(LockingTid, [{LockedTid, Source} | LockedTids], LocksTid0)
+        end,
+        State#state.locks_tid,
+        LockingTids),
+
+    LockedByTid = maps:put(LockedTid, lists:usort(LockingTids), State#state.locked_by_tid),
+
+    %% Cleanup locks for the locked transaction.
+    %% The transaction must be restarted.
+    State1 = cleanup_locks(LockedTid, State),
+
+    Error = case LockingTids of
+        [] -> {error, locked_instant};
+        _ -> {error, locked}
+    end,
+
+    {State1#state{locked_by_tid = LockedByTid, locks_tid = LocksTid}, [], Error}.
 
 -spec apply_lock(lock_item(), lock_kind(), transaction_id(), state()) -> state().
 apply_lock(LockItem, write, Tid, State = #state{write_locks = WLocks}) ->
@@ -315,46 +337,46 @@ apply_lock(LockItem, read, Tid, State = #state{read_locks = RLocks}) ->
     OldLocks = maps:get(LockItem, RLocks, []) -- [Tid],
     State#state{ read_locks = maps:put(LockItem, [Tid | OldLocks], RLocks) }.
 
--spec is_locked(lock_item(), lock_kind(), transaction_id(), state()) -> boolean().
-is_locked(LockItem, LockKind, Tid, State) ->
-    is_item_locked(LockItem, LockKind, Tid, State)
-    orelse
-    is_table_locked(LockItem, LockKind, Tid, State).
+-spec locking_transactions(lock_item(), lock_kind(), transaction_id(), state()) -> [transaction_id()].
+locking_transactions(LockItem, LockKind, Tid, State) ->
+    item_locked_transactions(LockItem, LockKind, Tid, State)
+    ++
+    table_locking_transactions(LockItem, LockKind, Tid, State).
 
--spec is_item_locked(lock_item(), lock_kind(), transaction_id(), state()) -> boolean().
-is_item_locked(LockItem, read, Tid, State) ->
-    write_locked(LockItem, Tid, State);
-is_item_locked(LockItem, write, Tid, State) ->
-    write_locked(LockItem, Tid, State)
-    orelse
-    read_locked(LockItem, Tid, State).
+-spec item_locked_transactions(lock_item(), lock_kind(), transaction_id(), state()) -> [transaction_id()].
+item_locked_transactions(LockItem, read, Tid, State) ->
+    write_locking_transactions(LockItem, Tid, State);
+item_locked_transactions(LockItem, write, Tid, State) ->
+    write_locking_transactions(LockItem, Tid, State)
+    ++
+    read_locking_transactions(LockItem, Tid, State).
 
--spec is_table_locked(lock_item(), lock_kind(), transaction_id(), state()) -> boolean().
+-spec table_locking_transactions(lock_item(), lock_kind(), transaction_id(), state()) -> [transaction_id()].
 %% Table key is a table key.
-is_table_locked({table, _Tab} = LockItem, LockKind, Tid, State) ->
-    is_item_locked(LockItem, LockKind, Tid, State);
+table_locking_transactions({table, _Tab} = LockItem, LockKind, Tid, State) ->
+    item_locked_transactions(LockItem, LockKind, Tid, State);
 %% Record key should check the table key
-is_table_locked({Tab, _Key}, LockKind, Tid, State) ->
-    is_item_locked({table, Tab}, LockKind, Tid, State);
+table_locking_transactions({Tab, _Key}, LockKind, Tid, State) ->
+    item_locked_transactions({table, Tab}, LockKind, Tid, State);
 %% Global keys are never table locked
-is_table_locked({global, _, _}, _LockKind, _Tid, _State) ->
-    false.
+table_locking_transactions({global, _, _}, _LockKind, _Tid, _State) ->
+    [].
 
--spec write_locked(lock_item(), transaction_id(), state()) -> boolean().
-write_locked(LockItem, Tid, #state{write_locks = WLocks}) ->
+-spec write_locking_transactions(lock_item(), transaction_id(), state()) -> [transaction_id()].
+write_locking_transactions(LockItem, Tid, #state{write_locks = WLocks}) ->
     case maps:get(LockItem, WLocks, not_found) of
-        not_found     -> false;
-        Tid           -> false;
-        _DifferentTid -> true
+        not_found    -> [];
+        Tid          -> [];
+        DifferentTid -> [DifferentTid]
     end.
 
--spec read_locked(lock_item(), transaction_id(), state()) -> boolean().
-read_locked(LockItem, Tid, #state{read_locks = RLocks}) ->
+-spec read_locking_transactions(lock_item(), transaction_id(), state()) -> [transaction_id()].
+read_locking_transactions(LockItem, Tid, #state{read_locks = RLocks}) ->
     case maps:get(LockItem, RLocks, not_found) of
-        not_found -> false;
-        []        -> false;
-        [Tid]     -> false;
-        _         -> true
+        not_found -> [];
+        []        -> [];
+        [Tid]     -> [];
+        Tids      -> lists:usort(Tids) -- [Tid]
     end.
 
 -spec commit(transaction_id(), pid(), [change()], [change()], [change()], state()) ->
@@ -388,22 +410,58 @@ apply_writes(Writes) ->
      || {Tab, Rec, LockKind} <- Writes].
 
 -spec cleanup(transaction_id(), pid(), state()) -> {state(), ra_machine:effects(), reply(ok)}.
-cleanup(Tid, Source, State) ->
+cleanup(Tid, Source, State0) ->
+    State = cleanup_locks(Tid, State0),
+
     #state{ transactions = Transactions,
-            read_locks = RLocks,
-            write_locks = WLocks } = State,
+            locked_by_tid = LockedByTid,
+            locks_tid = LocksTid } = State,
     %% Remove source from transactions.
     Transactions1 = maps:remove(Source, Transactions),
+
+    LockedTransAndSources = maps:get(Tid, LocksTid, []),
+
+
+    LockedByTid1 = lists:foldl(fun({LockedTid, _}, LockedByTid0) ->
+        LockedBy = maps:get(LockedTid, LockedByTid0, []),
+        case LockedBy -- [Tid] of
+            [] ->
+                maps:remove(LockedTid, LockedByTid0);
+            Other ->
+                maps:put(LockedTid, Other, LockedByTid0)
+        end
+    end,
+    LockedByTid,
+    LockedTransAndSources),
+
+    UnlockedEffects = lists:filtermap(fun({LockedTid, LockedSource}) ->
+        case maps:get(LockedTid, LockedByTid1, undefined) of
+            undefined ->
+                {true, {send_msg, LockedSource, {ramnesia_unlock, LockedTid}}};
+            _ ->
+                false
+        end
+    end,
+    LockedTransAndSources),
+
+    LocksTid1 = maps:remove(Tid, LocksTid),
+    LockedByTid2 = maps:remove(Tid, LockedByTid1),
+
+    {State#state{transactions = Transactions1,
+                 locks_tid = LocksTid1,
+                 locked_by_tid = LockedByTid2},
+     UnlockedEffects ++ [{demonitor, process, Source}],
+     {ok, ok}}.
+
+cleanup_locks(Tid, State) ->
+    #state{ read_locks = RLocks,
+            write_locks = WLocks} = State,
     %% Remove Tid from write locks
     WLocks1 = maps:filter(fun(_K, LockTid) -> LockTid =/= Tid end, WLocks),
     %% Remove Tid from read locks
     RLocks1 = maps:filter(fun(_K, Tids) -> Tids =/= [] end,
                 maps:map(fun(_K, Tids) -> Tids -- [Tid] end, RLocks)),
-    {State#state{transactions = Transactions1,
-                 read_locks = RLocks1,
-                 write_locks = WLocks1},
-     [{demonitor, process, Source}],
-     {ok, ok}}.
+    State#state{read_locks = RLocks1, write_locks = WLocks1}.
 
 -spec with_transaction(transaction_id(), pid(), state(), fun(() -> {state(), ra_machine:effects(), reply()})) -> {state(), ra_machine:effects(), reply() | {error, {wrong_transaction_id, transaction_id()} | {error, no_transaction_for_pid}}}.
 with_transaction(Tid, Source, State = #state{transactions = Transactions}, Fun) ->
