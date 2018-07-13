@@ -23,8 +23,7 @@
                 transactions = #{},
                 read_locks = #{},
                 write_locks = #{},
-                locked_by_tid = #{},
-                locks_tid = #{}}).
+                transaction_locks = simple_dgraph:new()}).
 
 -ifdef (TEST).
 -include_lib("eunit/include/eunit.hrl").
@@ -252,9 +251,7 @@ apply(_RaftIdx, {down, Source, _Reason}, Effects0, State) ->
     end.
 
 with_pre_effects(Effects0, {State, Effects, Result}) ->
-    {State, Effects0 ++ Effects, Result};
-with_pre_effects(Effects0, {State, Effects}) ->
-    {State, Effects0 ++ Effects}.
+    {State, Effects0 ++ Effects, Result}.
 
 -spec closest_next(table(), Key) -> Key.
 closest_next(Tab, Key) ->
@@ -307,28 +304,40 @@ lock(LockItem, LockKind, Tid, Source, State) ->
     end.
 
 schedule_lock_release_event(LockedTid, Source, LockingTids0, State) ->
-    LockingTids = lists:filter(fun(LockingTid) -> LockingTid > LockedTid end,
-                               LockingTids0),
-    LocksTid = lists:foldl(
-        fun(LockingTid, LocksTid0) ->
-            LockedTids =  maps:get(LockingTid, LocksTid0, []),
-            maps:put(LockingTid, [{LockedTid, Source} | LockedTids], LocksTid0)
-        end,
-        State#state.locks_tid,
-        LockingTids),
+    LockingTids = [ LockingTid || LockingTid <- LockingTids0,
+                                  LockingTid > LockedTid ],
 
-    LockedByTid = maps:put(LockedTid, lists:usort(LockingTids), State#state.locked_by_tid),
+    #state{transaction_locks = TLGraph0} = State,
 
-    %% Cleanup locks for the locked transaction.
-    %% The transaction must be restarted.
-    State1 = cleanup_locks(LockedTid, State),
+    %% Locked transaction is a graph vertex with the source as a label
+    TLGraph1 = simple_dgraph:add_vertex(TLGraph0, LockedTid, Source),
+
+    %% Discard all the old locks.
+    %% We don't want to delete the vertex, because it can also be
+    %% a locker for other transactions.
+    OldLocks = simple_dgraph:in_edges(TLGraph1, LockedTid),
+    TLGraph2 = simple_dgraph:del_edges(TLGraph1, OldLocks),
+
+    TLGraph3 = lists:foldl(fun(LockingTid, TLGraphAcc) ->
+        %% We should not rewrite the locker vertex labels
+        %% as they can be locked by other transactions
+        TLGraphAcc1 = simple_dgraph:ensure_vertex(TLGraphAcc, LockingTid),
+        {ok, G} = simple_dgraph:add_edge(TLGraphAcc1, LockingTid, LockedTid),
+        G
+    end,
+    TLGraph2,
+    LockingTids),
 
     Error = case LockingTids of
         [] -> {error, locked_instant};
         _ -> {error, locked}
     end,
 
-    {State1#state{locked_by_tid = LockedByTid, locks_tid = LocksTid}, [], Error}.
+    %% Cleanup locks for the locked transaction.
+    %% The transaction will be restarted with the same ID
+    State1 = cleanup_locks(LockedTid, State),
+
+    {State1#state{transaction_locks = TLGraph3}, [], Error}.
 
 -spec apply_lock(lock_item(), lock_kind(), transaction_id(), state()) -> state().
 apply_lock(LockItem, write, Tid, State = #state{write_locks = WLocks}) ->
@@ -414,42 +423,29 @@ cleanup(Tid, Source, State0) ->
     State = cleanup_locks(Tid, State0),
 
     #state{ transactions = Transactions,
-            locked_by_tid = LockedByTid,
-            locks_tid = LocksTid } = State,
+            transaction_locks = TLGraph0 } = State,
     %% Remove source from transactions.
     Transactions1 = maps:remove(Source, Transactions),
 
-    LockedTransAndSources = maps:get(Tid, LocksTid, []),
+    LockedTids = simple_dgraph:out_neighbours(TLGraph0, Tid),
 
+    TLGraph1 = simple_dgraph:del_vertex(TLGraph0, Tid),
 
-    LockedByTid1 = lists:foldl(fun({LockedTid, _}, LockedByTid0) ->
-        LockedBy = maps:get(LockedTid, LockedByTid0, []),
-        case LockedBy -- [Tid] of
+    UnlockedEffects = lists:filtermap(fun(LockedTid) ->
+        %% If no lockers left
+        case simple_dgraph:in_neighbours(TLGraph1, LockedTid) of
             [] ->
-                maps:remove(LockedTid, LockedByTid0);
-            Other ->
-                maps:put(LockedTid, Other, LockedByTid0)
-        end
-    end,
-    LockedByTid,
-    LockedTransAndSources),
-
-    UnlockedEffects = lists:filtermap(fun({LockedTid, LockedSource}) ->
-        case maps:get(LockedTid, LockedByTid1, undefined) of
-            undefined ->
+                %% We expect the lable to be there
+                {ok, LockedSource} = simple_dgraph:vertex_label(TLGraph1, LockedTid),
                 {true, {send_msg, LockedSource, {ramnesia_unlock, LockedTid}}};
             _ ->
                 false
         end
     end,
-    LockedTransAndSources),
-
-    LocksTid1 = maps:remove(Tid, LocksTid),
-    LockedByTid2 = maps:remove(Tid, LockedByTid1),
+    LockedTids),
 
     {State#state{transactions = Transactions1,
-                 locks_tid = LocksTid1,
-                 locked_by_tid = LockedByTid2},
+                 transaction_locks = TLGraph1},
      UnlockedEffects ++ [{demonitor, process, Source}],
      {ok, ok}}.
 
@@ -518,14 +514,14 @@ start_transaction_test() ->
     Source = self(),
     {#state{transactions = #{Source := Tid}, last_transaction_id = Tid},
      [{monitor, process, Source}],
-     {ok, Tid}} = ramnesia_machine:apply(none, {start_transaction, Source}, InitState).
+     {ok, Tid}} = ramnesia_machine:apply(none, {start_transaction, Source}, [], InitState).
 
 start_transaction_cleanup_test() ->
     Source = self(),
     InitState = #state{transactions = #{Source => 1}, last_transaction_id = 1},
     {#state{transactions = #{Source := Tid}, last_transaction_id = Tid},
      [{monitor, process, Source}],
-     {ok, Tid}} = ramnesia_machine:apply(none, {start_transaction, Source}, InitState),
+     {ok, Tid}} = ramnesia_machine:apply(none, {start_transaction, Source}, [], InitState),
     true = Tid =/= 1.
 
 start_transaction_cleanup_locks_test() ->
@@ -549,7 +545,7 @@ start_transaction_cleanup_locks_test() ->
             write_locks = WLocks,
             read_locks = RLocks},
      [{monitor, process, Source}],
-     {ok, NewTid}} = ramnesia_machine:apply(none, {start_transaction, Source}, InitState),
+     {ok, NewTid}} = ramnesia_machine:apply(none, {start_transaction, Source}, [], InitState),
     true = Tid =/= NewTid,
     WLocks = #{writelock_1 => Tid1},
     RLocks = #{readlock_1 => [Tid1], readlock_2 => [Tid2]}.
@@ -796,9 +792,11 @@ lock_read_blocked_by_write_test() ->
         ramnesia_machine:apply(none, {start_transaction, Source1}, [], State),
     {State2, _, {ok, ok}} =
         ramnesia_machine:apply(none, {lock, Tid1, Source1, [{foo, bar}, write]}, [], State1),
-    %% State should not change
-    {State2, _, {error, locked}} =
-        ramnesia_machine:apply(none, {lock, Tid, Source, [{foo, bar}, read]}, [], State2).
+    {State3, _, {error, locked}} =
+        ramnesia_machine:apply(none, {lock, Tid, Source, [{foo, bar}, read]}, [], State2),
+    TLGraph = State3#state.transaction_locks,
+    [{Tid1, Tid}] = simple_dgraph:out_edges(TLGraph, Tid1),
+    [{Tid1, Tid}] = simple_dgraph:in_edges(TLGraph, Tid).
 
 lock_read_blocked_by_table_write_test() ->
     InitState = #state{},
@@ -810,9 +808,46 @@ lock_read_blocked_by_table_write_test() ->
         ramnesia_machine:apply(none, {start_transaction, Source1}, [], State),
     {State2, _, {ok, ok}} =
         ramnesia_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, [], State1),
-    %% State should not change
-    {State2, _, {error, locked}} =
-        ramnesia_machine:apply(none, {lock, Tid, Source, [{foo, bar}, read]}, [], State2).
+    {State3, _, {error, locked}} =
+        ramnesia_machine:apply(none, {lock, Tid, Source, [{foo, bar}, read]}, [], State2),
+    TLGraph = State3#state.transaction_locks,
+    [{Tid1, Tid}] = simple_dgraph:out_edges(TLGraph, Tid1),
+    [{Tid1, Tid}] = simple_dgraph:in_edges(TLGraph, Tid).
+
+lock_read_cleanup_when_blocked_test() ->
+    InitState = #state{},
+    Source = self(),
+    Source1 = spawn(fun() -> ok end),
+    {State, _, {ok, Tid}} =
+        ramnesia_machine:apply(none, {start_transaction, Source}, [], InitState),
+    {State1, _, {ok, Tid1}} =
+        ramnesia_machine:apply(none, {start_transaction, Source1}, [], State),
+    {State2, _, {ok, ok}} =
+        ramnesia_machine:apply(none, {lock, Tid, Source, [{foo, baz}, read]}, [], State1),
+    {State3, _, {ok, ok}} =
+        ramnesia_machine:apply(none, {lock, Tid, Source, [{foo, baq}, write]}, [], State2),
+    %% Locks aquired
+    #state{read_locks = RLocks, write_locks = WLocks} = State3,
+    ExpectedR = #{{foo, baz} => [Tid]},
+    ExpectedW = #{{foo, baq} => Tid},
+    ExpectedR = RLocks,
+    ExpectedW = WLocks,
+
+    {State4, _, {ok, ok}} =
+        ramnesia_machine:apply(none, {lock, Tid1, Source1, [{foo, bar}, write]}, [], State3),
+    {State5, _, {error, locked}} =
+        ramnesia_machine:apply(none, {lock, Tid, Source, [{foo, bar}, read]}, [], State4),
+    %% Read locks are empty
+    #state{read_locks = RLocks1,
+           write_locks = WLocks1,
+           transaction_locks = TLGraph} = State5,
+    ExpectedR1 = #{},
+    ExpectedW1 = #{{foo, bar} => Tid1},
+    ExpectedR1 = RLocks1,
+    ExpectedW1 = WLocks1,
+
+    [{Tid1, Tid}] = simple_dgraph:out_edges(TLGraph, Tid1),
+    [{Tid1, Tid}] = simple_dgraph:in_edges(TLGraph, Tid).
 
 lock_write_blocked_by_write_test() ->
     InitState = #state{},
@@ -824,9 +859,11 @@ lock_write_blocked_by_write_test() ->
         ramnesia_machine:apply(none, {start_transaction, Source1}, [], State),
     {State2, _, {ok, ok}} =
         ramnesia_machine:apply(none, {lock, Tid1, Source1, [{foo, bar}, write]}, [], State1),
-    %% State should not change
-    {State2, _, {error, locked}} =
-        ramnesia_machine:apply(none, {lock, Tid, Source, [{foo, bar}, write]}, [], State2).
+    {State3, _, {error, locked}} =
+        ramnesia_machine:apply(none, {lock, Tid, Source, [{foo, bar}, write]}, [], State2),
+    TLGraph = State3#state.transaction_locks,
+    [{Tid1, Tid}] = simple_dgraph:out_edges(TLGraph, Tid1),
+    [{Tid1, Tid}] = simple_dgraph:in_edges(TLGraph, Tid).
 
 lock_write_blocked_by_table_write_test() ->
     InitState = #state{},
@@ -838,9 +875,11 @@ lock_write_blocked_by_table_write_test() ->
         ramnesia_machine:apply(none, {start_transaction, Source1}, [], State),
     {State2, _, {ok, ok}} =
         ramnesia_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, [], State1),
-    %% State should not change
-    {State2, _, {error, locked}} =
-        ramnesia_machine:apply(none, {lock, Tid, Source, [{foo, bar}, write]}, [], State2).
+    {State3, _, {error, locked}} =
+        ramnesia_machine:apply(none, {lock, Tid, Source, [{foo, bar}, write]}, [], State2),
+    TLGraph = State3#state.transaction_locks,
+    [{Tid1, Tid}] = simple_dgraph:out_edges(TLGraph, Tid1),
+    [{Tid1, Tid}] = simple_dgraph:in_edges(TLGraph, Tid).
 
 lock_write_blocked_by_read_test() ->
     InitState = #state{},
@@ -852,9 +891,11 @@ lock_write_blocked_by_read_test() ->
         ramnesia_machine:apply(none, {start_transaction, Source1}, [], State),
     {State2, _, {ok, ok}} =
         ramnesia_machine:apply(none, {lock, Tid1, Source1, [{foo, bar}, read]}, [], State1),
-    %% State should not change
-    {State2, _, {error, locked}} =
-        ramnesia_machine:apply(none, {lock, Tid, Source, [{foo, bar}, write]}, [], State2).
+    {State3, _, {error, locked}} =
+        ramnesia_machine:apply(none, {lock, Tid, Source, [{foo, bar}, write]}, [], State2),
+    TLGraph = State3#state.transaction_locks,
+    [{Tid1, Tid}] = simple_dgraph:out_edges(TLGraph, Tid1),
+    [{Tid1, Tid}] = simple_dgraph:in_edges(TLGraph, Tid).
 
 lock_write_blocked_by_table_read_test() ->
     InitState = #state{},
@@ -866,9 +907,11 @@ lock_write_blocked_by_table_read_test() ->
         ramnesia_machine:apply(none, {start_transaction, Source1}, [], State),
     {State2, _, {ok, ok}} =
         ramnesia_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, read]}, [], State1),
-    %% State should not change
-    {State2, _, {error, locked}} =
-        ramnesia_machine:apply(none, {lock, Tid, Source, [{foo, bar}, write]}, [], State2).
+    {State3, _, {error, locked}} =
+        ramnesia_machine:apply(none, {lock, Tid, Source, [{foo, bar}, write]}, [], State2),
+    TLGraph = State3#state.transaction_locks,
+    [{Tid1, Tid}] = simple_dgraph:out_edges(TLGraph, Tid1),
+    [{Tid1, Tid}] = simple_dgraph:in_edges(TLGraph, Tid).
 
 % read:
 %     fail if no transaction
@@ -900,9 +943,11 @@ read_locked_by_write_test() ->
         ramnesia_machine:apply(none, {start_transaction, Source1}, [], State),
     {State2, _, {ok, ok}} =
         ramnesia_machine:apply(none, {lock, Tid1, Source1, [{foo, foo}, write]}, [], State1),
-    %% State should not change
-    {State2, _, {error, locked}} =
-        ramnesia_machine:apply(none, {read, Tid, Source, [foo, foo, read]}, [], State2).
+    {State3, _, {error, locked}} =
+        ramnesia_machine:apply(none, {read, Tid, Source, [foo, foo, read]}, [], State2),
+    TLGraph = State3#state.transaction_locks,
+    [{Tid1, Tid}] = simple_dgraph:out_edges(TLGraph, Tid1),
+    [{Tid1, Tid}] = simple_dgraph:in_edges(TLGraph, Tid).
 
 read_with_write_lock_locked_by_read_test() ->
     InitState = #state{},
@@ -914,9 +959,11 @@ read_with_write_lock_locked_by_read_test() ->
         ramnesia_machine:apply(none, {start_transaction, Source1}, [], State),
     {State2, _, {ok, ok}} =
         ramnesia_machine:apply(none, {lock, Tid1, Source1, [{foo, foo}, read]}, [], State1),
-    %% State should not change
-    {State2, _, {error, locked}} =
-        ramnesia_machine:apply(none, {read, Tid, Source, [foo, foo, write]}, [], State2).
+    {State3, _, {error, locked}} =
+        ramnesia_machine:apply(none, {read, Tid, Source, [foo, foo, write]}, [], State2),
+    TLGraph = State3#state.transaction_locks,
+    [{Tid1, Tid}] = simple_dgraph:out_edges(TLGraph, Tid1),
+    [{Tid1, Tid}] = simple_dgraph:in_edges(TLGraph, Tid).
 
 read_returns_and_aquires_lock_test() ->
     mnesia:start(),
@@ -927,7 +974,6 @@ read_returns_and_aquires_lock_test() ->
     Source = self(),
     {State, _, {ok, Tid}} =
         ramnesia_machine:apply(none, {start_transaction, Source}, [], InitState),
-    %% State should not change
     {#state{read_locks = RLocks}, _, {ok, [{foo, foo, val}]}} =
         ramnesia_machine:apply(none, {read, Tid, Source, [foo, foo, read]}, [], State),
     ExpectedR = #{{foo, foo} => [Tid]},
@@ -965,9 +1011,11 @@ index_read_locked_by_write_test() ->
         ramnesia_machine:apply(none, {start_transaction, Source1}, [], State),
     {State2, _, {ok, ok}} =
         ramnesia_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, [], State1),
-    %% State should not change
-    {State2, _, {error, locked}} =
-        ramnesia_machine:apply(none, {index_read, Tid, Source, [foo, foo, 1, read]}, [], State2).
+    {State3, _, {error, locked}} =
+        ramnesia_machine:apply(none, {index_read, Tid, Source, [foo, foo, 1, read]}, [], State2),
+    TLGraph = State3#state.transaction_locks,
+    [{Tid1, Tid}] = simple_dgraph:out_edges(TLGraph, Tid1),
+    [{Tid1, Tid}] = simple_dgraph:in_edges(TLGraph, Tid).
 
 index_read_returns_and_aquires_lock_test() ->
     mnesia:start(),
@@ -979,7 +1027,6 @@ index_read_returns_and_aquires_lock_test() ->
     Source = self(),
     {State, _, {ok, Tid}} =
         ramnesia_machine:apply(none, {start_transaction, Source}, [], InitState),
-    %% State should not change
     {#state{read_locks = RLocks}, _, {ok, [{foo, foo, val}]}} =
         ramnesia_machine:apply(none, {index_read, Tid, Source, [foo, val, 3, read]}, [], State),
     ExpectedR = #{{table, foo} => [Tid]},
@@ -1015,9 +1062,11 @@ match_object_locked_by_write_test() ->
         ramnesia_machine:apply(none, {start_transaction, Source1}, [], State),
     {State2, _, {ok, ok}} =
         ramnesia_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, [], State1),
-    %% State should not change
-    {State2, _, {error, locked}} =
-        ramnesia_machine:apply(none, {match_object, Tid, Source, [foo, Pattern, read]}, [], State2).
+    {State3, _, {error, locked}} =
+        ramnesia_machine:apply(none, {match_object, Tid, Source, [foo, Pattern, read]}, [], State2),
+    TLGraph = State3#state.transaction_locks,
+    [{Tid1, Tid}] = simple_dgraph:out_edges(TLGraph, Tid1),
+    [{Tid1, Tid}] = simple_dgraph:in_edges(TLGraph, Tid).
 
 match_object_returns_and_aquires_lock_test() ->
     Pattern = {foo, '_', val},
@@ -1029,7 +1078,6 @@ match_object_returns_and_aquires_lock_test() ->
     Source = self(),
     {State, _, {ok, Tid}} =
         ramnesia_machine:apply(none, {start_transaction, Source}, [], InitState),
-    %% State should not change
     {#state{read_locks = RLocks}, _, {ok, [{foo, foo, val}]}} =
         ramnesia_machine:apply(none, {match_object, Tid, Source, [foo, Pattern, read]}, [], State),
     ExpectedR = #{{table, foo} => [Tid]},
@@ -1065,9 +1113,11 @@ index_match_object_locked_by_write_test() ->
         ramnesia_machine:apply(none, {start_transaction, Source1}, [], State),
     {State2, _, {ok, ok}} =
         ramnesia_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, [], State1),
-    %% State should not change
-    {State2, _, {error, locked}} =
-        ramnesia_machine:apply(none, {index_match_object, Tid, Source, [foo, Pattern, 3, read]}, [], State2).
+    {State3, _, {error, locked}} =
+        ramnesia_machine:apply(none, {index_match_object, Tid, Source, [foo, Pattern, 3, read]}, [], State2),
+    TLGraph = State3#state.transaction_locks,
+    [{Tid1, Tid}] = simple_dgraph:out_edges(TLGraph, Tid1),
+    [{Tid1, Tid}] = simple_dgraph:in_edges(TLGraph, Tid).
 
 index_match_object_returns_and_aquires_lock_test() ->
     Pattern = {foo, '_', val},
@@ -1080,7 +1130,6 @@ index_match_object_returns_and_aquires_lock_test() ->
     Source = self(),
     {State, _, {ok, Tid}} =
         ramnesia_machine:apply(none, {start_transaction, Source}, [], InitState),
-    %% State should not change
     {#state{read_locks = RLocks}, _, {ok, [{foo, foo, val}]}} =
         ramnesia_machine:apply(none, {index_match_object, Tid, Source, [foo, Pattern, 3, read]}, [], State),
     ExpectedR = #{{table, foo} => [Tid]},
@@ -1113,9 +1162,11 @@ all_keys_locked_by_write_test() ->
         ramnesia_machine:apply(none, {start_transaction, Source1}, [], State),
     {State2, _, {ok, ok}} =
         ramnesia_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, [], State1),
-    %% State should not change
-    {State2, _, {error, locked}} =
-        ramnesia_machine:apply(none, {all_keys, Tid, Source, [foo, read]}, [], State2).
+    {State3, _, {error, locked}} =
+        ramnesia_machine:apply(none, {all_keys, Tid, Source, [foo, read]}, [], State2),
+    TLGraph = State3#state.transaction_locks,
+    [{Tid1, Tid}] = simple_dgraph:out_edges(TLGraph, Tid1),
+    [{Tid1, Tid}] = simple_dgraph:in_edges(TLGraph, Tid).
 
 all_keys_returns_and_aquires_lock_test() ->
     mnesia:start(),
@@ -1128,7 +1179,6 @@ all_keys_returns_and_aquires_lock_test() ->
     Source = self(),
     {State, _, {ok, Tid}} =
         ramnesia_machine:apply(none, {start_transaction, Source}, [], InitState),
-    %% State should not change
     {#state{read_locks = RLocks}, _, {ok, Keys}} =
         ramnesia_machine:apply(none, {all_keys, Tid, Source, [foo, read]}, [], State),
     ExpectedR = #{{table, foo} => [Tid]},
@@ -1168,9 +1218,11 @@ first_locked_by_write_test() ->
         ramnesia_machine:apply(none, {start_transaction, Source1}, [], State),
     {State2, _, {ok, ok}} =
         ramnesia_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, [], State1),
-    %% State should not change
-    {State2, _, {error, locked}} =
-        ramnesia_machine:apply(none, {first, Tid, Source, [foo]}, [], State2).
+    {State3, _, {error, locked}} =
+        ramnesia_machine:apply(none, {first, Tid, Source, [foo]}, [], State2),
+    TLGraph = State3#state.transaction_locks,
+    [{Tid1, Tid}] = simple_dgraph:out_edges(TLGraph, Tid1),
+    [{Tid1, Tid}] = simple_dgraph:in_edges(TLGraph, Tid).
 
 first_returns_and_aquires_lock_test() ->
     mnesia:start(),
@@ -1181,7 +1233,6 @@ first_returns_and_aquires_lock_test() ->
     Source = self(),
     {State, _, {ok, Tid}} =
         ramnesia_machine:apply(none, {start_transaction, Source}, [], InitState),
-    %% State should not change
     {#state{read_locks = RLocks}, _, {ok, bar}} =
         ramnesia_machine:apply(none, {first, Tid, Source, [foo]}, [], State),
     ExpectedR = #{{table, foo} => [Tid]},
@@ -1214,9 +1265,11 @@ last_locked_by_write_test() ->
         ramnesia_machine:apply(none, {start_transaction, Source1}, [], State),
     {State2, _, {ok, ok}} =
         ramnesia_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, [], State1),
-    %% State should not change
-    {State2, _, {error, locked}} =
-        ramnesia_machine:apply(none, {last, Tid, Source, [foo]}, [], State2).
+    {State3, _, {error, locked}} =
+        ramnesia_machine:apply(none, {last, Tid, Source, [foo]}, [], State2),
+    TLGraph = State3#state.transaction_locks,
+    [{Tid1, Tid}] = simple_dgraph:out_edges(TLGraph, Tid1),
+    [{Tid1, Tid}] = simple_dgraph:in_edges(TLGraph, Tid).
 
 last_returns_and_aquires_lock_test() ->
     mnesia:start(),
@@ -1227,7 +1280,6 @@ last_returns_and_aquires_lock_test() ->
     Source = self(),
     {State, _, {ok, Tid}} =
         ramnesia_machine:apply(none, {start_transaction, Source}, [], InitState),
-    %% State should not change
     {#state{read_locks = RLocks}, _, {ok, bar}} =
         ramnesia_machine:apply(none, {last, Tid, Source, [foo]}, [], State),
     ExpectedR = #{{table, foo} => [Tid]},
@@ -1260,9 +1312,11 @@ prev_locked_by_write_test() ->
         ramnesia_machine:apply(none, {start_transaction, Source1}, [], State),
     {State2, _, {ok, ok}} =
         ramnesia_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, [], State1),
-    %% State should not change
-    {State2, _, {error, locked}} =
-        ramnesia_machine:apply(none, {prev, Tid, Source, [foo, bar]}, [], State2).
+    {State3, _, {error, locked}} =
+        ramnesia_machine:apply(none, {prev, Tid, Source, [foo, bar]}, [], State2),
+    TLGraph = State3#state.transaction_locks,
+    [{Tid1, Tid}] = simple_dgraph:out_edges(TLGraph, Tid1),
+    [{Tid1, Tid}] = simple_dgraph:in_edges(TLGraph, Tid).
 
 prev_returns_and_aquires_lock_test() ->
     mnesia:start(),
@@ -1274,7 +1328,6 @@ prev_returns_and_aquires_lock_test() ->
     Source = self(),
     {State, _, {ok, Tid}} =
         ramnesia_machine:apply(none, {start_transaction, Source}, [], InitState),
-    %% State should not change
     {#state{read_locks = RLocks}, _, {ok, baz}} =
         ramnesia_machine:apply(none, {prev, Tid, Source, [foo, bar]}, [], State),
     ExpectedR = #{{table, foo} => [Tid]},
@@ -1307,9 +1360,11 @@ next_locked_by_write_test() ->
         ramnesia_machine:apply(none, {start_transaction, Source1}, [], State),
     {State2, _, {ok, ok}} =
         ramnesia_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, [], State1),
-    %% State should not change
-    {State2, _, {error, locked}} =
-        ramnesia_machine:apply(none, {next, Tid, Source, [foo, bar]}, [], State2).
+    {State3, _, {error, locked}} =
+        ramnesia_machine:apply(none, {next, Tid, Source, [foo, bar]}, [], State2),
+    TLGraph = State3#state.transaction_locks,
+    [{Tid1, Tid}] = simple_dgraph:out_edges(TLGraph, Tid1),
+    [{Tid1, Tid}] = simple_dgraph:in_edges(TLGraph, Tid).
 
 next_returns_and_aquires_lock_test() ->
     mnesia:start(),
@@ -1321,7 +1376,6 @@ next_returns_and_aquires_lock_test() ->
     Source = self(),
     {State, _, {ok, Tid}} =
         ramnesia_machine:apply(none, {start_transaction, Source}, [], InitState),
-    %% State should not change
     {#state{read_locks = RLocks}, _, {ok, baz}} =
         ramnesia_machine:apply(none, {next, Tid, Source, [foo, bar]}, [], State),
     ExpectedR = #{{table, foo} => [Tid]},

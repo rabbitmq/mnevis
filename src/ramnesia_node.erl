@@ -14,7 +14,6 @@ start() ->
                uid => Uid,
                cluster_id => Name,
                initial_nodes => [NodeId],
-               log_module => ra_log_file,
                log_init_args => #{uid => Uid},
                machine => {module, ramnesia_machine, #{}}},
     ok = ra:start_node(Config),

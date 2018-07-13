@@ -10,6 +10,8 @@
 
 -export([is_transaction/0]).
 
+-compile(nowarn_deprecated_function).
+
 % -behaviour(mnesia_access).
 
 %% mnesia_access behaviour
@@ -42,7 +44,7 @@
 -export([record_key/1]).
 
 start() ->
-    application:load(ra),
+    _ = application:load(ra),
     application:set_env(ra, data_dir, "/tmp/ramnesia"),
     application:ensure_all_started(ramnesia).
 
@@ -59,6 +61,17 @@ transaction(Fun) ->
 transaction(Fun, Args, Retries) ->
     transaction(Fun, Args, Retries, none).
 
+transaction(Fun, Args, Retries, Err) ->
+    case is_transaction() of
+        true ->
+            {atomic, mnesia:activity(ets, Fun, Args, ramnesia)};
+        false ->
+            transaction0(Fun, Args, Retries, Err)
+    end.
+
+%% Transaction implementation.
+%% Can be called in recusively for retries
+%% Handles aborted errors
 transaction0(_Fun, _Args, 0, Err) ->
     ok = maybe_rollback_transaction(),
     clean_transaction_context(),
@@ -73,24 +86,22 @@ transaction0(Fun, Args, Retries, _Err) ->
         commit_transaction(Res)
     catch
         exit:{aborted, locked_instant} ->
-            retry_transaction(Fun, Args, Retries, locked);
+            retry_locked_transaction(Fun, Args, Retries);
         exit:{aborted, locked} ->
             %% Thansaction is still there, but it's locks were cleared.
-            %% Wait for unlocked message meaning that locking trnsactions finished
+            %% Wait for unlocked message meaning that locking transactions finished
 
             %% TODO make this notification smarter to not send to dead processes.
             Context = get_transaction_context(),
             Tid = ramnesia_context:transaction_id(Context),
 
             receive {ra_event, _From, {machine, {ramnesia_unlock, Tid}}} ->
-                retry_transaction(Fun, Args, Retries, locked);
-                {ramnesia_unlock, OtherTid} ->
+                retry_locked_transaction(Fun, Args, Retries);
+                {ramnesia_unlock, _OtherTid} ->
                     error(other_tid)
             after 5000 ->
-                retry_transaction(Fun, Args, Retries, locked)
+                retry_locked_transaction(Fun, Args, Retries)
             end;
-
-            % retry_transaction(Fun, Args, Retries, locked);
         exit:{aborted, Reason} ->
             ok = maybe_rollback_transaction(),
             {aborted, Reason};
@@ -101,36 +112,17 @@ transaction0(Fun, Args, Retries, _Err) ->
         clean_transaction_context()
     end.
 
-transaction(Fun, Args, Retries, Err) ->
-    case is_transaction() of
-        true ->
-            {atomic, mnesia:activity(ets, Fun, Args, ramnesia)};
-        false ->
-            transaction0(Fun, Args, Retries, Err)
-    end.
-
-retry_transaction(Fun, Args, Retries, Reason) ->
+retry_locked_transaction(Fun, Args, Retries) ->
     NextRetries = case Retries of
         infinity -> infinity;
         R when is_integer(R) -> R - 1
     end,
-    case Reason of
-        locked ->
-
-            %% Reset transaction context
-            Context = get_transaction_context(),
-            Tid = ramnesia_context:transaction_id(Context),
-            Context1 = ramnesia_context:init(Tid),
-            update_transaction_context(ramnesia_context:set_retry(Context1)),
-            transaction0(Fun, Args, NextRetries, Reason);
-        _ ->
-            Context = get_transaction_context(),
-            Tid = ramnesia_context:transaction_id(Context),
-            ok = maybe_rollback_transaction(),
-            clean_transaction_context(),
-
-            transaction0(Fun, Args, NextRetries, Reason)
-    end.
+    %% Reset transaction context
+    Context = get_transaction_context(),
+    Tid = ramnesia_context:transaction_id(Context),
+    Context1 = ramnesia_context:init(Tid),
+    update_transaction_context(ramnesia_context:set_retry(Context1)),
+    transaction0(Fun, Args, NextRetries, locked).
 
 is_retry() ->
     case get_transaction_context() of
