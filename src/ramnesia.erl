@@ -1,6 +1,6 @@
 -module(ramnesia).
 
--export([start/0]).
+-export([start/1]).
 -export([start/2]).
 -export([stop/1]).
 
@@ -43,9 +43,9 @@
 
 -export([record_key/1]).
 
-start() ->
+start(DataDir) ->
     _ = application:load(ra),
-    application:set_env(ra, data_dir, "/tmp/ramnesia"),
+    application:set_env(ra, data_dir, DataDir),
     application:ensure_all_started(ramnesia).
 
 start(_Type, _Args) ->

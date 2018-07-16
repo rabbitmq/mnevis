@@ -11,7 +11,8 @@ all() ->
     ].
 
 init_per_suite(Config) ->
-    ramnesia:start(),
+    PrivDir = ?config(priv_dir, Config),
+    ramnesia:start(PrivDir),
     Config.
 
 end_per_suite(Config) -> Config.

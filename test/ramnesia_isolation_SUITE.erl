@@ -2,6 +2,8 @@
 
 -compile(export_all).
 
+-include_lib("common_test/include/ct.hrl").
+
 all() -> [{group, tests}].
 
 groups() ->
@@ -16,7 +18,8 @@ groups() ->
         ]}].
 
 init_per_suite(Config) ->
-    ramnesia:start(),
+    PrivDir = ?config(priv_dir, Config),
+    ramnesia:start(PrivDir),
     Config.
 
 end_per_suite(Config) ->
