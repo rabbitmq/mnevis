@@ -21,6 +21,7 @@
 
 -record(state, {last_transaction_id = 0,
                 transactions = #{},
+                committed_transactions = #{},
                 read_locks = #{},
                 write_locks = #{},
                 transaction_locks = simple_dgraph:new()}).
@@ -62,10 +63,16 @@ apply(_RaftIdx, {rollback, Tid, Source, []}, Effects0, State) ->
 
 apply(_RaftIdx, {commit, Tid, Source, [Writes, Deletes, DeletesObject]}, Effects0, State) ->
     with_pre_effects(Effects0,
-        with_transaction(Tid, Source, State,
+        maybe_skip_committed(Tid, Source, State,
             fun() ->
-                commit(Tid, Source, Writes, Deletes, DeletesObject, State)
+                with_transaction(Tid, Source, State,
+                    fun() ->
+                        commit(Tid, Source, Writes, Deletes, DeletesObject, State)
+                    end)
             end));
+
+apply(_Meta, {finish, Tid, Source}, Effects0, State) ->
+    with_pre_effects(Effects0, cleanup_commmitted(Tid, Source, State));
 
 apply(_RaftIdx, {lock, Tid, Source, [LockItem, LockKind]}, Effects0, State) ->
     with_pre_effects(Effects0,
@@ -390,7 +397,7 @@ read_locking_transactions(LockItem, Tid, #state{read_locks = RLocks}) ->
 
 -spec commit(transaction_id(), pid(), [change()], [change()], [change()], state()) ->
         {state(), ra_machine:effects(), reply(ok)}.
-commit(Tid, Source, Writes, Deletes, DeletesObject, State) ->
+commit(Tid, Source, Writes, Deletes, DeletesObject, State0) ->
     case mnesia:transaction(fun() ->
             _ = apply_deletes(Deletes),
             _ = apply_writes(Writes),
@@ -398,9 +405,39 @@ commit(Tid, Source, Writes, Deletes, DeletesObject, State) ->
             ok
         end) of
         {atomic, ok} ->
-            cleanup(Tid, Source, State);
+            State1 = cleanup_locks(Tid, State0),
+            {Effects, State2} = notify_waiting_transactions_effects(Tid, State1),
+            State3 = mark_committed(Tid, Source, State2),
+            {State3, Effects, {ok, ok}};
         {aborted, Reason} ->
-            {State, [], {error, {aborted, Reason}}}
+            {State0, [], {error, {aborted, Reason}}}
+    end.
+
+mark_committed(Tid, Source, State) ->
+    #state{ committed_transactions = Committed } = State,
+    State#state{committed_transactions = maps:put(Tid, Source, Committed)}.
+
+maybe_skip_committed(Tid, Source, State, Fun) ->
+    #state{ committed_transactions = Committed } = State,
+    case maps:get(Tid, Committed, not_found) of
+        not_found ->
+            Fun();
+        Source ->
+            {State, [], {ok, ok}};
+        OtherSource ->
+            {State, [], {error, {wrong_transaction_source, OtherSource}}}
+    end.
+
+cleanup_commmitted(Tid, Source, State) ->
+    #state{ committed_transactions = Committed } = State,
+    case maps:get(Tid, Committed, not_found) of
+        not_found ->
+            {State, [], {error, transaction_not_committed}};
+        Source ->
+            %% TODO: simpler cleanup since there should be no locks
+            cleanup(Tid, Source, State);
+        OtherSource ->
+            {State, [], {error, {wrong_transaction_source, OtherSource}}}
     end.
 
 -spec apply_deletes([change()]) -> [ok].
@@ -420,12 +457,22 @@ apply_writes(Writes) ->
 
 -spec cleanup(transaction_id(), pid(), state()) -> {state(), ra_machine:effects(), reply(ok)}.
 cleanup(Tid, Source, State0) ->
-    State = cleanup_locks(Tid, State0),
+    State1 = cleanup_locks(Tid, State0),
+    {UnlockedEffects, State2} = notify_waiting_transactions_effects(Tid, State1),
 
-    #state{ transactions = Transactions,
-            transaction_locks = TLGraph0 } = State,
     %% Remove source from transactions.
+    #state{ transactions = Transactions,
+            committed_transactions = Committed } = State2,
     Transactions1 = maps:remove(Source, Transactions),
+    Committed1 = maps:remove(Tid, Committed),
+    State3 = State2#state{transactions = Transactions1,
+                          committed_transactions = Committed1},
+
+    {State3, UnlockedEffects ++ [{demonitor, process, Source}], {ok, ok}}.
+
+%% TODO make this notification smarter to not send to dead processes.
+notify_waiting_transactions_effects(Tid, State) ->
+    #state{transaction_locks = TLGraph0} = State,
 
     LockedTids = simple_dgraph:out_neighbours(TLGraph0, Tid),
 
@@ -443,11 +490,7 @@ cleanup(Tid, Source, State0) ->
         end
     end,
     LockedTids),
-
-    {State#state{transactions = Transactions1,
-                 transaction_locks = TLGraph1},
-     UnlockedEffects ++ [{demonitor, process, Source}],
-     {ok, ok}}.
+    {UnlockedEffects, State#state{ transaction_locks = TLGraph1 }}.
 
 cleanup_locks(Tid, State) ->
     #state{ read_locks = RLocks,
@@ -460,12 +503,12 @@ cleanup_locks(Tid, State) ->
     State#state{read_locks = RLocks1, write_locks = WLocks1}.
 
 -spec with_transaction(transaction_id(), pid(), state(), fun(() -> {state(), ra_machine:effects(), reply()})) -> {state(), ra_machine:effects(), reply() | {error, {wrong_transaction_id, transaction_id()} | {error, no_transaction_for_pid}}}.
-with_transaction(Tid, Source, State = #state{transactions = Transactions}, Fun) ->
+with_transaction(Tid, Source, State, Fun) ->
     %% TODO: maybe check if transaction ID exists for other source.
-    case maps:get(Source, Transactions, not_found) of
-        not_found    -> {State, [], {error, no_transaction_for_pid}};
-        Tid          -> Fun();
-        DifferentTid -> {State, [], {error, {wrong_transaction_id, DifferentTid}}}
+    case transaction_for_source(Source, State) of
+        {error, no_transaction} -> {State, [], {error, no_transaction_for_pid}};
+        {ok, Tid}               -> Fun();
+        {ok, DifferentTid}      -> {State, [], {error, {wrong_transaction_id, DifferentTid}}}
     end.
 
 -spec transaction_for_source(pid(), state()) -> {ok, transaction_id()} | {error, no_transaction}.
@@ -647,10 +690,16 @@ commit_cleanup_test() ->
     InitState = #state{},
     {State = #state{last_transaction_id = LastTid}, [{monitor, process, Source}], {ok, Tid}} =
         ramnesia_machine:apply(none, {start_transaction, Source}, [], InitState),
-    {State1, [{demonitor, process, Source}], _} =
+    {State1, [], _} =
         ramnesia_machine:apply(none, {commit, Tid, Source, [[], [], []]}, [], State),
-    Expected = #state{last_transaction_id = LastTid},
-    Expected = State1.
+    Expected = #state{last_transaction_id = LastTid,
+                      transactions = #{Source => Tid},
+                      committed_transactions = #{Tid => Source}},
+    Expected = State1,
+    {State2, [{demonitor, process, Source}], _} =
+        ramnesia_machine:apply(none, {finish, Tid, Source}, [], State1),
+    Expected1 = #state{last_transaction_id = LastTid},
+    Expected1 = State2.
 
 commit_cleanup_locks_test() ->
     mnesia:start(),
@@ -671,17 +720,21 @@ commit_cleanup_locks_test() ->
                                       readlock_1 => [Tid, Tid1],
                                       readlock_2 => [Tid2]}},
     {State1, [{demonitor, process, Source}], _} =
-        ramnesia_machine:apply(none, {commit, Tid, Source, [[], [], []]}, [], InitState),
+        ramnesia_machine:apply(none, {finish, Tid, Source}, [],
+            element(1, ramnesia_machine:apply(none, {commit, Tid, Source, [[], [], []]}, [], InitState))),
+
     Expected = #state{last_transaction_id = LastTid,
                       transactions = #{Source1 => Tid1, Source2 => Tid2},
                       write_locks = #{writelock_1 => Tid1},
                       read_locks = #{readlock_1 => [Tid1], readlock_2 => [Tid2]}},
     Expected = State1,
-    {State2, [{demonitor, process, Source1}], _} =
+    {State2, _, _} =
         ramnesia_machine:apply(none, {commit, Tid1, Source1, [[], [], []]}, [], State1),
-    {State3, [{demonitor, process, Source2}], _} =
+    {State3, _, _} =
         ramnesia_machine:apply(none, {commit, Tid2, Source2, [[], [], []]}, [], State2),
-    State3 = #state{last_transaction_id = LastTid}.
+    State3 = #state{last_transaction_id = LastTid,
+                    transactions = #{Source1 => Tid1, Source2 => Tid2},
+                    committed_transactions = #{Tid1 => Source1, Tid2 => Source2}}.
 
 commit_write_test() ->
     mnesia:start(),
@@ -796,7 +849,16 @@ lock_read_blocked_by_write_test() ->
         ramnesia_machine:apply(none, {lock, Tid, Source, [{foo, bar}, read]}, [], State2),
     TLGraph = State3#state.transaction_locks,
     [{Tid1, Tid}] = simple_dgraph:out_edges(TLGraph, Tid1),
-    [{Tid1, Tid}] = simple_dgraph:in_edges(TLGraph, Tid).
+    [{Tid1, Tid}] = simple_dgraph:in_edges(TLGraph, Tid),
+
+    %% Locking transaction finish unlocks the locked
+    {State4, [{send_msg, Source, {ramnesia_unlock, Tid}},
+              {demonitor, process, Source1}], {ok, ok}} =
+        ramnesia_machine:apply(none, {rollback, Tid1, Source1, []}, [], State3),
+    TLGraph1 = State4#state.transaction_locks,
+    error = simple_dgraph:vertex_label(TLGraph1, Tid1),
+    [] = simple_dgraph:in_edges(TLGraph1, Tid).
+
 
 lock_read_blocked_by_table_write_test() ->
     InitState = #state{},

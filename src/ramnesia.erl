@@ -90,8 +90,6 @@ transaction0(Fun, Args, Retries, _Err) ->
         exit:{aborted, locked} ->
             %% Thansaction is still there, but it's locks were cleared.
             %% Wait for unlocked message meaning that locking transactions finished
-
-            %% TODO make this notification smarter to not send to dead processes.
             Context = get_transaction_context(),
             Tid = ramnesia_context:transaction_id(Context),
 
@@ -142,8 +140,29 @@ commit_transaction(Res) ->
     Writes = ramnesia_context:writes(Context),
     Deletes = ramnesia_context:deletes(Context),
     DeletesObject = ramnesia_context:deletes_object(Context),
-    ok = execute_command(Context, commit, [Writes, Deletes, DeletesObject]),
+
+
+    Context = get_transaction_context(),
+    Tid = ramnesia_context:transaction_id(Context),
+    RaCommand = {commit, Tid, self(), [Writes, Deletes, DeletesObject]},
+    NodeId = ramnesia_node:node_id(),
+    L = case ra:send_and_await_consensus(NodeId, RaCommand) of
+        {ok, {ok, ok}, Leader}   -> Leader;
+        {ok, {error, Reason}, _} -> mnesia:abort(Reason);
+        {error, Reason}          -> retry_ra_command(NodeId, RaCommand);
+        {timeout, _}             -> retry_ra_command(NodeId, RaCommand)
+    end,
+    %% Notify the machine to cleanup the commited transaction record
+    ra:cast(L, {finish, Tid, self()}),
     {atomic, Res}.
+
+retry_ra_command(NodeId, RaCommand) ->
+    case ra:send_and_await_consensus(NodeId, RaCommand) of
+        {ok, {ok, ok}, Leader}   -> Leader;
+        {ok, {error, Reason}, _} -> mnesia:abort(Reason);
+        {error, Reason}          -> mnesia:abort(Reason);
+        {timeout, _}             -> retry_ra_command(NodeId, RaCommand)
+    end.
 
 maybe_rollback_transaction() ->
     case is_transaction() of
@@ -153,6 +172,7 @@ maybe_rollback_transaction() ->
             ok
     end.
 
+%% TODO: retry the rollback
 rollback_transaction() ->
     ok = execute_command(get_transaction_context(), rollback, []).
 
