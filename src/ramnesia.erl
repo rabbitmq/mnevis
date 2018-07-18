@@ -83,7 +83,8 @@ transaction0(Fun, Args, Retries, _Err) ->
             false -> start_transaction()
         end,
         Res = mnesia:activity(ets, Fun, Args, ramnesia),
-        commit_transaction(Res)
+        ok = commit_transaction(),
+        {atomic, Res}
     catch
         exit:{aborted, locked_instant} ->
             retry_locked_transaction(Fun, Args, Retries);
@@ -135,7 +136,7 @@ is_transaction() ->
         _ -> true
     end.
 
-commit_transaction(Res) ->
+commit_transaction() ->
     Context = get_transaction_context(),
     Writes = ramnesia_context:writes(Context),
     Deletes = ramnesia_context:deletes(Context),
@@ -144,17 +145,28 @@ commit_transaction(Res) ->
 
     Context = get_transaction_context(),
     Tid = ramnesia_context:transaction_id(Context),
-    RaCommand = {commit, Tid, self(), [Writes, Deletes, DeletesObject]},
-    NodeId = ramnesia_node:node_id(),
-    L = case ra:send_and_await_consensus(NodeId, RaCommand) of
-        {ok, {ok, ok}, Leader}   -> Leader;
-        {ok, {error, Reason}, _} -> mnesia:abort(Reason);
-        {error, Reason}          -> retry_ra_command(NodeId, RaCommand);
-        {timeout, _}             -> retry_ra_command(NodeId, RaCommand)
-    end,
+    {ok, Leader} = execute_command_with_retry(Context, commit,
+                                              [Writes, Deletes, DeletesObject]),
     %% Notify the machine to cleanup the commited transaction record
-    ra:cast(L, {finish, Tid, self()}),
-    {atomic, Res}.
+    ra:cast(Leader, {finish, Tid, self()}),
+    ok.
+
+maybe_rollback_transaction() ->
+    case is_transaction() of
+        true  -> rollback_transaction();
+        false -> ok
+    end.
+
+rollback_transaction() ->
+    {ok, _} = execute_command_with_retry(get_transaction_context(), rollback, []),
+    ok.
+
+execute_command_with_retry(Context, Command, Args) ->
+    Tid = ramnesia_context:transaction_id(Context),
+    RaCommand = {Command, Tid, self(), Args},
+    NodeId = ramnesia_node:node_id(),
+    Leader = retry_ra_command(NodeId, RaCommand),
+    {ok, Leader}.
 
 retry_ra_command(NodeId, RaCommand) ->
     case ra:send_and_await_consensus(NodeId, RaCommand) of
@@ -163,18 +175,6 @@ retry_ra_command(NodeId, RaCommand) ->
         {error, Reason}          -> mnesia:abort(Reason);
         {timeout, _}             -> retry_ra_command(NodeId, RaCommand)
     end.
-
-maybe_rollback_transaction() ->
-    case is_transaction() of
-        true ->
-            rollback_transaction();
-        false ->
-            ok
-    end.
-
-%% TODO: retry the rollback
-rollback_transaction() ->
-    ok = execute_command(get_transaction_context(), rollback, []).
 
 start_transaction() ->
     Tid = run_ra_command({start_transaction, self()}),
