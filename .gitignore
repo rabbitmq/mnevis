@@ -1,0 +1,6 @@
+.erlang.mk/
+deps/
+ebin/
+ramnesia.d
+test/*.beam
+_rel/
