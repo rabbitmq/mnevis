@@ -4,7 +4,8 @@
 -include_lib("proper/include/proper.hrl").
 -include_lib("common_test/include/ct.hrl").
 
-
+%% TODO: check transaction state cleanup and machine state cleanup
+%% TOFO: test failure scenarios
 all() ->
     [
     mnesia_transaction_yield_same_result_as_ramnesia
