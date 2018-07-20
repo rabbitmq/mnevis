@@ -7,6 +7,8 @@
 -behaviour(application).
 
 %% TODO: support table manipulation.
+-export([create_table/2, delete_table/1]).
+
 -export([transaction/3, transaction/1]).
 -export([is_transaction/0]).
 
@@ -42,6 +44,14 @@
 -type key() :: term().
 
 -export([record_key/1]).
+
+create_table(Tab, Opts) ->
+    %% TODO: handle errors/retry
+    run_ra_command({create_table, Tab, Opts}).
+
+delete_table(Tab) ->
+    %% TODO: handle errors/retry
+    run_ra_command({delete_table, Tab}).
 
 start(DataDir) ->
     _ = application:load(ra),

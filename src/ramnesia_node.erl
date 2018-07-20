@@ -4,7 +4,10 @@
 -export([make_initial_nodes/1]).
 
 node_id() ->
-    {ramnesia_node, node()}.
+    node_id(node()).
+
+node_id(Node) ->
+    {ramnesia_node, Node}.
 
 start() ->
     Name = ramnesia_node,
@@ -13,8 +16,8 @@ start() ->
         undefined   -> [NodeId];
         {ok, Nodes} -> make_initial_nodes(Nodes)
     end,
-    lists:foreach(fun(N) ->
-        io:format("PING ~n"),
+    lists:foreach(fun({_, N}) ->
+        io:format("PING ~p~n", [N]),
         net_adm:ping(N)
     end,
     InitialNodes),
@@ -29,8 +32,8 @@ make_initial_nodes(Nodes) ->
 make_initial_node(Node) ->
     NodeBin = atom_to_binary(Node, utf8),
     case string:split(NodeBin, "@", trailing) of
-        [_N, _H] -> Node;
+        [_N, _H] -> node_id(Node);
         [N] ->
             H = inet_db:gethostname(),
-            binary_to_atom(iolist_to_binary([N, "@", H]), utf8)
+            node_id(binary_to_atom(iolist_to_binary([N, "@", H]), utf8))
     end.

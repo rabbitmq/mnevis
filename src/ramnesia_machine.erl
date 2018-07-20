@@ -248,6 +248,12 @@ apply(_RaftIdx, {next, Tid, Source, [Tab, Key]}, Effects0, State) ->
                     Other -> Other
                 end
             end));
+%% TODO: return type
+apply(_RaftIdx, {create_table, Tab, Opts}, Effects0, State) ->
+    {State, Effects0, {ok, mnesia:create_table(Tab, Opts)}};
+
+apply(_RaftIdx, {delete_table, Tab}, Effects0, State) ->
+    {State, Effects0, {ok, mnesia:delete_table(Tab)}};
 
 apply(_RaftIdx, {down, Source, _Reason}, Effects0, State) ->
     case transaction_for_source(Source, State) of
