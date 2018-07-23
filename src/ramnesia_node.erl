@@ -1,6 +1,6 @@
 -module(ramnesia_node).
 
--export([start/0, node_id/0]).
+-export([start/0, node_id/0, trigger_election/0]).
 -export([make_initial_nodes/1]).
 
 node_id() ->
@@ -14,6 +14,7 @@ start() ->
     NodeId = node_id(),
     InitialNodes = case application:get_env(ramnesia, initial_nodes) of
         undefined   -> [NodeId];
+        {ok, []}    -> [NodeId];
         {ok, Nodes} -> make_initial_nodes(Nodes)
     end,
     lists:foreach(fun({_, N}) ->
@@ -25,6 +26,9 @@ start() ->
     % ,
     % ok = ra:trigger_election(NodeId)
     .
+
+trigger_election() ->
+    ok = ra:trigger_election(node_id()).
 
 make_initial_nodes(Nodes) ->
     [make_initial_node(Node) || Node <- Nodes].
