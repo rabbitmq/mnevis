@@ -23,6 +23,8 @@
 
 % Keeps track of deletes and writes.
 
+%% TODO: update the behaviour to match implementation
+
 % Delete:
 %     Should delete all writes with the same key
 %     Clean write_set

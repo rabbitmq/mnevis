@@ -14,6 +14,7 @@ all() ->
 init_per_suite(Config) ->
     PrivDir = ?config(priv_dir, Config),
     ramnesia:start(PrivDir),
+    ramnesia_node:trigger_election(),
     Config.
 
 end_per_suite(Config) -> Config.

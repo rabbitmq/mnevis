@@ -22,10 +22,7 @@ start() ->
         net_adm:ping(N)
     end,
     InitialNodes),
-    ok = ra:start_node(Name, NodeId, {module, ramnesia_machine, #{}}, InitialNodes)
-    % ,
-    % ok = ra:trigger_election(NodeId)
-    .
+    ok = ra:start_node(Name, NodeId, {module, ramnesia_machine, #{}}, InitialNodes).
 
 trigger_election() ->
     ok = ra:trigger_election(node_id()).

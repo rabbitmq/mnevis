@@ -103,7 +103,8 @@ transaction0(Fun, Args, Retries, _Err) ->
             %% Wait for unlocked message meaning that locking transactions finished
             Context = get_transaction_context(),
             Tid = ramnesia_context:transaction_id(Context),
-
+            %% TODO: there may be more unblock messages in the mailbox.
+            %% Clenup may be required if resuming after timeout
             receive {ra_event, _From, {machine, {ramnesia_unlock, Tid}}} ->
                 retry_locked_transaction(Fun, Args, Retries);
                 {ramnesia_unlock, _OtherTid} ->
@@ -131,6 +132,8 @@ retry_locked_transaction(Fun, Args, Retries) ->
     Tid = ramnesia_context:transaction_id(Context),
     Context1 = ramnesia_context:init(Tid),
     update_transaction_context(ramnesia_context:set_retry(Context1)),
+    %% TODO: cleanup data about locking transactions on restart.
+    %% We don't want to get unlocked messages from old transactions
     transaction0(Fun, Args, NextRetries, locked).
 
 is_retry() ->
