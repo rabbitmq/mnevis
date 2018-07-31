@@ -9,6 +9,9 @@
 %% TODO: support table manipulation.
 -export([create_table/2, delete_table/1]).
 
+%% System info
+-export([db_nodes/0, running_db_nodes/0]).
+
 -export([transaction/3, transaction/1]).
 -export([is_transaction/0]).
 
@@ -44,6 +47,19 @@
 -type key() :: term().
 
 -export([record_key/1]).
+
+-spec db_nodes() -> [node()].
+db_nodes() ->
+    {ok, Nodes, _L} = ra:members(ramnesia_node:node_id()),
+    [Node || {_, Node} <- Nodes].
+
+-spec running_db_nodes() -> [node()].
+running_db_nodes() ->
+    {ok, Nodes, _L} = ra:members(ramnesia_node:node_id()),
+    [Node || {Name, Node} <- Nodes,
+             pong == net_adm:ping(Node)
+             andalso
+             undefined =/= rpc:call(Node, erlang, whereis, Name)].
 
 create_table(Tab, Opts) ->
     %% TODO: handle errors/retry
