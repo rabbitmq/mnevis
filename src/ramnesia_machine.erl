@@ -52,172 +52,165 @@ init(_Conf) ->
 
 -spec apply(map(), command(), ra_machine:effects(), state()) ->
     {state(), ra_machine:effects()} | {state(), ra_machine:effects(), reply()}.
+apply(Meta, Command, Effects0, State) ->
+    with_pre_effects(Effects0, apply_command(Meta, Command, State)).
 
-apply(_RaftIdx, {start_transaction, Source}, Effects0, State) ->
+-spec apply_command(map(), command(), state()) ->
+    {state(), ra_machine:effects()} | apply_result().
+apply_command(_Meta, {start_transaction, Source}, State) ->
     %% Cleanup stale transactions for the source.
     %% Ignore demonitor effect, because there will be a monitor effect
     {State1, _, _} = case transaction_for_source(Source, State) of
         {ok, OldTid}            -> cleanup(OldTid, Source, State);
         {error, no_transaction} -> {State, [], ok}
     end,
-    with_pre_effects(Effects0, start_transaction(State1, Source));
+    start_transaction(State1, Source);
 
-apply(_RaftIdx, {rollback, Tid, Source, []}, Effects0, State) ->
-    with_pre_effects(Effects0,
-        with_transaction(Tid, Source, State,
-            fun() ->
-                cleanup(Tid, Source, State)
-            end));
+apply_command(_Meta, {rollback, Tid, Source, []}, State) ->
+    with_transaction(Tid, Source, State,
+        fun() ->
+            cleanup(Tid, Source, State)
+        end);
 
-apply(_RaftIdx, {commit, Tid, Source, [Writes, Deletes, DeletesObject]}, Effects0, State) ->
-    with_pre_effects(Effects0,
-        maybe_skip_committed(Tid, Source, State,
-            fun() ->
-                with_transaction(Tid, Source, State,
-                    fun() ->
-                        commit(Tid, Source, Writes, Deletes, DeletesObject, State)
-                    end)
-            end));
+apply_command(_Meta, {commit, Tid, Source, [Writes, Deletes, DeletesObject]}, State) ->
+    maybe_skip_committed(Tid, Source, State,
+        fun() ->
+            with_transaction(Tid, Source, State,
+                fun() ->
+                    commit(Tid, Source, Writes, Deletes, DeletesObject, State)
+                end)
+        end);
 
-apply(_Meta, {finish, Tid, Source}, Effects0, State) ->
-    with_pre_effects(Effects0, cleanup_commmitted(Tid, Source, State));
+apply_command(_Meta, {finish, Tid, Source}, State) ->
+    State1 = cleanup_commmitted(Tid, Source, State),
+    {State1, [{demonitor, process, Source}]};
 
-apply(_RaftIdx, {lock, Tid, Source, [LockItem, LockKind]}, Effects0, State) ->
-    with_pre_effects(Effects0,
-        with_transaction(Tid, Source, State,
-            fun() ->
-                lock(LockItem, LockKind, Tid, Source, State)
-            end));
+apply_command(_Meta, {lock, Tid, Source, [LockItem, LockKind]}, State) ->
+    with_transaction(Tid, Source, State,
+        fun() ->
+            lock(LockItem, LockKind, Tid, Source, State)
+        end);
 
-apply(_RaftIdx, {read, Tid, Source, [Tab, Key, LockKind]}, Effects0, State) ->
-    with_pre_effects(Effects0,
-        with_transaction(Tid, Source, State,
-            fun() ->
-                with_lock_catch_abort({Tab, Key}, LockKind, Tid, Source, State,
-                    fun() ->
-                        {ok, mnesia:dirty_read(Tab, Key)}
-                    end)
-            end));
+apply_command(_Meta, {read, Tid, Source, [Tab, Key, LockKind]}, State) ->
+    with_transaction(Tid, Source, State,
+        fun() ->
+            with_lock_catch_abort({Tab, Key}, LockKind, Tid, Source, State,
+                fun() ->
+                    {ok, mnesia:dirty_read(Tab, Key)}
+                end)
+        end);
 
-apply(_RaftIdx, {index_read, Tid, Source, [Tab, SecondaryKey, Pos, LockKind]}, Effects0, State) ->
-    with_pre_effects(Effects0,
-        with_transaction(Tid, Source, State,
-            fun() ->
-                with_lock_catch_abort({table, Tab}, LockKind, Tid, Source, State,
-                    fun() ->
-                        {ok, mnesia:dirty_index_read(Tab, SecondaryKey, Pos)}
-                    end)
-            end));
+apply_command(_Meta, {index_read, Tid, Source, [Tab, SecondaryKey, Pos, LockKind]}, State) ->
+    with_transaction(Tid, Source, State,
+        fun() ->
+            with_lock_catch_abort({table, Tab}, LockKind, Tid, Source, State,
+                fun() ->
+                    {ok, mnesia:dirty_index_read(Tab, SecondaryKey, Pos)}
+                end)
+        end);
 
-apply(_RaftIdx, {match_object, Tid, Source, [Tab, Pattern, LockKind]}, Effects0, State) ->
-    with_pre_effects(Effects0,
-        with_transaction(Tid, Source, State,
-            fun() ->
-                with_lock_catch_abort({table, Tab}, LockKind, Tid, Source, State,
-                    fun() ->
-                        {ok, mnesia:dirty_match_object(Tab, Pattern)}
-                    end)
-            end));
+apply_command(_Meta, {match_object, Tid, Source, [Tab, Pattern, LockKind]}, State) ->
+    with_transaction(Tid, Source, State,
+        fun() ->
+            with_lock_catch_abort({table, Tab}, LockKind, Tid, Source, State,
+                fun() ->
+                    {ok, mnesia:dirty_match_object(Tab, Pattern)}
+                end)
+        end);
 
-apply(_RaftIdx, {index_match_object, Tid, Source, [Tab, Pattern, Pos, LockKind]}, Effects0, State) ->
-    with_pre_effects(Effects0,
-        with_transaction(Tid, Source, State,
-            fun() ->
-                with_lock_catch_abort({table, Tab}, LockKind, Tid, Source, State,
-                    fun() ->
-                        {ok, mnesia:dirty_index_match_object(Tab, Pattern, Pos)}
-                    end)
-            end));
+apply_command(_Meta, {index_match_object, Tid, Source, [Tab, Pattern, Pos, LockKind]}, State) ->
+    with_transaction(Tid, Source, State,
+        fun() ->
+            with_lock_catch_abort({table, Tab}, LockKind, Tid, Source, State,
+                fun() ->
+                    {ok, mnesia:dirty_index_match_object(Tab, Pattern, Pos)}
+                end)
+        end);
 
-apply(_RaftIdx, {all_keys, Tid, Source, [Tab, LockKind]}, Effects0, State) ->
-    with_pre_effects(Effects0,
-        with_transaction(Tid, Source, State,
-            fun() ->
-                with_lock_catch_abort({table, Tab}, LockKind, Tid, Source, State,
-                    fun() ->
-                        {ok, mnesia:dirty_all_keys(Tab)}
-                    end)
-            end));
+apply_command(_Meta, {all_keys, Tid, Source, [Tab, LockKind]}, State) ->
+    with_transaction(Tid, Source, State,
+        fun() ->
+            with_lock_catch_abort({table, Tab}, LockKind, Tid, Source, State,
+                fun() ->
+                    {ok, mnesia:dirty_all_keys(Tab)}
+                end)
+        end);
 
-apply(_RaftIdx, {first, Tid, Source, [Tab]}, Effects0, State) ->
-    with_pre_effects(Effects0,
-        with_transaction(Tid, Source, State,
-            fun() ->
-                with_lock_catch_abort({table, Tab}, read, Tid, Source, State,
-                    fun() ->
-                        {ok, mnesia:dirty_first(Tab)}
-                    end)
-            end));
+apply_command(_Meta, {first, Tid, Source, [Tab]}, State) ->
+    with_transaction(Tid, Source, State,
+        fun() ->
+            with_lock_catch_abort({table, Tab}, read, Tid, Source, State,
+                fun() ->
+                    {ok, mnesia:dirty_first(Tab)}
+                end)
+        end);
 
-apply(_RaftIdx, {last, Tid, Source, [Tab]}, Effects0, State) ->
-    with_pre_effects(Effects0,
-        with_transaction(Tid, Source, State,
-            fun() ->
-                with_lock_catch_abort({table, Tab}, read, Tid, Source, State,
-                    fun() ->
-                        {ok, mnesia:dirty_last(Tab)}
-                    end)
-            end));
+apply_command(_Meta, {last, Tid, Source, [Tab]}, State) ->
+    with_transaction(Tid, Source, State,
+        fun() ->
+            with_lock_catch_abort({table, Tab}, read, Tid, Source, State,
+                fun() ->
+                    {ok, mnesia:dirty_last(Tab)}
+                end)
+        end);
 
-apply(_RaftIdx, {prev, Tid, Source, [Tab, Key]}, Effects0, State) ->
-    with_pre_effects(Effects0,
-        with_transaction(Tid, Source, State,
-            fun() ->
-                with_lock_catch_abort({table, Tab}, read, Tid, Source, State,
-                    fun() ->
-                        try {ok, mnesia:dirty_prev(Tab, Key)}
-                        catch
-                            exit:{aborted, {badarg, [Tab, Key]}} ->
-                                case mnesia:table_info(Tab, type) of
-                                    ordered_set ->
-                                    %% TODO: make error not aborted
-                                        {error, {aborted,
-                                            {key_not_found,
-                                             closest_prev(Tab, Key)}}};
-                                    _ ->
-                                        {error, {aborted,
-                                            {key_not_found,
-                                             mnesia:dirty_last(Tab)}}}
-                                end
-                        end
-                    end)
-            end));
+apply_command(_Meta, {prev, Tid, Source, [Tab, Key]}, State) ->
+    with_transaction(Tid, Source, State,
+        fun() ->
+            with_lock_catch_abort({table, Tab}, read, Tid, Source, State,
+                fun() ->
+                    try {ok, mnesia:dirty_prev(Tab, Key)}
+                    catch
+                        exit:{aborted, {badarg, [Tab, Key]}} ->
+                            case mnesia:table_info(Tab, type) of
+                                ordered_set ->
+                                %% TODO: make error not aborted
+                                    {error, {aborted,
+                                        {key_not_found,
+                                         closest_prev(Tab, Key)}}};
+                                _ ->
+                                    {error, {aborted,
+                                        {key_not_found,
+                                         mnesia:dirty_last(Tab)}}}
+                            end
+                    end
+                end)
+        end);
 
-apply(_RaftIdx, {next, Tid, Source, [Tab, Key]}, Effects0, State) ->
-    with_pre_effects(Effects0,
-        with_transaction(Tid, Source, State,
-            fun() ->
-                with_lock_catch_abort({table, Tab}, read, Tid, Source, State,
-                    fun() ->
-                        try {ok, mnesia:dirty_next(Tab, Key)}
-                        catch
-                            exit:{aborted, {badarg, [Tab, Key]}} ->
-                                case mnesia:table_info(Tab, type) of
-                                    ordered_set ->
-                                        {error, {aborted,
-                                            {key_not_found,
-                                             closest_next(Tab, Key)}}};
-                                    _ ->
-                                        {error, {aborted,
-                                            {key_not_found,
-                                             mnesia:dirty_first(Tab)}}}
-                                end
-                        end
-                    end)
-            end));
+apply_command(_Meta, {next, Tid, Source, [Tab, Key]}, State) ->
+    with_transaction(Tid, Source, State,
+        fun() ->
+            with_lock_catch_abort({table, Tab}, read, Tid, Source, State,
+                fun() ->
+                    try {ok, mnesia:dirty_next(Tab, Key)}
+                    catch
+                        exit:{aborted, {badarg, [Tab, Key]}} ->
+                            case mnesia:table_info(Tab, type) of
+                                ordered_set ->
+                                    {error, {aborted,
+                                        {key_not_found,
+                                         closest_next(Tab, Key)}}};
+                                _ ->
+                                    {error, {aborted,
+                                        {key_not_found,
+                                         mnesia:dirty_first(Tab)}}}
+                            end
+                    end
+                end)
+        end);
 %% TODO: return type for create_table
-apply(_RaftIdx, {create_table, Tab, Opts}, Effects0, State) ->
-    {State, Effects0, {ok, mnesia:create_table(Tab, Opts)}};
+apply_command(_Meta, {create_table, Tab, Opts}, State) ->
+    {State, [], {ok, mnesia:create_table(Tab, Opts)}};
 
-apply(_RaftIdx, {delete_table, Tab}, Effects0, State) ->
-    {State, Effects0, {ok, mnesia:delete_table(Tab)}};
+apply_command(_Meta, {delete_table, Tab}, State) ->
+    {State, [], {ok, mnesia:delete_table(Tab)}};
 
-apply(_RaftIdx, {down, Source, _Reason}, Effects0, State) ->
+apply_command(_Meta, {down, Source, _Reason}, State) ->
     case transaction_for_source(Source, State) of
         {ok, Tid}               ->
-            with_pre_effects(Effects0, cleanup(Tid, Source, State));
+            cleanup(Tid, Source, State);
         {error, no_transaction} ->
-            {State, Effects0, ok}
+            {State, [], ok}
     end.
 
 -spec leader_effects(state()) -> ra_machine:effects().
@@ -251,6 +244,7 @@ start_transaction(State, Source) ->
 -spec commit(transaction_id(), pid(), [change()], [change()], [change()], state()) -> apply_result(ok).
 commit(Tid, Source, Writes, Deletes, DeletesObject, State0) ->
 %% TODO: record committed transaction number.
+%% TODO: snapshots.
     case mnesia:transaction(fun() ->
             _ = apply_deletes(Deletes),
             _ = apply_writes(Writes),
@@ -258,10 +252,9 @@ commit(Tid, Source, Writes, Deletes, DeletesObject, State0) ->
             ok
         end) of
         {atomic, ok} ->
-            State1 = cleanup_locks(Tid, State0),
-            {Effects, State2} = cleanup_transaction_locks(Tid, State1),
-            State3 = mark_committed(Tid, Source, State2),
-            {State3, Effects, {ok, ok}};
+            {Effects, State1} = cleanup_transaction(Tid, Source, State0),
+            State2 = add_committed(Tid, Source, State1),
+            {State2, Effects, {ok, ok}};
         {aborted, Reason} ->
             {State0, [], {error, {aborted, Reason}}}
     end.
@@ -269,30 +262,22 @@ commit(Tid, Source, Writes, Deletes, DeletesObject, State0) ->
 -spec cleanup(transaction_id(), pid(), state()) ->
     apply_result(ok).
 cleanup(Tid, Source, State0) ->
-    State1 = cleanup_locks(Tid, State0),
-    {UnlockedEffects, State2} = cleanup_transaction_locks(Tid, State1),
+    {UnlockedEffects, State1} = cleanup_transaction(Tid, Source, State0),
+    State2 = cleanup_commmitted(Tid, Source, State1),
+    {State2, UnlockedEffects ++ [{demonitor, process, Source}], {ok, ok}}.
 
-    %% Remove source from transactions.
-    #state{ transactions = Transactions,
-            committed_transactions = Committed } = State2,
-    Transactions1 = maps:remove(Source, Transactions),
-    Committed1 = maps:remove(Tid, Committed),
-    State3 = State2#state{transactions = Transactions1,
-                          committed_transactions = Committed1},
-
-    {State3, UnlockedEffects ++ [{demonitor, process, Source}], {ok, ok}}.
-
--spec cleanup_commmitted(transaction_id(), pid(), state()) -> apply_result().
+-spec cleanup_commmitted(transaction_id(), pid(), state()) -> state().
 cleanup_commmitted(Tid, Source, State) ->
     #state{ committed_transactions = Committed } = State,
     case maps:get(Tid, Committed, not_found) of
         not_found ->
-            {State, [], {error, transaction_not_committed}};
-        Source ->
-            %% TODO: simpler cleanup since there should be no locks
-            cleanup(Tid, Source, State);
+            State;
+        Source    ->
+            State#state{committed_transactions = maps:remove(Tid, Committed)};
         OtherSource ->
-            {State, [], {error, {wrong_transaction_source, OtherSource}}}
+            error_logger:warninig_msg("Cleanup committed for a wrong source ~p",
+                                      [{Tid, Source, OtherSource}]),
+            State
     end.
 
 -spec lock(lock_item(), lock_kind(), transaction_id(), pid(), state()) ->
@@ -413,11 +398,19 @@ cleanup_locks(Tid, State) ->
                 maps:map(fun(_K, Tids) -> Tids -- [Tid] end, RLocks)),
     State#state{read_locks = RLocks1, write_locks = WLocks1}.
 
--spec mark_committed(transaction_id(), pid(), state()) -> state().
-%% TODO: remove the transaction?
-%% We don't want commands to be executable on the committed transaction.
-%% Only commit should be executable
-mark_committed(Tid, Source, State) ->
+-spec cleanup_transaction(transaction_id(), pid(), state()) ->
+    {ra_machine:effects(), state()}.
+cleanup_transaction(Tid, Source, State0) ->
+    #state{ transactions = Transactions } = State0,
+
+    State1 = cleanup_locks(Tid, State0),
+    {UnlockedEffects, State2} = cleanup_transaction_locks(Tid, State1),
+
+    {UnlockedEffects,
+     State2#state{transactions = maps:remove(Source, Transactions)}}.
+
+-spec add_committed(transaction_id(), pid(), state()) -> state().
+add_committed(Tid, Source, State) ->
     #state{ committed_transactions = Committed } = State,
     State#state{committed_transactions = maps:put(Tid, Source, Committed)}.
 
@@ -511,9 +504,12 @@ transaction_for_source(Source, #state{transactions = Transactions}) ->
     end.
 
 %% Adding effects to the apply_result.
--spec with_pre_effects(ra_machine:effects(), apply_result(T, E)) -> apply_result(T, E).
+-spec with_pre_effects(ra_machine:effects(), {state(), ra_machine:effects()} | apply_result(T, E)) ->
+    {state(), ra_machine:effects()} | apply_result(T, E).
 with_pre_effects(Effects0, {State, Effects, Result}) ->
-    {State, Effects0 ++ Effects, Result}.
+    {State, Effects0 ++ Effects, Result};
+with_pre_effects(Effects0, {State, Effects}) ->
+    {State, Effects0 ++ Effects}.
 
 %% Functional helpers to skip ops.
 
@@ -551,7 +547,6 @@ catch_abort(State, Fun) ->
     apply_result(T, E | {wrong_transaction_id, transaction_id()} | no_transaction_for_pid).
 with_transaction(Tid, Source, State, Fun) ->
     %% TODO: maybe check if transaction ID exists for other source.
-    %% TODO:
     case transaction_for_source(Source, State) of
         {error, no_transaction} -> {State, [], {error, no_transaction_for_pid}};
         {ok, Tid}               -> Fun();

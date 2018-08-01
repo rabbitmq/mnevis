@@ -23,8 +23,6 @@
 
 % Keeps track of deletes and writes.
 
-%% TODO: update the behaviour to match implementation
-
 % Delete:
 %     Should delete all writes with the same key
 %     Clean write_set
@@ -39,12 +37,11 @@
 % Write bag:
 %     Need to keep deletes and add to (empty) bag
 %     Need to clean delete_objects for this object
-%     Use operation ordering
+%     Use operation ordering!!!!!
 %     Deletes should apply before writes
 
 % Delete object:
 %     Skip if write_set changed the record
-%     Skip if write_set has different record
 %     Clean same objects from write_bag
 
 

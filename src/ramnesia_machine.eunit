@@ -158,10 +158,10 @@ commit_cleanup_test() ->
     {State1, [], _} =
         ramnesia_machine:apply(none, {commit, Tid, Source, [[], [], []]}, [], State),
     Expected = #state{last_transaction_id = LastTid,
-                      transactions = #{Source => Tid},
+                      transactions = #{},
                       committed_transactions = #{Tid => Source}},
     Expected = State1,
-    {State2, [{demonitor, process, Source}], _} =
+    {State2, [{demonitor, process, Source}]} =
         ramnesia_machine:apply(none, {finish, Tid, Source}, [], State1),
     Expected1 = #state{last_transaction_id = LastTid},
     Expected1 = State2.
@@ -184,7 +184,7 @@ commit_cleanup_locks_test() ->
                        read_locks = #{readlock => [Tid],
                                       readlock_1 => [Tid, Tid1],
                                       readlock_2 => [Tid2]}},
-    {State1, [{demonitor, process, Source}], _} =
+    {State1, [{demonitor, process, Source}]} =
         ramnesia_machine:apply(none, {finish, Tid, Source}, [],
             element(1, ramnesia_machine:apply(none, {commit, Tid, Source, [[], [], []]}, [], InitState))),
 
@@ -198,7 +198,7 @@ commit_cleanup_locks_test() ->
     {State3, _, _} =
         ramnesia_machine:apply(none, {commit, Tid2, Source2, [[], [], []]}, [], State2),
     State3 = #state{last_transaction_id = LastTid,
-                    transactions = #{Source1 => Tid1, Source2 => Tid2},
+                    transactions = #{},
                     committed_transactions = #{Tid1 => Source1, Tid2 => Source2}}.
 
 commit_write_test() ->

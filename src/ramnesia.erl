@@ -96,6 +96,7 @@ transaction0(_Fun, _Args, 0, Err) ->
 transaction0(Fun, Args, Retries, _Err) ->
     try
         case is_retry() of
+            %% TODO: maybe notify the machine about retry.
             true  -> ok;
             false -> start_transaction()
         end,
@@ -110,13 +111,15 @@ transaction0(Fun, Args, Retries, _Err) ->
             %% Wait for unlocked message meaning that locking transactions finished
             Context = get_transaction_context(),
             Tid = ramnesia_context:transaction_id(Context),
-            %% TODO: there may be more unblock messages in the mailbox.
-            %% Clenup may be required if resuming after timeout
-            receive {ra_event, _From, {machine, {ramnesia_unlock, Tid}}} ->
-                retry_locked_transaction(Fun, Args, Retries);
-                {ramnesia_unlock, _OtherTid} ->
-                    error(other_tid)
+            %% TODO: prove there can be no rogue unlock messages
+            receive
+                {ra_event, _From, {machine, {ramnesia_unlock, Tid}}} ->
+                    cleanup_unlock_messages(Tid),
+                    retry_locked_transaction(Fun, Args, Retries);
+                {ra_event, _From, {machine, {ramnesia_unlock, OtherTid}}} ->
+                    error({other_tid, OtherTid})
             after 5000 ->
+                cleanup_unlock_messages(Tid),
                 retry_locked_transaction(Fun, Args, Retries)
             end;
         exit:{aborted, Reason} ->
@@ -141,8 +144,6 @@ retry_locked_transaction(Fun, Args, Retries) ->
     Tid = ramnesia_context:transaction_id(Context),
     Context1 = ramnesia_context:init(Tid),
     update_transaction_context(ramnesia_context:set_retry(Context1)),
-    %% TODO: cleanup data about locking transactions on restart.
-    %% We don't want to get unlocked messages from old transactions
     transaction0(Fun, Args, NextRetries, locked).
 
 is_retry() ->
@@ -150,7 +151,6 @@ is_retry() ->
         undefined -> false;
         Context   -> ramnesia_context:is_retry(Context)
     end.
-
 
 is_transaction() ->
     case get_transaction_context() of
@@ -163,7 +163,6 @@ commit_transaction() ->
     Writes = ramnesia_context:writes(Context),
     Deletes = ramnesia_context:deletes(Context),
     DeletesObject = ramnesia_context:deletes_object(Context),
-
 
     Context = get_transaction_context(),
     Tid = ramnesia_context:transaction_id(Context),
@@ -206,17 +205,20 @@ update_transaction_context(Context) ->
     put(ramnesia_transaction_context, Context).
 
 clean_transaction_context() ->
+    cleanup_all_unlock_messages(),
     erase(ramnesia_transaction_context).
 
 get_transaction_context() ->
     get(ramnesia_transaction_context).
+
+%% Mnesia activity API
 
 lock(_ActivityId, _Opaque, LockItem, LockKind) ->
     execute_command(lock, [LockItem, LockKind]).
 
 write(ActivityId, Opaque, Tab, Rec, LockKind) ->
     Context = get_transaction_context(),
-    Context1 = case mnesia:table_info(ActivityId, Opaque, Tab, type) of
+    Context1 = case table_info(ActivityId, Opaque, Tab, type) of
         bag ->
             ramnesia_context:add_write_bag(Context, Tab, Rec, LockKind);
         Set when Set =:= set; Set =:= ordered_set ->
@@ -287,6 +289,7 @@ prev(ActivityId, Opaque, Tab, Key) ->
     NewKey = try
         execute_command(Context, prev, [Tab, Key])
     catch
+        %% TODO: make key_not_found a different error. Not abort
         exit:{aborted, {key_not_found, ClosestKey}} ->
             ClosestKey;
         exit:{aborted, key_not_found} ->
@@ -296,7 +299,6 @@ prev(ActivityId, Opaque, Tab, Key) ->
 
 next(ActivityId, Opaque, Tab, Key) ->
     Context = get_transaction_context(),
-    % NewKey = execute_command(Context, next, [Tab, Key]),
     NewKey = try
         execute_command(Context, next, [Tab, Key])
     catch exit:{aborted, {key_not_found, ClosestKey}} ->
@@ -330,7 +332,6 @@ do_foldr(ActivityId, Opaque, Fun, Acc, Tab, LockKind, Key) ->
     Prev = prev(ActivityId, Opaque, Tab, Key),
     do_foldr(ActivityId, Opaque, Fun, NewAcc, Tab, LockKind, Prev).
 
-
 index_match_object(_ActivityId, _Opaque, Tab, Pattern, Pos, LockKind) ->
     Context = get_transaction_context(),
     RecList = execute_command(Context, index_match_object, [Tab, Pattern, Pos, LockKind]),
@@ -341,8 +342,15 @@ index_read(_ActivityId, _Opaque, Tab, SecondaryKey, Pos, LockKind) ->
     RecList = do_index_read(Context, Tab, SecondaryKey, Pos, LockKind),
     ramnesia_context:filter_index_from_context(Context, Tab, SecondaryKey, Pos, RecList).
 
+%% TODO: table can be not present on the current node or not up-to-date
+%% Make table manipulation consistent.
 table_info(ActivityId, Opaque, Tab, InfoItem) ->
     mnesia:table_info(ActivityId, Opaque, Tab, InfoItem).
+
+%% TODO: QLC API.
+
+%% ==========================
+
 
 execute_command(Command, Args) ->
     Context = get_transaction_context(),
@@ -423,4 +431,18 @@ key_inserted_between(Tab, PrevKey, Key, Direction, Context) ->
             end
     end.
 
+cleanup_all_unlock_messages() ->
+    receive
+        {ra_event, _From, {machine, {ramnesia_unlock, _}}} ->
+            cleanup_all_unlock_messages()
+    after 0 ->
+        ok
+    end.
 
+cleanup_unlock_messages(Tid) ->
+    receive
+        {ra_event, _From, {machine, {ramnesia_unlock, Tid}}} ->
+            cleanup_unlock_messages(Tid)
+    after 0 ->
+        ok
+    end.
