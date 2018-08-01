@@ -76,7 +76,7 @@ rollback_no_transaction_error_test() ->
     InitState = #state{},
     Source = self(),
     Tid = 1,
-    {InitState, [], {error, no_transaction_for_pid}} =
+    {InitState, [], {ramnesia_error, no_transaction_for_pid}} =
         ramnesia_machine:apply(none, {rollback, Tid, Source, []}, [], InitState).
 
 rollback_wrong_transaction_error_test() ->
@@ -84,7 +84,7 @@ rollback_wrong_transaction_error_test() ->
     Tid = 2,
     DifferentTid = 1,
     InitState = #state{transactions = #{Source => DifferentTid}, last_transaction_id = DifferentTid},
-    {InitState, [], {error, {wrong_transaction_id, DifferentTid}}} =
+    {InitState, [], {ramnesia_error, {wrong_transaction_id, DifferentTid}}} =
         ramnesia_machine:apply(none, {rollback, Tid, Source, []}, [], InitState).
 
 rollback_cleanup_test() ->
@@ -137,7 +137,7 @@ commit_no_transaction_error_test() ->
     InitState = #state{},
     Source = self(),
     Tid = 1,
-    {InitState, [], {error, no_transaction_for_pid}} =
+    {InitState, [], {ramnesia_error, no_transaction_for_pid}} =
         ramnesia_machine:apply(none, {commit, Tid, Source, [[], [], []]}, [], InitState).
 
 commit_wrong_transaction_error_test() ->
@@ -146,7 +146,7 @@ commit_wrong_transaction_error_test() ->
     Tid = 2,
     DifferentTid = 1,
     InitState = #state{transactions = #{Source => DifferentTid}, last_transaction_id = DifferentTid},
-    {InitState, [], {error, {wrong_transaction_id, DifferentTid}}} =
+    {InitState, [], {ramnesia_error, {wrong_transaction_id, DifferentTid}}} =
         ramnesia_machine:apply(none, {commit, Tid, Source, [[], [], []]}, [], InitState).
 
 commit_cleanup_test() ->
@@ -246,7 +246,7 @@ lock_no_transaction_error_test() ->
     InitState = #state{},
     Source = self(),
     Tid = 1,
-    {InitState, [], {error, no_transaction_for_pid}} =
+    {InitState, [], {ramnesia_error, no_transaction_for_pid}} =
         ramnesia_machine:apply(none, {lock, Tid, Source, [{table, foo}, read]}, [], InitState).
 
 lock_wrong_transaction_error_test() ->
@@ -254,7 +254,7 @@ lock_wrong_transaction_error_test() ->
     Tid = 2,
     DifferentTid = 1,
     InitState = #state{transactions = #{Source => DifferentTid}, last_transaction_id = DifferentTid},
-    {InitState, [], {error, {wrong_transaction_id, DifferentTid}}} =
+    {InitState, [], {ramnesia_error, {wrong_transaction_id, DifferentTid}}} =
         ramnesia_machine:apply(none, {lock, Tid, Source, [{table, foo}, read]}, [], InitState).
 
 lock_aquire_read_test() ->
@@ -310,7 +310,7 @@ lock_read_blocked_by_write_test() ->
         ramnesia_machine:apply(none, {start_transaction, Source1}, [], State),
     {State2, _, {ok, ok}} =
         ramnesia_machine:apply(none, {lock, Tid1, Source1, [{foo, bar}, write]}, [], State1),
-    {State3, _, {error, locked}} =
+    {State3, _, {ramnesia_error, {aborted, locked}}} =
         ramnesia_machine:apply(none, {lock, Tid, Source, [{foo, bar}, read]}, [], State2),
     TLGraph = State3#state.transaction_locks,
     [{Tid1, Tid}] = simple_dgraph:out_edges(TLGraph, Tid1),
@@ -335,7 +335,7 @@ lock_read_blocked_by_table_write_test() ->
         ramnesia_machine:apply(none, {start_transaction, Source1}, [], State),
     {State2, _, {ok, ok}} =
         ramnesia_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, [], State1),
-    {State3, _, {error, locked}} =
+    {State3, _, {ramnesia_error, {aborted, locked}}} =
         ramnesia_machine:apply(none, {lock, Tid, Source, [{foo, bar}, read]}, [], State2),
     TLGraph = State3#state.transaction_locks,
     [{Tid1, Tid}] = simple_dgraph:out_edges(TLGraph, Tid1),
@@ -362,7 +362,7 @@ lock_read_cleanup_when_blocked_test() ->
 
     {State4, _, {ok, ok}} =
         ramnesia_machine:apply(none, {lock, Tid1, Source1, [{foo, bar}, write]}, [], State3),
-    {State5, _, {error, locked}} =
+    {State5, _, {ramnesia_error, {aborted, locked}}} =
         ramnesia_machine:apply(none, {lock, Tid, Source, [{foo, bar}, read]}, [], State4),
     %% Read locks are empty
     #state{read_locks = RLocks1,
@@ -386,7 +386,7 @@ lock_write_blocked_by_write_test() ->
         ramnesia_machine:apply(none, {start_transaction, Source1}, [], State),
     {State2, _, {ok, ok}} =
         ramnesia_machine:apply(none, {lock, Tid1, Source1, [{foo, bar}, write]}, [], State1),
-    {State3, _, {error, locked}} =
+    {State3, _, {ramnesia_error, {aborted, locked}}} =
         ramnesia_machine:apply(none, {lock, Tid, Source, [{foo, bar}, write]}, [], State2),
     TLGraph = State3#state.transaction_locks,
     [{Tid1, Tid}] = simple_dgraph:out_edges(TLGraph, Tid1),
@@ -402,7 +402,7 @@ lock_write_blocked_by_table_write_test() ->
         ramnesia_machine:apply(none, {start_transaction, Source1}, [], State),
     {State2, _, {ok, ok}} =
         ramnesia_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, [], State1),
-    {State3, _, {error, locked}} =
+    {State3, _, {ramnesia_error, {aborted, locked}}} =
         ramnesia_machine:apply(none, {lock, Tid, Source, [{foo, bar}, write]}, [], State2),
     TLGraph = State3#state.transaction_locks,
     [{Tid1, Tid}] = simple_dgraph:out_edges(TLGraph, Tid1),
@@ -418,7 +418,7 @@ lock_write_blocked_by_read_test() ->
         ramnesia_machine:apply(none, {start_transaction, Source1}, [], State),
     {State2, _, {ok, ok}} =
         ramnesia_machine:apply(none, {lock, Tid1, Source1, [{foo, bar}, read]}, [], State1),
-    {State3, _, {error, locked}} =
+    {State3, _, {ramnesia_error, {aborted, locked}}} =
         ramnesia_machine:apply(none, {lock, Tid, Source, [{foo, bar}, write]}, [], State2),
     TLGraph = State3#state.transaction_locks,
     [{Tid1, Tid}] = simple_dgraph:out_edges(TLGraph, Tid1),
@@ -434,7 +434,7 @@ lock_write_blocked_by_table_read_test() ->
         ramnesia_machine:apply(none, {start_transaction, Source1}, [], State),
     {State2, _, {ok, ok}} =
         ramnesia_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, read]}, [], State1),
-    {State3, _, {error, locked}} =
+    {State3, _, {ramnesia_error, {aborted, locked}}} =
         ramnesia_machine:apply(none, {lock, Tid, Source, [{foo, bar}, write]}, [], State2),
     TLGraph = State3#state.transaction_locks,
     [{Tid1, Tid}] = simple_dgraph:out_edges(TLGraph, Tid1),
@@ -449,7 +449,7 @@ read_no_transaction_error_test() ->
     InitState = #state{},
     Source = self(),
     Tid = 1,
-    {InitState, [], {error, no_transaction_for_pid}} =
+    {InitState, [], {ramnesia_error, no_transaction_for_pid}} =
         ramnesia_machine:apply(none, {read, Tid, Source, [table, foo, read]}, [], InitState).
 
 read_wrong_transaction_error_test() ->
@@ -457,7 +457,7 @@ read_wrong_transaction_error_test() ->
     Tid = 2,
     DifferentTid = 1,
     InitState = #state{transactions = #{Source => DifferentTid}, last_transaction_id = DifferentTid},
-    {InitState, [], {error, {wrong_transaction_id, DifferentTid}}} =
+    {InitState, [], {ramnesia_error, {wrong_transaction_id, DifferentTid}}} =
         ramnesia_machine:apply(none, {read, Tid, Source, [table, foo, read]}, [], InitState).
 
 read_locked_by_write_test() ->
@@ -470,7 +470,7 @@ read_locked_by_write_test() ->
         ramnesia_machine:apply(none, {start_transaction, Source1}, [], State),
     {State2, _, {ok, ok}} =
         ramnesia_machine:apply(none, {lock, Tid1, Source1, [{foo, foo}, write]}, [], State1),
-    {State3, _, {error, locked}} =
+    {State3, _, {ramnesia_error, {aborted, locked}}} =
         ramnesia_machine:apply(none, {read, Tid, Source, [foo, foo, read]}, [], State2),
     TLGraph = State3#state.transaction_locks,
     [{Tid1, Tid}] = simple_dgraph:out_edges(TLGraph, Tid1),
@@ -486,7 +486,7 @@ read_with_write_lock_locked_by_read_test() ->
         ramnesia_machine:apply(none, {start_transaction, Source1}, [], State),
     {State2, _, {ok, ok}} =
         ramnesia_machine:apply(none, {lock, Tid1, Source1, [{foo, foo}, read]}, [], State1),
-    {State3, _, {error, locked}} =
+    {State3, _, {ramnesia_error, {aborted, locked}}} =
         ramnesia_machine:apply(none, {read, Tid, Source, [foo, foo, write]}, [], State2),
     TLGraph = State3#state.transaction_locks,
     [{Tid1, Tid}] = simple_dgraph:out_edges(TLGraph, Tid1),
@@ -517,7 +517,7 @@ index_read_no_transaction_error_test() ->
     InitState = #state{},
     Source = self(),
     Tid = 1,
-    {InitState, [], {error, no_transaction_for_pid}} =
+    {InitState, [], {ramnesia_error, no_transaction_for_pid}} =
         ramnesia_machine:apply(none, {index_read, Tid, Source, [foo, foo, 1, read]}, [], InitState).
 
 index_read_wrong_transaction_error_test() ->
@@ -525,7 +525,7 @@ index_read_wrong_transaction_error_test() ->
     Tid = 2,
     DifferentTid = 1,
     InitState = #state{transactions = #{Source => DifferentTid}, last_transaction_id = DifferentTid},
-    {InitState, [], {error, {wrong_transaction_id, DifferentTid}}} =
+    {InitState, [], {ramnesia_error, {wrong_transaction_id, DifferentTid}}} =
         ramnesia_machine:apply(none, {index_read, Tid, Source, [foo, foo, 1, read]}, [], InitState).
 
 index_read_locked_by_write_test() ->
@@ -538,7 +538,7 @@ index_read_locked_by_write_test() ->
         ramnesia_machine:apply(none, {start_transaction, Source1}, [], State),
     {State2, _, {ok, ok}} =
         ramnesia_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, [], State1),
-    {State3, _, {error, locked}} =
+    {State3, _, {ramnesia_error, {aborted, locked}}} =
         ramnesia_machine:apply(none, {index_read, Tid, Source, [foo, foo, 1, read]}, [], State2),
     TLGraph = State3#state.transaction_locks,
     [{Tid1, Tid}] = simple_dgraph:out_edges(TLGraph, Tid1),
@@ -566,7 +566,7 @@ match_object_no_transaction_error_test() ->
     InitState = #state{},
     Source = self(),
     Tid = 1,
-    {InitState, [], {error, no_transaction_for_pid}} =
+    {InitState, [], {ramnesia_error, no_transaction_for_pid}} =
         ramnesia_machine:apply(none, {match_object, Tid, Source, [foo, Pattern, read]}, [], InitState).
 
 match_object_wrong_transaction_error_test() ->
@@ -575,7 +575,7 @@ match_object_wrong_transaction_error_test() ->
     Tid = 2,
     DifferentTid = 1,
     InitState = #state{transactions = #{Source => DifferentTid}, last_transaction_id = DifferentTid},
-    {InitState, [], {error, {wrong_transaction_id, DifferentTid}}} =
+    {InitState, [], {ramnesia_error, {wrong_transaction_id, DifferentTid}}} =
         ramnesia_machine:apply(none, {match_object, Tid, Source, [foo, Pattern, read]}, [], InitState).
 
 match_object_locked_by_write_test() ->
@@ -589,7 +589,7 @@ match_object_locked_by_write_test() ->
         ramnesia_machine:apply(none, {start_transaction, Source1}, [], State),
     {State2, _, {ok, ok}} =
         ramnesia_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, [], State1),
-    {State3, _, {error, locked}} =
+    {State3, _, {ramnesia_error, {aborted, locked}}} =
         ramnesia_machine:apply(none, {match_object, Tid, Source, [foo, Pattern, read]}, [], State2),
     TLGraph = State3#state.transaction_locks,
     [{Tid1, Tid}] = simple_dgraph:out_edges(TLGraph, Tid1),
@@ -617,7 +617,7 @@ index_match_object_no_transaction_error_test() ->
     InitState = #state{},
     Source = self(),
     Tid = 1,
-    {InitState, [], {error, no_transaction_for_pid}} =
+    {InitState, [], {ramnesia_error, no_transaction_for_pid}} =
         ramnesia_machine:apply(none, {index_match_object, Tid, Source, [foo, Pattern, 3, read]}, [], InitState).
 
 index_match_object_wrong_transaction_error_test() ->
@@ -626,7 +626,7 @@ index_match_object_wrong_transaction_error_test() ->
     Tid = 2,
     DifferentTid = 1,
     InitState = #state{transactions = #{Source => DifferentTid}, last_transaction_id = DifferentTid},
-    {InitState, [], {error, {wrong_transaction_id, DifferentTid}}} =
+    {InitState, [], {ramnesia_error, {wrong_transaction_id, DifferentTid}}} =
         ramnesia_machine:apply(none, {index_match_object, Tid, Source, [foo, Pattern, 3, read]}, [], InitState).
 
 index_match_object_locked_by_write_test() ->
@@ -640,7 +640,7 @@ index_match_object_locked_by_write_test() ->
         ramnesia_machine:apply(none, {start_transaction, Source1}, [], State),
     {State2, _, {ok, ok}} =
         ramnesia_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, [], State1),
-    {State3, _, {error, locked}} =
+    {State3, _, {ramnesia_error, {aborted, locked}}} =
         ramnesia_machine:apply(none, {index_match_object, Tid, Source, [foo, Pattern, 3, read]}, [], State2),
     TLGraph = State3#state.transaction_locks,
     [{Tid1, Tid}] = simple_dgraph:out_edges(TLGraph, Tid1),
@@ -668,7 +668,7 @@ all_keys_no_transaction_error_test() ->
     InitState = #state{},
     Source = self(),
     Tid = 1,
-    {InitState, [], {error, no_transaction_for_pid}} =
+    {InitState, [], {ramnesia_error, no_transaction_for_pid}} =
         ramnesia_machine:apply(none, {all_keys, Tid, Source, [foo, read]}, [], InitState).
 
 all_keys_wrong_transaction_error_test() ->
@@ -676,7 +676,7 @@ all_keys_wrong_transaction_error_test() ->
     Tid = 2,
     DifferentTid = 1,
     InitState = #state{transactions = #{Source => DifferentTid}, last_transaction_id = DifferentTid},
-    {InitState, [], {error, {wrong_transaction_id, DifferentTid}}} =
+    {InitState, [], {ramnesia_error, {wrong_transaction_id, DifferentTid}}} =
         ramnesia_machine:apply(none, {all_keys, Tid, Source, [foo, read]}, [], InitState).
 
 all_keys_locked_by_write_test() ->
@@ -689,7 +689,7 @@ all_keys_locked_by_write_test() ->
         ramnesia_machine:apply(none, {start_transaction, Source1}, [], State),
     {State2, _, {ok, ok}} =
         ramnesia_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, [], State1),
-    {State3, _, {error, locked}} =
+    {State3, _, {ramnesia_error, {aborted, locked}}} =
         ramnesia_machine:apply(none, {all_keys, Tid, Source, [foo, read]}, [], State2),
     TLGraph = State3#state.transaction_locks,
     [{Tid1, Tid}] = simple_dgraph:out_edges(TLGraph, Tid1),
@@ -724,7 +724,7 @@ first_no_transaction_error_test() ->
     InitState = #state{},
     Source = self(),
     Tid = 1,
-    {InitState, [], {error, no_transaction_for_pid}} =
+    {InitState, [], {ramnesia_error, no_transaction_for_pid}} =
         ramnesia_machine:apply(none, {first, Tid, Source, [foo]}, [], InitState).
 
 first_wrong_transaction_error_test() ->
@@ -732,7 +732,7 @@ first_wrong_transaction_error_test() ->
     Tid = 2,
     DifferentTid = 1,
     InitState = #state{transactions = #{Source => DifferentTid}, last_transaction_id = DifferentTid},
-    {InitState, [], {error, {wrong_transaction_id, DifferentTid}}} =
+    {InitState, [], {ramnesia_error, {wrong_transaction_id, DifferentTid}}} =
         ramnesia_machine:apply(none, {first, Tid, Source, [foo]}, [], InitState).
 
 first_locked_by_write_test() ->
@@ -745,7 +745,7 @@ first_locked_by_write_test() ->
         ramnesia_machine:apply(none, {start_transaction, Source1}, [], State),
     {State2, _, {ok, ok}} =
         ramnesia_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, [], State1),
-    {State3, _, {error, locked}} =
+    {State3, _, {ramnesia_error, {aborted, locked}}} =
         ramnesia_machine:apply(none, {first, Tid, Source, [foo]}, [], State2),
     TLGraph = State3#state.transaction_locks,
     [{Tid1, Tid}] = simple_dgraph:out_edges(TLGraph, Tid1),
@@ -771,7 +771,7 @@ last_no_transaction_error_test() ->
     InitState = #state{},
     Source = self(),
     Tid = 1,
-    {InitState, [], {error, no_transaction_for_pid}} =
+    {InitState, [], {ramnesia_error, no_transaction_for_pid}} =
         ramnesia_machine:apply(none, {last, Tid, Source, [foo]}, [], InitState).
 
 last_wrong_transaction_error_test() ->
@@ -779,7 +779,7 @@ last_wrong_transaction_error_test() ->
     Tid = 2,
     DifferentTid = 1,
     InitState = #state{transactions = #{Source => DifferentTid}, last_transaction_id = DifferentTid},
-    {InitState, [], {error, {wrong_transaction_id, DifferentTid}}} =
+    {InitState, [], {ramnesia_error, {wrong_transaction_id, DifferentTid}}} =
         ramnesia_machine:apply(none, {last, Tid, Source, [foo]}, [], InitState).
 
 last_locked_by_write_test() ->
@@ -792,7 +792,7 @@ last_locked_by_write_test() ->
         ramnesia_machine:apply(none, {start_transaction, Source1}, [], State),
     {State2, _, {ok, ok}} =
         ramnesia_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, [], State1),
-    {State3, _, {error, locked}} =
+    {State3, _, {ramnesia_error, {aborted, locked}}} =
         ramnesia_machine:apply(none, {last, Tid, Source, [foo]}, [], State2),
     TLGraph = State3#state.transaction_locks,
     [{Tid1, Tid}] = simple_dgraph:out_edges(TLGraph, Tid1),
@@ -818,7 +818,7 @@ prev_no_transaction_error_test() ->
     InitState = #state{},
     Source = self(),
     Tid = 1,
-    {InitState, [], {error, no_transaction_for_pid}} =
+    {InitState, [], {ramnesia_error, no_transaction_for_pid}} =
         ramnesia_machine:apply(none, {prev, Tid, Source, [foo, bar]}, [], InitState).
 
 prev_wrong_transaction_error_test() ->
@@ -826,7 +826,7 @@ prev_wrong_transaction_error_test() ->
     Tid = 2,
     DifferentTid = 1,
     InitState = #state{transactions = #{Source => DifferentTid}, last_transaction_id = DifferentTid},
-    {InitState, [], {error, {wrong_transaction_id, DifferentTid}}} =
+    {InitState, [], {ramnesia_error, {wrong_transaction_id, DifferentTid}}} =
         ramnesia_machine:apply(none, {prev, Tid, Source, [foo, bar]}, [], InitState).
 
 prev_locked_by_write_test() ->
@@ -839,7 +839,7 @@ prev_locked_by_write_test() ->
         ramnesia_machine:apply(none, {start_transaction, Source1}, [], State),
     {State2, _, {ok, ok}} =
         ramnesia_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, [], State1),
-    {State3, _, {error, locked}} =
+    {State3, _, {ramnesia_error, {aborted, locked}}} =
         ramnesia_machine:apply(none, {prev, Tid, Source, [foo, bar]}, [], State2),
     TLGraph = State3#state.transaction_locks,
     [{Tid1, Tid}] = simple_dgraph:out_edges(TLGraph, Tid1),
@@ -866,7 +866,7 @@ next_no_transaction_error_test() ->
     InitState = #state{},
     Source = self(),
     Tid = 1,
-    {InitState, [], {error, no_transaction_for_pid}} =
+    {InitState, [], {ramnesia_error, no_transaction_for_pid}} =
         ramnesia_machine:apply(none, {next, Tid, Source, [foo, bar]}, [], InitState).
 
 next_wrong_transaction_error_test() ->
@@ -874,7 +874,7 @@ next_wrong_transaction_error_test() ->
     Tid = 2,
     DifferentTid = 1,
     InitState = #state{transactions = #{Source => DifferentTid}, last_transaction_id = DifferentTid},
-    {InitState, [], {error, {wrong_transaction_id, DifferentTid}}} =
+    {InitState, [], {ramnesia_error, {wrong_transaction_id, DifferentTid}}} =
         ramnesia_machine:apply(none, {next, Tid, Source, [foo, bar]}, [], InitState).
 
 next_locked_by_write_test() ->
@@ -887,7 +887,7 @@ next_locked_by_write_test() ->
         ramnesia_machine:apply(none, {start_transaction, Source1}, [], State),
     {State2, _, {ok, ok}} =
         ramnesia_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, [], State1),
-    {State3, _, {error, locked}} =
+    {State3, _, {ramnesia_error, {aborted, locked}}} =
         ramnesia_machine:apply(none, {next, Tid, Source, [foo, bar]}, [], State2),
     TLGraph = State3#state.transaction_locks,
     [{Tid1, Tid}] = simple_dgraph:out_edges(TLGraph, Tid1),

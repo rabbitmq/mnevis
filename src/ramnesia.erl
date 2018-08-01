@@ -66,11 +66,13 @@ running_db_nodes() ->
 
 create_table(Tab, Opts) ->
     %% TODO: handle errors/retry
-    run_ra_command({create_table, Tab, Opts}).
+    {ok, R} = run_ra_command({create_table, Tab, Opts}),
+    R.
 
 delete_table(Tab) ->
     %% TODO: handle errors/retry
-    run_ra_command({delete_table, Tab}).
+    {ok, R} = run_ra_command({delete_table, Tab}),
+    R.
 
 transaction(Fun) ->
     transaction(Fun, [], infinity).
@@ -192,13 +194,13 @@ execute_command_with_retry(Context, Command, Args) ->
 retry_ra_command(NodeId, RaCommand) ->
     case ra:send_and_await_consensus(NodeId, RaCommand) of
         {ok, {ok, ok}, Leader}   -> Leader;
-        {ok, {error, Reason}, _} -> mnesia:abort(Reason);
+        {ok, {error, Reason}, _} -> mnesia:abort({apply_error, Reason});
         {error, Reason}          -> mnesia:abort(Reason);
         {timeout, _}             -> retry_ra_command(NodeId, RaCommand)
     end.
 
 start_transaction() ->
-    Tid = run_ra_command({start_transaction, self()}),
+    {ok, Tid} = run_ra_command({start_transaction, self()}),
     update_transaction_context(ramnesia_context:init(Tid)).
 
 update_transaction_context(Context) ->
@@ -214,7 +216,7 @@ get_transaction_context() ->
 %% Mnesia activity API
 
 lock(_ActivityId, _Opaque, LockItem, LockKind) ->
-    execute_command(lock, [LockItem, LockKind]).
+    execute_command_ok(lock, [LockItem, LockKind]).
 
 write(ActivityId, Opaque, Tab, Rec, LockKind) ->
     Context = get_transaction_context(),
@@ -225,19 +227,19 @@ write(ActivityId, Opaque, Tab, Rec, LockKind) ->
             ramnesia_context:add_write_set(Context, Tab, Rec, LockKind)
     end,
     update_transaction_context(Context1),
-    execute_command(Context1, lock, [{Tab, record_key(Rec)}, LockKind]).
+    execute_command_ok(Context1, lock, [{Tab, record_key(Rec)}, LockKind]).
 
 delete(_ActivityId, _Opaque, Tab, Key, LockKind) ->
     Context = get_transaction_context(),
     Context1 = ramnesia_context:add_delete(Context, Tab, Key, LockKind),
     update_transaction_context(Context1),
-    execute_command(Context1, lock, [{Tab, Key}, LockKind]).
+    execute_command_ok(Context1, lock, [{Tab, Key}, LockKind]).
 
 delete_object(_ActivityId, _Opaque, Tab, Rec, LockKind) ->
     Context = get_transaction_context(),
     Context1 = ramnesia_context:add_delete_object(Context, Tab, Rec, LockKind),
     update_transaction_context(Context1),
-    execute_command(Context1, lock, [{Tab, record_key(Rec)}, LockKind]).
+    execute_command_ok(Context1, lock, [{Tab, record_key(Rec)}, LockKind]).
 
 read(_ActivityId, _Opaque, Tab, Key, LockKind) ->
     Context = get_transaction_context(),
@@ -247,18 +249,18 @@ read(_ActivityId, _Opaque, Tab, Key, LockKind) ->
         deleted -> [];
         {deleted_and_written, bag, Recs} -> Recs;
         _ ->
-            RecList = execute_command(Context, read, [Tab, Key, LockKind]),
+            RecList = execute_command_ok(Context, read, [Tab, Key, LockKind]),
             ramnesia_context:filter_read_from_context(Context, Tab, Key, RecList)
     end.
 
 match_object(_ActivityId, _Opaque, Tab, Pattern, LockKind) ->
     Context = get_transaction_context(),
-    RecList = execute_command(Context, match_object, [Tab, Pattern, LockKind]),
+    RecList = execute_command_ok(Context, match_object, [Tab, Pattern, LockKind]),
     ramnesia_context:filter_match_from_context(Context, Tab, Pattern, RecList).
 
 all_keys(ActivityId, Opaque, Tab, LockKind) ->
     Context = get_transaction_context(),
-    AllKeys = execute_command(Context, all_keys, [Tab, LockKind]),
+    AllKeys = execute_command_ok(Context, all_keys, [Tab, LockKind]),
     case ramnesia_context:deletes_object(Context, Tab) of
         [] ->
             ramnesia_context:filter_all_keys_from_context(Context, Tab, AllKeys);
@@ -276,34 +278,34 @@ all_keys(ActivityId, Opaque, Tab, LockKind) ->
 
 first(ActivityId, Opaque, Tab) ->
     Context = get_transaction_context(),
-    Key = execute_command(Context, first, [Tab]),
+    Key = execute_command_ok(Context, first, [Tab]),
     check_key(ActivityId, Opaque, Tab, Key, '$end_of_table', next, Context).
 
 last(ActivityId, Opaque, Tab) ->
     Context = get_transaction_context(),
-    Key = execute_command(Context, last, [Tab]),
+    Key = execute_command_ok(Context, last, [Tab]),
     check_key(ActivityId, Opaque, Tab, Key, '$end_of_table', prev, Context).
 
 prev(ActivityId, Opaque, Tab, Key) ->
     Context = get_transaction_context(),
-    NewKey = try
-        execute_command(Context, prev, [Tab, Key])
-    catch
-        %% TODO: make key_not_found a different error. Not abort
-        exit:{aborted, {key_not_found, ClosestKey}} ->
+    NewKey = case execute_command(Context, prev, [Tab, Key]) of
+        {ok, NKey} ->
+            NKey;
+        {error, {key_not_found, ClosestKey}} ->
             ClosestKey;
-        exit:{aborted, key_not_found} ->
+        {error, key_not_found} ->
             ramnesia_context:prev_cached_key(Context, Tab, Key)
     end,
     check_key(ActivityId, Opaque, Tab, NewKey, Key, prev, Context).
 
 next(ActivityId, Opaque, Tab, Key) ->
     Context = get_transaction_context(),
-    NewKey = try
-        execute_command(Context, next, [Tab, Key])
-    catch exit:{aborted, {key_not_found, ClosestKey}} ->
+    NewKey = case execute_command(Context, next, [Tab, Key]) of
+        {ok, NKey} ->
+            NKey;
+        {error, {key_not_found, ClosestKey}} ->
             ClosestKey;
-        exit:{aborted, key_not_found} ->
+        {error, key_not_found} ->
             ramnesia_context:next_cached_key(Context, Tab, Key)
     end,
     check_key(ActivityId, Opaque, Tab, NewKey, Key, next, Context).
@@ -334,7 +336,7 @@ do_foldr(ActivityId, Opaque, Fun, Acc, Tab, LockKind, Key) ->
 
 index_match_object(_ActivityId, _Opaque, Tab, Pattern, Pos, LockKind) ->
     Context = get_transaction_context(),
-    RecList = execute_command(Context, index_match_object, [Tab, Pattern, Pos, LockKind]),
+    RecList = execute_command_ok(Context, index_match_object, [Tab, Pattern, Pos, LockKind]),
     ramnesia_context:filter_match_from_context(Context, Tab, Pattern, RecList).
 
 index_read(_ActivityId, _Opaque, Tab, SecondaryKey, Pos, LockKind) ->
@@ -351,26 +353,35 @@ table_info(ActivityId, Opaque, Tab, InfoItem) ->
 
 %% ==========================
 
+-spec execute_command_ok(atom(), list()) -> term().
+execute_command_ok(Command, Args) ->
+    execute_command_ok(get_transaction_context(), Command, Args).
 
-execute_command(Command, Args) ->
-    Context = get_transaction_context(),
-    execute_command(Context, Command, Args).
+-spec execute_command_ok(context(), atom(), list()) -> term().
+execute_command_ok(Context, Command, Args) ->
+    case execute_command(Context, Command, Args) of
+        {ok, Result}    -> Result;
+        {error, Reason} -> mnesia:abort({command_error, Reason})
+    end.
 
+-spec execute_command(context(), atom(), list()) -> {ok, term()} | {error, term()}.
 execute_command(Context, Command, Args) ->
     RaCommand = {Command, ramnesia_context:transaction_id(Context), self(), Args},
     run_ra_command(RaCommand).
 
-run_ra_command(Command) ->
+-spec run_ra_command(term()) -> {ok, term()} | {error, term()}.
+run_ra_command(RaCommand) ->
     NodeId = ramnesia_node:node_id(),
-    case ra:send_and_await_consensus(NodeId, Command) of
-        {ok, {ok, Result}, _}    -> Result;
-        {ok, {error, Reason}, _} -> mnesia:abort(Reason);
-        {error, Reason}          -> mnesia:abort(Reason);
-        {timeout, _}             -> mnesia:abort(timeout)
+    case ra:send_and_await_consensus(NodeId, RaCommand) of
+        {ok, {ok, Result}, _}                        -> {ok, Result};
+        {ok, {ramnesia_error, {aborted, Reason}}, _} -> mnesia:abort(Reason);
+        {ok, {ramnesia_error, Reason}, _}            -> {error, Reason};
+        {error, Reason}                              -> mnesia:abort(Reason);
+        {timeout, _}                                 -> mnesia:abort(timeout)
     end.
 
 do_index_read(Context, Tab, SecondaryKey, Pos, LockKind) ->
-    execute_command(Context, index_read, [Tab, SecondaryKey, Pos, LockKind]).
+    execute_command_ok(Context, index_read, [Tab, SecondaryKey, Pos, LockKind]).
 
 record_key(Record) ->
     element(2, Record).

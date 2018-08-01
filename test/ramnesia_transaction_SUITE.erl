@@ -759,10 +759,8 @@ foldl_cached_state(_Config) ->
             [],
             Tab)
         end,
-
         [foo] = KeysFold(sample),
         [foo, foo, foo] = KeysFold(sample_bag),
-
         ok = mnesia:write({sample, bar, baz}),
         [bar, foo] = lists:usort(KeysFold(sample)),
         ok = mnesia:delete_object({sample, foo, bar}),

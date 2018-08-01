@@ -14,9 +14,9 @@
 -type config() :: map().
 -type command() :: term().
 
--type reply() :: {ok, term()} | {error, term()}.
--type reply(T) :: {ok, T} | {error, term()}.
--type reply(T, E) :: {ok, T} | {error, E}.
+-type reply() :: {ok, term()} | {ramnesia_error, term()}.
+-type reply(T) :: {ok, T} | {ramnesia_error, term()}.
+-type reply(T, E) :: {ok, T} | {ramnesia_error, E}.
 
 
 -record(state, {last_transaction_id = 0,
@@ -164,14 +164,13 @@ apply_command(_Meta, {prev, Tid, Source, [Tab, Key]}, State) ->
                         exit:{aborted, {badarg, [Tab, Key]}} ->
                             case mnesia:table_info(Tab, type) of
                                 ordered_set ->
-                                %% TODO: make error not aborted
-                                    {error, {aborted,
+                                    {ramnesia_error,
                                         {key_not_found,
-                                         closest_prev(Tab, Key)}}};
+                                         closest_prev(Tab, Key)}};
                                 _ ->
-                                    {error, {aborted,
+                                    {ramnesia_error,
                                         {key_not_found,
-                                         mnesia:dirty_last(Tab)}}}
+                                         mnesia:dirty_last(Tab)}}
                             end
                     end
                 end)
@@ -187,13 +186,13 @@ apply_command(_Meta, {next, Tid, Source, [Tab, Key]}, State) ->
                         exit:{aborted, {badarg, [Tab, Key]}} ->
                             case mnesia:table_info(Tab, type) of
                                 ordered_set ->
-                                    {error, {aborted,
+                                    {ramnesia_error,
                                         {key_not_found,
-                                         closest_next(Tab, Key)}}};
+                                         closest_next(Tab, Key)}};
                                 _ ->
-                                    {error, {aborted,
+                                    {ramnesia_error,
                                         {key_not_found,
-                                         mnesia:dirty_first(Tab)}}}
+                                         mnesia:dirty_first(Tab)}}
                             end
                     end
                 end)
@@ -256,7 +255,7 @@ commit(Tid, Source, Writes, Deletes, DeletesObject, State0) ->
             State2 = add_committed(Tid, Source, State1),
             {State2, Effects, {ok, ok}};
         {aborted, Reason} ->
-            {State0, [], {error, {aborted, Reason}}}
+            {State0, [], {ramnesia_error, {aborted, Reason}}}
     end.
 
 -spec cleanup(transaction_id(), pid(), state()) ->
@@ -292,8 +291,8 @@ lock(LockItem, LockKind, Tid, Source, State) ->
                             || LockingTid <- Tids,
                             LockingTid > Tid ],
             Error = case LockingTids of
-                [] -> {error, locked_instant};
-                _ -> {error, locked}
+                [] -> {ramnesia_error, {aborted, locked_instant}};
+                _ -> {ramnesia_error, {aborted, locked}}
             end,
             %% Cleanup locks for the locked transaction.
             %% The transaction will be restarted with the same ID
@@ -415,7 +414,6 @@ add_committed(Tid, Source, State) ->
     State#state{committed_transactions = maps:put(Tid, Source, Committed)}.
 
 -spec cleanup_transaction_locks(transaction_id(), state()) -> {ra_machine:effects(), state()}.
-%% TODO make this notification smarter to not send to dead processes.
 cleanup_transaction_locks(Tid, State) ->
     #state{transaction_locks = TLGraph0} = State,
 
@@ -432,6 +430,7 @@ cleanup_transaction_locks(Tid, State) ->
                 case transaction_for_source(LockedSource, State) of
                     {ok, LockedTid}         ->
                         {true, {send_msg, LockedSource, {ramnesia_unlock, LockedTid}}};
+                    %% We expect dead transactions to be claned up by the monitor.
                     {error, no_transaction} -> false;
                     %% A different transaction started by the locked source
                     _                       -> false
@@ -515,7 +514,7 @@ with_pre_effects(Effects0, {State, Effects}) ->
 
 %% Combine with_lock and catch_abort
 -spec with_lock_catch_abort(lock_item(), lock_kind(), transaction_id(), pid(), state(),
-                            fun(() -> {ok, R} | {error, E})) ->
+                            fun(() -> {ok, R} | {ramnesia_error, E})) ->
     apply_result(R, E | locked | locked_instant | {aborted, term()}).
 with_lock_catch_abort(LockItem, LockKind, Tid, Source, State, Fun) ->
     with_lock(LockItem, LockKind, Tid, Source, State, fun(State1) ->
@@ -531,14 +530,14 @@ with_lock(LockItem, LockKind, Tid, Source, State, Fun) ->
         LockedApplyResult           -> LockedApplyResult
     end.
 
--spec catch_abort(state(), fun(() -> {ok, R} | {error, E})) ->
+-spec catch_abort(state(), fun(() -> {ok, R} | {ramnesia_error, E})) ->
     apply_result(R, E | {aborted, term()}).
 %% TODO: clean locks on abort
 catch_abort(State, Fun) ->
     try
         {State, [], Fun()}
     catch exit:{aborted, Reason} ->
-        {State, [], {error, {aborted, Reason}}}
+        {State, [], {ramnesia_error, {aborted, Reason}}}
     end.
 
 -spec with_transaction(transaction_id(), pid(),
@@ -548,9 +547,9 @@ catch_abort(State, Fun) ->
 with_transaction(Tid, Source, State, Fun) ->
     %% TODO: maybe check if transaction ID exists for other source.
     case transaction_for_source(Source, State) of
-        {error, no_transaction} -> {State, [], {error, no_transaction_for_pid}};
+        {error, no_transaction} -> {State, [], {ramnesia_error, no_transaction_for_pid}};
         {ok, Tid}               -> Fun();
-        {ok, DifferentTid}      -> {State, [], {error, {wrong_transaction_id, DifferentTid}}}
+        {ok, DifferentTid}      -> {State, [], {ramnesia_error, {wrong_transaction_id, DifferentTid}}}
     end.
 
 -spec maybe_skip_committed(transaction_id(), pid(),
@@ -565,7 +564,7 @@ maybe_skip_committed(Tid, Source, State, Fun) ->
         Source ->
             {State, [], {ok, ok}};
         OtherSource ->
-            {State, [], {error, {wrong_transaction_source, OtherSource}}}
+            {State, [], {ramnesia_error, {wrong_transaction_source, OtherSource}}}
     end.
 
 -ifdef(TEST).
