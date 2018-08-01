@@ -1,10 +1,6 @@
 -module(ramnesia).
 
 -export([start/1]).
--export([start/2]).
--export([stop/1]).
-
--behaviour(application).
 
 %% TODO: support table manipulation.
 -export([create_table/2, delete_table/1]).
@@ -48,6 +44,13 @@
 
 -export([record_key/1]).
 
+%% TODO: configure ra data dir for already started ra.
+start(DataDir) ->
+    _ = application:load(ra),
+    application:set_env(ra, data_dir, DataDir),
+    application:ensure_all_started(ramnesia),
+    ramnesia_node:start().
+
 -spec db_nodes() -> [node()].
 db_nodes() ->
     {ok, Nodes, _L} = ra:members(ramnesia_node:node_id()),
@@ -68,18 +71,6 @@ create_table(Tab, Opts) ->
 delete_table(Tab) ->
     %% TODO: handle errors/retry
     run_ra_command({delete_table, Tab}).
-
-start(DataDir) ->
-    _ = application:load(ra),
-    application:set_env(ra, data_dir, DataDir),
-    application:ensure_all_started(ramnesia).
-
-start(_Type, _Args) ->
-    ramnesia_node:start(),
-    ramnesia_sup:start_link().
-
-stop(_State) ->
-    ok.
 
 transaction(Fun) ->
     transaction(Fun, [], infinity).
@@ -132,8 +123,10 @@ transaction0(Fun, Args, Retries, _Err) ->
             ok = maybe_rollback_transaction(),
             {aborted, Reason};
         _:Reason ->
+            Trace = erlang:get_stacktrace(),
+            error_logger:warning_msg("Ramnesia transaction error ~p Stacktrace ~p", [Reason, Trace]),
             ok = maybe_rollback_transaction(),
-            {aborted, {Reason, erlang:get_stacktrace()}}
+            {aborted, {Reason, Trace}}
     after
         clean_transaction_context()
     end.
