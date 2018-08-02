@@ -38,11 +38,11 @@
     foldr/6,
 
     %% QLC
-    % select/5,
-    % select/6,
-    % select_cont/3,
+    select/5,
+    select/6,
+    select_cont/3,
 
-    % clear_table/4
+    clear_table/4
     ]).
 
 -type table() :: atom().
@@ -142,7 +142,7 @@ transaction0(Fun, Args, Retries, _Err) ->
 wait_for_unlock(Tid) ->
     receive {ra_event, _From, {machine, {ramnesia_unlock, Tid}}} -> ok
     after 5000 -> ok
-    end;
+    end.
 
 retry_locked_transaction(Fun, Args, Retries) ->
     NextRetries = case Retries of
@@ -357,10 +357,18 @@ index_read(_ActivityId, _Opaque, Tab, SecondaryKey, Pos, LockKind) ->
 table_info(ActivityId, Opaque, Tab, InfoItem) ->
     mnesia:table_info(ActivityId, Opaque, Tab, InfoItem).
 
-% clear_table(ActivityId, Opaque, Tab, Obj) ->
-
+clear_table(_ActivityId, _Opaque, _Tab, _Obj) ->
+    mnesia:abort(nested_transaction).
 
 %% TODO: QLC API.
+select(_ActivityId, _Opaque, _Tab, _MatchSpec, _LockKind) ->
+    mnesia:abort(not_implemented).
+
+select(_ActivityId, _Opaque, _Tab, _MatchSpec, _Limit, _LockKind) ->
+    mnesia:abort(not_implemented).
+
+select_cont(_ActivityId, _Opaque, _Cont) ->
+    mnesia:abort(not_implemented).
 
 %% ==========================
 
