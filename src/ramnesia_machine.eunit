@@ -17,7 +17,13 @@
 % %% Keep other process transaction locks
 % [{Pid1,TID1, [...]}] -> Pid -> [{Pid1,TID1, [...]},{Pid,TID2, []}]
 
+init_mnesia_table() ->
+    mnesia:start(),
+    mnesia:create_table(committed_transaction, []),
+    mnesia:clear_table(committed_transaction).
+
 start_transaction_test() ->
+    init_mnesia_table(),
     InitState = #state{},
     Source = self(),
     {#state{transactions = #{Source := Tid}, last_transaction_id = Tid},
@@ -25,6 +31,7 @@ start_transaction_test() ->
      {ok, Tid}} = ramnesia_machine:apply(none, {start_transaction, Source}, [], InitState).
 
 start_transaction_cleanup_test() ->
+    init_mnesia_table(),
     Source = self(),
     InitState = #state{transactions = #{Source => 1}, last_transaction_id = 1},
     {#state{transactions = #{Source := Tid}, last_transaction_id = Tid},
@@ -33,6 +40,7 @@ start_transaction_cleanup_test() ->
     true = Tid =/= 1.
 
 start_transaction_cleanup_locks_test() ->
+    init_mnesia_table(),
     Source = self(),
     Tid = 1,
     Source1 = spawn(fun() -> ok end),
@@ -73,6 +81,7 @@ start_transaction_cleanup_locks_test() ->
 % [{Pid, TID, [...]}] -> TID, Pid -> []
 
 rollback_no_transaction_error_test() ->
+    init_mnesia_table(),
     InitState = #state{},
     Source = self(),
     Tid = 1,
@@ -80,6 +89,7 @@ rollback_no_transaction_error_test() ->
         ramnesia_machine:apply(none, {rollback, Tid, Source, []}, [], InitState).
 
 rollback_wrong_transaction_error_test() ->
+    init_mnesia_table(),
     Source = self(),
     Tid = 2,
     DifferentTid = 1,
@@ -88,6 +98,7 @@ rollback_wrong_transaction_error_test() ->
         ramnesia_machine:apply(none, {rollback, Tid, Source, []}, [], InitState).
 
 rollback_cleanup_test() ->
+    init_mnesia_table(),
     Source = self(),
     InitState = #state{},
     {State = #state{last_transaction_id = LastTid}, [{monitor, process, Source}], {ok, Tid}} =
@@ -98,6 +109,7 @@ rollback_cleanup_test() ->
     Expected = State1.
 
 rollback_cleanup_locks_test() ->
+    init_mnesia_table(),
     Source = self(),
     Tid = 1,
     Source1 = spawn(fun() -> ok end),
@@ -133,30 +145,31 @@ rollback_cleanup_locks_test() ->
 %     do same as rollback
 
 commit_no_transaction_error_test() ->
-    mnesia:start(),
+    init_mnesia_table(),
     InitState = #state{},
     Source = self(),
     Tid = 1,
     {InitState, [], {ramnesia_error, no_transaction_for_pid}} =
-        ramnesia_machine:apply(none, {commit, Tid, Source, [[], [], []]}, [], InitState).
+        ramnesia_machine:apply(#{index => 1}, {commit, Tid, Source, [[], [], []]}, [], InitState).
 
 commit_wrong_transaction_error_test() ->
-    mnesia:start(),
+    init_mnesia_table(),
     Source = self(),
     Tid = 2,
     DifferentTid = 1,
     InitState = #state{transactions = #{Source => DifferentTid}, last_transaction_id = DifferentTid},
     {InitState, [], {ramnesia_error, {wrong_transaction_id, DifferentTid}}} =
-        ramnesia_machine:apply(none, {commit, Tid, Source, [[], [], []]}, [], InitState).
+        ramnesia_machine:apply(#{index => 1}, {commit, Tid, Source, [[], [], []]}, [], InitState).
 
 commit_cleanup_test() ->
-    mnesia:start(),
+    init_mnesia_table(),
     Source = self(),
     InitState = #state{},
     {State = #state{last_transaction_id = LastTid}, [{monitor, process, Source}], {ok, Tid}} =
         ramnesia_machine:apply(none, {start_transaction, Source}, [], InitState),
-    {State1, [], _} =
-        ramnesia_machine:apply(none, {commit, Tid, Source, [[], [], []]}, [], State),
+    %% Release cursor on commit
+    {State1, [{release_cursor,1, State1}], _} =
+        ramnesia_machine:apply(#{index => 1}, {commit, Tid, Source, [[], [], []]}, [], State),
     Expected = #state{last_transaction_id = LastTid,
                       transactions = #{},
                       committed_transactions = #{Tid => Source}},
@@ -167,7 +180,7 @@ commit_cleanup_test() ->
     Expected1 = State2.
 
 commit_cleanup_locks_test() ->
-    mnesia:start(),
+    init_mnesia_table(),
     Source = self(),
     Tid = 1,
     Source1 = spawn(fun() -> ok end),
@@ -186,7 +199,7 @@ commit_cleanup_locks_test() ->
                                       readlock_2 => [Tid2]}},
     {State1, [{demonitor, process, Source}]} =
         ramnesia_machine:apply(none, {finish, Tid, Source}, [],
-            element(1, ramnesia_machine:apply(none, {commit, Tid, Source, [[], [], []]}, [], InitState))),
+            element(1, ramnesia_machine:apply(#{index => 1}, {commit, Tid, Source, [[], [], []]}, [], InitState))),
 
     Expected = #state{last_transaction_id = LastTid,
                       transactions = #{Source1 => Tid1, Source2 => Tid2},
@@ -194,15 +207,15 @@ commit_cleanup_locks_test() ->
                       read_locks = #{readlock_1 => [Tid1], readlock_2 => [Tid2]}},
     Expected = State1,
     {State2, _, _} =
-        ramnesia_machine:apply(none, {commit, Tid1, Source1, [[], [], []]}, [], State1),
+        ramnesia_machine:apply(#{index => 1}, {commit, Tid1, Source1, [[], [], []]}, [], State1),
     {State3, _, _} =
-        ramnesia_machine:apply(none, {commit, Tid2, Source2, [[], [], []]}, [], State2),
+        ramnesia_machine:apply(#{index => 1}, {commit, Tid2, Source2, [[], [], []]}, [], State2),
     State3 = #state{last_transaction_id = LastTid,
                     transactions = #{},
                     committed_transactions = #{Tid1 => Source1, Tid2 => Source2}}.
 
 commit_write_test() ->
-    mnesia:start(),
+    init_mnesia_table(),
     mnesia:create_table(foo, []),
     %% To delete
     mnesia:dirty_write({foo, to_delete, val}),
@@ -228,7 +241,7 @@ commit_write_test() ->
                             {foo, to_write, val},
                             {foo, to_not_delete_object, not_val}]),
     {_State2, _, _} =
-        ramnesia_machine:apply(none, {commit, Tid, Source, [Writes, Deletes, DeletesObject]}, [], State1),
+        ramnesia_machine:apply(#{index => 1}, {commit, Tid, Source, [Writes, Deletes, DeletesObject]}, [], State1),
     Table = lists:usort(ets:tab2list(foo)),
     Expected = Table.
 
@@ -243,6 +256,7 @@ commit_write_test() ->
 %     return ok
 
 lock_no_transaction_error_test() ->
+    init_mnesia_table(),
     InitState = #state{},
     Source = self(),
     Tid = 1,
@@ -250,6 +264,7 @@ lock_no_transaction_error_test() ->
         ramnesia_machine:apply(none, {lock, Tid, Source, [{table, foo}, read]}, [], InitState).
 
 lock_wrong_transaction_error_test() ->
+    init_mnesia_table(),
     Source = self(),
     Tid = 2,
     DifferentTid = 1,
@@ -258,6 +273,7 @@ lock_wrong_transaction_error_test() ->
         ramnesia_machine:apply(none, {lock, Tid, Source, [{table, foo}, read]}, [], InitState).
 
 lock_aquire_read_test() ->
+    init_mnesia_table(),
     InitState = #state{},
     Source = self(),
     {State, _, {ok, Tid}} =
@@ -270,6 +286,7 @@ lock_aquire_read_test() ->
     ExpectedR = RLocks.
 
 lock_aquire_read_multiple_test() ->
+    init_mnesia_table(),
     InitState = #state{},
     Source = self(),
     Source1 = spawn(fun() -> ok end),
@@ -291,6 +308,7 @@ lock_aquire_read_multiple_test() ->
     ExpectedR1 = RLocks1.
 
 lock_aquire_write_test() ->
+    init_mnesia_table(),
     InitState = #state{},
     Source = self(),
     {State, _, {ok, Tid}} =
@@ -301,6 +319,7 @@ lock_aquire_write_test() ->
     RLocks = #{}.
 
 lock_read_blocked_by_write_test() ->
+    init_mnesia_table(),
     InitState = #state{},
     Source = self(),
     Source1 = spawn(fun() -> ok end),
@@ -326,6 +345,7 @@ lock_read_blocked_by_write_test() ->
 
 
 lock_read_blocked_by_table_write_test() ->
+    init_mnesia_table(),
     InitState = #state{},
     Source = self(),
     Source1 = spawn(fun() -> ok end),
@@ -342,6 +362,7 @@ lock_read_blocked_by_table_write_test() ->
     [{Tid1, Tid}] = simple_dgraph:in_edges(TLGraph, Tid).
 
 lock_read_cleanup_when_blocked_test() ->
+    init_mnesia_table(),
     InitState = #state{},
     Source = self(),
     Source1 = spawn(fun() -> ok end),
@@ -377,6 +398,7 @@ lock_read_cleanup_when_blocked_test() ->
     [{Tid1, Tid}] = simple_dgraph:in_edges(TLGraph, Tid).
 
 lock_write_blocked_by_write_test() ->
+    init_mnesia_table(),
     InitState = #state{},
     Source = self(),
     Source1 = spawn(fun() -> ok end),
@@ -393,6 +415,7 @@ lock_write_blocked_by_write_test() ->
     [{Tid1, Tid}] = simple_dgraph:in_edges(TLGraph, Tid).
 
 lock_write_blocked_by_table_write_test() ->
+    init_mnesia_table(),
     InitState = #state{},
     Source = self(),
     Source1 = spawn(fun() -> ok end),
@@ -409,6 +432,7 @@ lock_write_blocked_by_table_write_test() ->
     [{Tid1, Tid}] = simple_dgraph:in_edges(TLGraph, Tid).
 
 lock_write_blocked_by_read_test() ->
+    init_mnesia_table(),
     InitState = #state{},
     Source = self(),
     Source1 = spawn(fun() -> ok end),
@@ -425,6 +449,7 @@ lock_write_blocked_by_read_test() ->
     [{Tid1, Tid}] = simple_dgraph:in_edges(TLGraph, Tid).
 
 lock_write_blocked_by_table_read_test() ->
+    init_mnesia_table(),
     InitState = #state{},
     Source = self(),
     Source1 = spawn(fun() -> ok end),
@@ -446,6 +471,7 @@ lock_write_blocked_by_table_read_test() ->
 %     return read data
 
 read_no_transaction_error_test() ->
+    init_mnesia_table(),
     InitState = #state{},
     Source = self(),
     Tid = 1,
@@ -453,6 +479,7 @@ read_no_transaction_error_test() ->
         ramnesia_machine:apply(none, {read, Tid, Source, [table, foo, read]}, [], InitState).
 
 read_wrong_transaction_error_test() ->
+    init_mnesia_table(),
     Source = self(),
     Tid = 2,
     DifferentTid = 1,
@@ -461,6 +488,7 @@ read_wrong_transaction_error_test() ->
         ramnesia_machine:apply(none, {read, Tid, Source, [table, foo, read]}, [], InitState).
 
 read_locked_by_write_test() ->
+    init_mnesia_table(),
     InitState = #state{},
     Source = self(),
     Source1 = spawn(fun() -> ok end),
@@ -477,6 +505,7 @@ read_locked_by_write_test() ->
     [{Tid1, Tid}] = simple_dgraph:in_edges(TLGraph, Tid).
 
 read_with_write_lock_locked_by_read_test() ->
+    init_mnesia_table(),
     InitState = #state{},
     Source = self(),
     Source1 = spawn(fun() -> ok end),
@@ -493,7 +522,7 @@ read_with_write_lock_locked_by_read_test() ->
     [{Tid1, Tid}] = simple_dgraph:in_edges(TLGraph, Tid).
 
 read_returns_and_aquires_lock_test() ->
-    mnesia:start(),
+    init_mnesia_table(),
     mnesia:delete_table(foo),
     mnesia:create_table(foo, []),
     mnesia:dirty_write({foo, foo, val}),
@@ -514,6 +543,7 @@ read_returns_and_aquires_lock_test() ->
 %% Index read
 
 index_read_no_transaction_error_test() ->
+    init_mnesia_table(),
     InitState = #state{},
     Source = self(),
     Tid = 1,
@@ -521,6 +551,7 @@ index_read_no_transaction_error_test() ->
         ramnesia_machine:apply(none, {index_read, Tid, Source, [foo, foo, 1, read]}, [], InitState).
 
 index_read_wrong_transaction_error_test() ->
+    init_mnesia_table(),
     Source = self(),
     Tid = 2,
     DifferentTid = 1,
@@ -529,6 +560,7 @@ index_read_wrong_transaction_error_test() ->
         ramnesia_machine:apply(none, {index_read, Tid, Source, [foo, foo, 1, read]}, [], InitState).
 
 index_read_locked_by_write_test() ->
+    init_mnesia_table(),
     InitState = #state{},
     Source = self(),
     Source1 = spawn(fun() -> ok end),
@@ -545,7 +577,7 @@ index_read_locked_by_write_test() ->
     [{Tid1, Tid}] = simple_dgraph:in_edges(TLGraph, Tid).
 
 index_read_returns_and_aquires_lock_test() ->
-    mnesia:start(),
+    init_mnesia_table(),
     mnesia:delete_table(foo),
     mnesia:create_table(foo, []),
     mnesia:add_table_index(foo, val),
@@ -562,6 +594,7 @@ index_read_returns_and_aquires_lock_test() ->
 %% Match object
 
 match_object_no_transaction_error_test() ->
+    init_mnesia_table(),
     Pattern = {foo, '_', val},
     InitState = #state{},
     Source = self(),
@@ -570,6 +603,7 @@ match_object_no_transaction_error_test() ->
         ramnesia_machine:apply(none, {match_object, Tid, Source, [foo, Pattern, read]}, [], InitState).
 
 match_object_wrong_transaction_error_test() ->
+    init_mnesia_table(),
     Pattern = {foo, '_', val},
     Source = self(),
     Tid = 2,
@@ -579,6 +613,7 @@ match_object_wrong_transaction_error_test() ->
         ramnesia_machine:apply(none, {match_object, Tid, Source, [foo, Pattern, read]}, [], InitState).
 
 match_object_locked_by_write_test() ->
+    init_mnesia_table(),
     Pattern = {foo, '_', val},
     InitState = #state{},
     Source = self(),
@@ -596,8 +631,8 @@ match_object_locked_by_write_test() ->
     [{Tid1, Tid}] = simple_dgraph:in_edges(TLGraph, Tid).
 
 match_object_returns_and_aquires_lock_test() ->
+    init_mnesia_table(),
     Pattern = {foo, '_', val},
-    mnesia:start(),
     mnesia:delete_table(foo),
     mnesia:create_table(foo, []),
     mnesia:dirty_write({foo, foo, val}),
@@ -613,6 +648,7 @@ match_object_returns_and_aquires_lock_test() ->
 %% Index match object
 
 index_match_object_no_transaction_error_test() ->
+    init_mnesia_table(),
     Pattern = {foo, '_', val},
     InitState = #state{},
     Source = self(),
@@ -621,6 +657,7 @@ index_match_object_no_transaction_error_test() ->
         ramnesia_machine:apply(none, {index_match_object, Tid, Source, [foo, Pattern, 3, read]}, [], InitState).
 
 index_match_object_wrong_transaction_error_test() ->
+    init_mnesia_table(),
     Pattern = {foo, '_', val},
     Source = self(),
     Tid = 2,
@@ -630,6 +667,7 @@ index_match_object_wrong_transaction_error_test() ->
         ramnesia_machine:apply(none, {index_match_object, Tid, Source, [foo, Pattern, 3, read]}, [], InitState).
 
 index_match_object_locked_by_write_test() ->
+    init_mnesia_table(),
     Pattern = {foo, '_', val},
     InitState = #state{},
     Source = self(),
@@ -647,8 +685,8 @@ index_match_object_locked_by_write_test() ->
     [{Tid1, Tid}] = simple_dgraph:in_edges(TLGraph, Tid).
 
 index_match_object_returns_and_aquires_lock_test() ->
+    init_mnesia_table(),
     Pattern = {foo, '_', val},
-    mnesia:start(),
     mnesia:delete_table(foo),
     mnesia:create_table(foo, []),
     mnesia:add_table_index(foo, val),
@@ -665,6 +703,7 @@ index_match_object_returns_and_aquires_lock_test() ->
 %% All keys
 
 all_keys_no_transaction_error_test() ->
+    init_mnesia_table(),
     InitState = #state{},
     Source = self(),
     Tid = 1,
@@ -672,6 +711,7 @@ all_keys_no_transaction_error_test() ->
         ramnesia_machine:apply(none, {all_keys, Tid, Source, [foo, read]}, [], InitState).
 
 all_keys_wrong_transaction_error_test() ->
+    init_mnesia_table(),
     Source = self(),
     Tid = 2,
     DifferentTid = 1,
@@ -680,6 +720,7 @@ all_keys_wrong_transaction_error_test() ->
         ramnesia_machine:apply(none, {all_keys, Tid, Source, [foo, read]}, [], InitState).
 
 all_keys_locked_by_write_test() ->
+    init_mnesia_table(),
     InitState = #state{},
     Source = self(),
     Source1 = spawn(fun() -> ok end),
@@ -696,7 +737,7 @@ all_keys_locked_by_write_test() ->
     [{Tid1, Tid}] = simple_dgraph:in_edges(TLGraph, Tid).
 
 all_keys_returns_and_aquires_lock_test() ->
-    mnesia:start(),
+    init_mnesia_table(),
     mnesia:delete_table(foo),
     mnesia:create_table(foo, []),
     mnesia:dirty_write({foo, foo, val}),
@@ -721,6 +762,7 @@ all_keys_returns_and_aquires_lock_test() ->
 %% First
 
 first_no_transaction_error_test() ->
+    init_mnesia_table(),
     InitState = #state{},
     Source = self(),
     Tid = 1,
@@ -728,6 +770,7 @@ first_no_transaction_error_test() ->
         ramnesia_machine:apply(none, {first, Tid, Source, [foo]}, [], InitState).
 
 first_wrong_transaction_error_test() ->
+    init_mnesia_table(),
     Source = self(),
     Tid = 2,
     DifferentTid = 1,
@@ -736,6 +779,7 @@ first_wrong_transaction_error_test() ->
         ramnesia_machine:apply(none, {first, Tid, Source, [foo]}, [], InitState).
 
 first_locked_by_write_test() ->
+    init_mnesia_table(),
     InitState = #state{},
     Source = self(),
     Source1 = spawn(fun() -> ok end),
@@ -752,7 +796,7 @@ first_locked_by_write_test() ->
     [{Tid1, Tid}] = simple_dgraph:in_edges(TLGraph, Tid).
 
 first_returns_and_aquires_lock_test() ->
-    mnesia:start(),
+    init_mnesia_table(),
     mnesia:delete_table(foo),
     mnesia:create_table(foo, []),
     mnesia:dirty_write({foo, bar, val}),
@@ -768,6 +812,7 @@ first_returns_and_aquires_lock_test() ->
 %% Last
 
 last_no_transaction_error_test() ->
+    init_mnesia_table(),
     InitState = #state{},
     Source = self(),
     Tid = 1,
@@ -775,6 +820,7 @@ last_no_transaction_error_test() ->
         ramnesia_machine:apply(none, {last, Tid, Source, [foo]}, [], InitState).
 
 last_wrong_transaction_error_test() ->
+    init_mnesia_table(),
     Source = self(),
     Tid = 2,
     DifferentTid = 1,
@@ -783,6 +829,7 @@ last_wrong_transaction_error_test() ->
         ramnesia_machine:apply(none, {last, Tid, Source, [foo]}, [], InitState).
 
 last_locked_by_write_test() ->
+    init_mnesia_table(),
     InitState = #state{},
     Source = self(),
     Source1 = spawn(fun() -> ok end),
@@ -799,7 +846,7 @@ last_locked_by_write_test() ->
     [{Tid1, Tid}] = simple_dgraph:in_edges(TLGraph, Tid).
 
 last_returns_and_aquires_lock_test() ->
-    mnesia:start(),
+    init_mnesia_table(),
     mnesia:delete_table(foo),
     mnesia:create_table(foo, []),
     mnesia:dirty_write({foo, bar, val}),
@@ -815,6 +862,7 @@ last_returns_and_aquires_lock_test() ->
 %% Prev
 
 prev_no_transaction_error_test() ->
+    init_mnesia_table(),
     InitState = #state{},
     Source = self(),
     Tid = 1,
@@ -822,6 +870,7 @@ prev_no_transaction_error_test() ->
         ramnesia_machine:apply(none, {prev, Tid, Source, [foo, bar]}, [], InitState).
 
 prev_wrong_transaction_error_test() ->
+    init_mnesia_table(),
     Source = self(),
     Tid = 2,
     DifferentTid = 1,
@@ -830,6 +879,7 @@ prev_wrong_transaction_error_test() ->
         ramnesia_machine:apply(none, {prev, Tid, Source, [foo, bar]}, [], InitState).
 
 prev_locked_by_write_test() ->
+    init_mnesia_table(),
     InitState = #state{},
     Source = self(),
     Source1 = spawn(fun() -> ok end),
@@ -846,7 +896,7 @@ prev_locked_by_write_test() ->
     [{Tid1, Tid}] = simple_dgraph:in_edges(TLGraph, Tid).
 
 prev_returns_and_aquires_lock_test() ->
-    mnesia:start(),
+    init_mnesia_table(),
     mnesia:delete_table(foo),
     mnesia:create_table(foo, []),
     mnesia:dirty_write({foo, baz, val}),
@@ -863,6 +913,7 @@ prev_returns_and_aquires_lock_test() ->
 %% Next
 
 next_no_transaction_error_test() ->
+    init_mnesia_table(),
     InitState = #state{},
     Source = self(),
     Tid = 1,
@@ -870,6 +921,7 @@ next_no_transaction_error_test() ->
         ramnesia_machine:apply(none, {next, Tid, Source, [foo, bar]}, [], InitState).
 
 next_wrong_transaction_error_test() ->
+    init_mnesia_table(),
     Source = self(),
     Tid = 2,
     DifferentTid = 1,
@@ -878,6 +930,7 @@ next_wrong_transaction_error_test() ->
         ramnesia_machine:apply(none, {next, Tid, Source, [foo, bar]}, [], InitState).
 
 next_locked_by_write_test() ->
+    init_mnesia_table(),
     InitState = #state{},
     Source = self(),
     Source1 = spawn(fun() -> ok end),
@@ -894,7 +947,7 @@ next_locked_by_write_test() ->
     [{Tid1, Tid}] = simple_dgraph:in_edges(TLGraph, Tid).
 
 next_returns_and_aquires_lock_test() ->
-    mnesia:start(),
+    init_mnesia_table(),
     mnesia:delete_table(foo),
     mnesia:create_table(foo, []),
     mnesia:dirty_write({foo, baz, val}),
@@ -912,6 +965,7 @@ next_returns_and_aquires_lock_test() ->
 %     rollback a transaction for the pid
 
 down_no_transaction_test() ->
+    init_mnesia_table(),
     InitState = #state{},
     Source = self(),
     %% The return value is ignored
@@ -919,6 +973,7 @@ down_no_transaction_test() ->
         ramnesia_machine:apply(none, {down, Source, reason}, [], InitState).
 
 down_cleanup_test() ->
+    init_mnesia_table(),
     Source = self(),
     InitState = #state{},
     {State = #state{last_transaction_id = LastTid}, [{monitor, process, Source}], _} =
@@ -929,6 +984,7 @@ down_cleanup_test() ->
     Expected = State1.
 
 down_cleanup_locks_test() ->
+    init_mnesia_table(),
     Source = self(),
     Tid = 1,
     Source1 = spawn(fun() -> ok end),

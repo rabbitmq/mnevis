@@ -44,11 +44,26 @@
 
 -type apply_result(T, Err) :: {state(), ra_machine:effects(), reply(T, Err)}.
 
+-record(committed_transaction, { transaction_id, value }).
 %% Ra machine callbacks
 
 -spec init(config()) -> {state(), ra_machine:effects()}.
 init(_Conf) ->
+    case create_committed_transaction_table() of
+        {atomic, ok} -> ok;
+        {aborted,{already_exists,committed_transaction}} -> ok;
+        Other -> error({cannot_create_committed_transaction_table, Other})
+    end,
     {#state{}, []}.
+
+create_committed_transaction_table() ->
+    OnDiskOpt = case mnesia:system_info(use_dir) of
+        true  -> [{disc_copies, [node()]}];
+        false -> []
+    end,
+    mnesia:create_table(committed_transaction,
+        [{attributes, record_info(fields, committed_transaction)},
+         {record_name, committed_transaction}] ++ OnDiskOpt).
 
 -spec apply(map(), command(), ra_machine:effects(), state()) ->
     {state(), ra_machine:effects()} | {state(), ra_machine:effects(), reply()}.
@@ -72,12 +87,21 @@ apply_command(_Meta, {rollback, Tid, Source, []}, State) ->
             cleanup(Tid, Source, State)
         end);
 
-apply_command(_Meta, {commit, Tid, Source, [Writes, Deletes, DeletesObject]}, State) ->
+apply_command(Meta, {commit, Tid, Source, [Writes, Deletes, DeletesObject]}, State) ->
     maybe_skip_committed(Tid, Source, State,
         fun() ->
             with_transaction(Tid, Source, State,
                 fun() ->
-                    commit(Tid, Source, Writes, Deletes, DeletesObject, State)
+                    {NewState, Effects, Result} =
+                        commit(Tid, Source, Writes, Deletes, DeletesObject, State),
+                    case Result of
+                        {ok, ok} ->
+                            {NewState,
+                             Effects ++ snapshot_effects(Meta, NewState),
+                             Result};
+                        _ ->
+                            {NewState, Effects, Result}
+                    end
                 end)
         end);
 
@@ -233,17 +257,24 @@ start_transaction(State, Source) ->
     #state{last_transaction_id = LastTid,
            transactions = Transactions} = State,
     Tid = LastTid + 1,
-
-    {State#state{last_transaction_id = Tid,
-                 transactions = maps:put(Source, Tid, Transactions)},
-     [{monitor, process, Source}],
-     {ok, Tid}}.
+    case transaction_recorded_as_committed(Tid) of
+        %% This is a log replay and transaction is already committed.
+        %% No need to create a transaction and monitor.
+        true ->
+            {State#state{last_transaction_id = Tid},
+             [],
+             {ramnesia_error, transaction_committed}};
+        false ->
+            {State#state{last_transaction_id = Tid,
+                         transactions = maps:put(Source, Tid, Transactions)},
+             [{monitor, process, Source}],
+             {ok, Tid}}
+    end.
 
 -spec commit(transaction_id(), pid(), [change()], [change()], [change()], state()) -> apply_result(ok).
 commit(Tid, Source, Writes, Deletes, DeletesObject, State0) ->
-%% TODO: record committed transaction number.
-%% TODO: snapshots.
-    case mnesia:transaction(fun() ->
+    case mnesia:sync_transaction(fun() ->
+            ok = save_committed_transaction(Tid),
             _ = apply_deletes(Deletes),
             _ = apply_writes(Writes),
             _ = apply_deletes_object(DeletesObject),
@@ -300,6 +331,10 @@ lock(LockItem, LockKind, Tid, Source, State) ->
             {State2, [], Error}
     end.
 
+-spec snapshot_effects(map(), state()) -> [ra_machine:effects()].
+snapshot_effects(#{index := RaftIdx}, State) ->
+    [{release_cursor, RaftIdx, State}].
+
 %% ==========================
 
 %% Mnesia operations
@@ -345,6 +380,25 @@ closest_prev(Tab, Key, CurrentKey) ->
     case Key > CurrentKey of
         true  -> CurrentKey;
         false -> closest_prev(Tab, Key, mnesia:dirty_prev(Tab, CurrentKey))
+    end.
+
+% TODO: optimise transaction numbers
+-spec save_committed_transaction(transaction_id()) -> ok.
+save_committed_transaction(Tid) ->
+    ok = mnesia:write({committed_transaction, Tid, committed}).
+
+-spec transaction_recorded_as_committed(transaction_id()) -> boolean().
+transaction_recorded_as_committed(Tid) ->
+    Res = mnesia:sync_transaction(fun() ->
+        mnesia:read(committed_transaction, Tid)
+    end),
+    case Res of
+        {atomic, []} ->
+            false;
+        {atomic, [{committed_transaction, Tid, committed}]} ->
+            true;
+        {aborted, Err} ->
+            error({cannot_read_committed_transaction, Err})
     end.
 
 %% ==========================
@@ -451,6 +505,7 @@ locking_transactions(LockItem, LockKind, Tid, State) ->
     ++
     table_locking_transactions(LockItem, LockKind, Tid, State).
 
+%% TODO: table lock should be Locked BY any item lock in the table.
 -spec item_locked_transactions(lock_item(), lock_kind(), transaction_id(), state()) -> [transaction_id()].
 item_locked_transactions(LockItem, read, Tid, State) ->
     write_locking_transactions(LockItem, Tid, State);
@@ -557,12 +612,25 @@ catch_abort(State, Tid, Fun) ->
                        fun(() -> apply_result(T, E))) ->
     apply_result(T, E | {wrong_transaction_id, transaction_id()} | no_transaction_for_pid).
 with_transaction(Tid, Source, State, Fun) ->
-    %% TODO: maybe check if transaction ID exists for other source.
-    case transaction_for_source(Source, State) of
-        {error, no_transaction} -> {State, [], {ramnesia_error, no_transaction_for_pid}};
-        {ok, Tid}               -> Fun();
-        {ok, DifferentTid}      -> {State, [], {ramnesia_error, {wrong_transaction_id, DifferentTid}}}
+    case transaction_recorded_as_committed(Tid) of
+        true ->
+            %% This is a log replay and the transaction is already committed.
+            %% Remove the committed transaction from state
+            %% Ignore unlock messages, we don't want to send anything.
+            {State1, _, _} = cleanup(Tid, Source, State),
+            {State1, [{demonitor, process, Source}], {ramnesia_error, transaction_committed}};
+        false ->
+            %% TODO: maybe check if transaction ID exists for other source.
+            case transaction_for_source(Source, State) of
+                {error, no_transaction} ->
+                    {State, [], {ramnesia_error, no_transaction_for_pid}};
+                {ok, Tid}               ->
+                    Fun();
+                {ok, DifferentTid}      ->
+                    {State, [], {ramnesia_error, {wrong_transaction_id, DifferentTid}}}
+            end
     end.
+
 
 -spec maybe_skip_committed(transaction_id(), pid(),
                            state(),

@@ -132,7 +132,7 @@ transaction0(Fun, Args, Retries, _Err) ->
             {aborted, Reason};
         _:Reason ->
             Trace = erlang:get_stacktrace(),
-            error_logger:warning_msg("Ramnesia transaction error ~p Stacktrace ~p", [Reason, Trace]),
+            error_logger:warning_msg("Ramnesia transaction error ~p Stacktrace ~p~n", [Reason, Trace]),
             ok = maybe_rollback_transaction(),
             {aborted, {Reason, Trace}}
     after
