@@ -19,6 +19,49 @@ ramnesia_node:trigger_election().
 
 This will start a single node cluster. Not so useful.
 
+To start a multi-node configuration, you will have to provide `initital_nodes`
+environment variable to the `ramnesia` application:
+
+```
+[
+{ramnesia, [{initial_nodes, [node1, node2]}]}
+].
+```
+
+If you use nodenames without domains, the `inet_db:gethostname()` is used.
+
+If your application includes ramnesia as a dependency, you will also have to
+provide a ra directory, because it's used by ra on application start,
+**this should be fixed in future ra versions**
+
+```
+[
+{ra, data_dir, "my/ra/directory"},
+{ramnesia, [{initial_nodes, [node1, node2]}]}
+].
+```
+
+In this case you can run
+```
+ramnesia_node:start(),
+ramnesia_node:trigger_election().
+```
+
+To start a node.
+
+To make sure all nodes are started, you can run
+```
+{ok, _, _} = ra:members(ramnesia_node:node_id()).
+```
+
+If everything is fine, you should be able to use ramnesia transactions.
+
+If you want to integrate with existing mnesia configuration, **you should configure
+mnesia first**, and then start a ramnesia node.
+
+**Mnesia should not be clustered on the same nodes as ramnesia
+this behaviour is undefined.**
+
 TODO: more info on configuration
 
 
@@ -123,13 +166,18 @@ Commit and rollback commands can be repeated multiple times until the transactio
 process receives reply from the raft machine. Machine state keeps track of committed
 transactions to not apply the changes multiple times.
 
+### Snapshotting and log replay
+
+When a transaction is committed, the changes are saved on disk to mnesia DB.
+When log is replayed after a snapshot it will re-run some commits, which might
+have already succeed. To avoid that the committed transactions IDs are saved
+in a mnesia table and all operations for this transaction will be skipped and
+return an error. The error will not be reported to the client, because if it's
+a replay the client will not be there anymore.
+
+A snapshot is requested via release_cursor on every successful commit operation.
 
 ## TODO
-
-There is currently no guarantee for state machine safety in case of re-applied
-commands. This can be solved by recording committed transaction IDs in the mnesia
-database, so no written data will be written again.
-This will effectively be a snapshotting mechanism.
 
 `select` operations are not implementing, which means that `qlc` quieries will not work.
 
@@ -143,6 +191,8 @@ Startup configuration can be improved.
 More docs?
 
 There is a tutorial jepsen test which needs more scenarios https://github.com/hairyhum/jepsen.ramnesia
+
+There is a demo rabbitmq integration in the `ramnesia-experimental` branch
 
 More unit tests are needed for the context module.
 
