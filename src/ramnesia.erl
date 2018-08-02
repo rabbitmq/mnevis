@@ -35,7 +35,14 @@
     prev/4,
     next/4,
     foldl/6,
-    foldr/6
+    foldr/6,
+
+    %% QLC
+    % select/5,
+    % select/6,
+    % select_cont/3,
+
+    % clear_table/4
     ]).
 
 -type table() :: atom().
@@ -97,8 +104,13 @@ transaction0(_Fun, _Args, 0, Err) ->
     {aborted, Err};
 transaction0(Fun, Args, Retries, _Err) ->
     try
+        cleanup_all_unlock_messages(),
         case is_retry() of
-            %% TODO: maybe notify the machine about retry.
+            %% We do not notify the machine about retry because retrying
+            %% transaction state in the machine should not be different from
+            %% the new transaction, except transaction_locks.
+            %% Worst case - some stray unlock messages in the message box,
+            %% which are cleaned up on transaction cleanup.
             true  -> ok;
             false -> start_transaction()
         end,
@@ -113,17 +125,8 @@ transaction0(Fun, Args, Retries, _Err) ->
             %% Wait for unlocked message meaning that locking transactions finished
             Context = get_transaction_context(),
             Tid = ramnesia_context:transaction_id(Context),
-            %% TODO: prove there can be no rogue unlock messages
-            receive
-                {ra_event, _From, {machine, {ramnesia_unlock, Tid}}} ->
-                    cleanup_unlock_messages(Tid),
-                    retry_locked_transaction(Fun, Args, Retries);
-                {ra_event, _From, {machine, {ramnesia_unlock, OtherTid}}} ->
-                    error({other_tid, OtherTid})
-            after 5000 ->
-                cleanup_unlock_messages(Tid),
-                retry_locked_transaction(Fun, Args, Retries)
-            end;
+            wait_for_unlock(Tid),
+            retry_locked_transaction(Fun, Args, Retries);
         exit:{aborted, Reason} ->
             ok = maybe_rollback_transaction(),
             {aborted, Reason};
@@ -135,6 +138,11 @@ transaction0(Fun, Args, Retries, _Err) ->
     after
         clean_transaction_context()
     end.
+
+wait_for_unlock(Tid) ->
+    receive {ra_event, _From, {machine, {ramnesia_unlock, Tid}}} -> ok
+    after 5000 -> ok
+    end;
 
 retry_locked_transaction(Fun, Args, Retries) ->
     NextRetries = case Retries of
@@ -349,6 +357,9 @@ index_read(_ActivityId, _Opaque, Tab, SecondaryKey, Pos, LockKind) ->
 table_info(ActivityId, Opaque, Tab, InfoItem) ->
     mnesia:table_info(ActivityId, Opaque, Tab, InfoItem).
 
+% clear_table(ActivityId, Opaque, Tab, Obj) ->
+
+
 %% TODO: QLC API.
 
 %% ==========================
@@ -444,16 +455,9 @@ key_inserted_between(Tab, PrevKey, Key, Direction, Context) ->
 
 cleanup_all_unlock_messages() ->
     receive
-        {ra_event, _From, {machine, {ramnesia_unlock, _}}} ->
-            cleanup_all_unlock_messages()
-    after 0 ->
-        ok
-    end.
-
-cleanup_unlock_messages(Tid) ->
-    receive
         {ra_event, _From, {machine, {ramnesia_unlock, Tid}}} ->
-            cleanup_unlock_messages(Tid)
+            error_logger:info_msg("Transaction unlock message for transaction ~p on process ~p", [Tid, self()]),
+            cleanup_all_unlock_messages()
     after 0 ->
         ok
     end.

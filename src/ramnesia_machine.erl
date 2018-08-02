@@ -82,7 +82,7 @@ apply_command(_Meta, {commit, Tid, Source, [Writes, Deletes, DeletesObject]}, St
         end);
 
 apply_command(_Meta, {finish, Tid, Source}, State) ->
-    State1 = cleanup_commmitted(Tid, Source, State),
+    State1 = cleanup_committed(Tid, Source, State),
     {State1, [{demonitor, process, Source}]};
 
 apply_command(_Meta, {lock, Tid, Source, [LockItem, LockKind]}, State) ->
@@ -90,7 +90,6 @@ apply_command(_Meta, {lock, Tid, Source, [LockItem, LockKind]}, State) ->
         fun() ->
             lock(LockItem, LockKind, Tid, Source, State)
         end);
-
 apply_command(_Meta, {read, Tid, Source, [Tab, Key, LockKind]}, State) ->
     with_transaction(Tid, Source, State,
         fun() ->
@@ -262,11 +261,11 @@ commit(Tid, Source, Writes, Deletes, DeletesObject, State0) ->
     apply_result(ok).
 cleanup(Tid, Source, State0) ->
     {UnlockedEffects, State1} = cleanup_transaction(Tid, Source, State0),
-    State2 = cleanup_commmitted(Tid, Source, State1),
+    State2 = cleanup_committed(Tid, Source, State1),
     {State2, UnlockedEffects ++ [{demonitor, process, Source}], {ok, ok}}.
 
--spec cleanup_commmitted(transaction_id(), pid(), state()) -> state().
-cleanup_commmitted(Tid, Source, State) ->
+-spec cleanup_committed(transaction_id(), pid(), state()) -> state().
+cleanup_committed(Tid, Source, State) ->
     #state{ committed_transactions = Committed } = State,
     case maps:get(Tid, Committed, not_found) of
         not_found ->
@@ -518,26 +517,39 @@ with_pre_effects(Effects0, {State, Effects}) ->
     apply_result(R, E | locked | locked_instant | {aborted, term()}).
 with_lock_catch_abort(LockItem, LockKind, Tid, Source, State, Fun) ->
     with_lock(LockItem, LockKind, Tid, Source, State, fun(State1) ->
-        catch_abort(State1, Fun)
+        catch_abort(State1, Tid, Fun)
     end).
 
 -spec with_lock(lock_item(), lock_kind(), transaction_id(), pid(), state(),
                 fun((state()) -> apply_result(T, E))) ->
     apply_result(T, E | locked | locked_instant).
-with_lock(LockItem, LockKind, Tid, Source, State, Fun) ->
-    case lock(LockItem, LockKind, Tid, Source, State) of
-        {State1, Effects, {ok, ok}} -> with_pre_effects(Effects, Fun(State1));
+with_lock(LockItem, LockKind, Tid, Source, State0, Fun) ->
+    %% If we run lock operation - the current transaction is not locked anymore
+    %% It might have been restarted by timeout. We need to cleanup it's lockers
+    State1 = unlock_transaction(Tid, State0),
+
+    case lock(LockItem, LockKind, Tid, Source, State1) of
+        {State2, Effects, {ok, ok}} -> with_pre_effects(Effects, Fun(State2));
         LockedApplyResult           -> LockedApplyResult
     end.
 
--spec catch_abort(state(), fun(() -> {ok, R} | {ramnesia_error, E})) ->
+-spec unlock_transaction(transaction_id(), state()) -> state().
+unlock_transaction(Tid, State) ->
+    %% Remove incoming edges for the transaction.
+    #state{transaction_locks = TLGraph0} = State,
+    OldLocks = simple_dgraph:in_edges(TLGraph0, Tid),
+    TLGraph1 = simple_dgraph:del_edges(TLGraph0, OldLocks),
+    State#state{transaction_locks = TLGraph1}.
+
+-spec catch_abort(state(), transaction_id(), fun(() -> {ok, R} | {ramnesia_error, E})) ->
     apply_result(R, E | {aborted, term()}).
-%% TODO: clean locks on abort
-catch_abort(State, Fun) ->
+catch_abort(State, Tid, Fun) ->
     try
         {State, [], Fun()}
     catch exit:{aborted, Reason} ->
-        {State, [], {ramnesia_error, {aborted, Reason}}}
+        State1 = cleanup_locks(Tid, State),
+        %% TODO: maybe clean transaction locks here too.
+        {State1, [], {ramnesia_error, {aborted, Reason}}}
     end.
 
 -spec with_transaction(transaction_id(), pid(),
