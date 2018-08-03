@@ -115,7 +115,7 @@ APIs for mnesia operations (like read/write/delete/delete_object etc.)
 They change the world state and should be isolated in a transaction,
 while read operations should only check the locks.
 
-There is more on operation convergence in the `ramnesia_context.erl`
+There is more on operation convergence in the [`ramnesia_context.erl`](./src/ramnesia_context.erl)
 
 For this purpose (similarly to mnesia transactions) there is an internal context
 storage, which stores all the write operations until transaction is committed
@@ -166,6 +166,8 @@ Commit and rollback commands can be repeated multiple times until the transactio
 process receives reply from the raft machine. Machine state keeps track of committed
 transactions to not apply the changes multiple times.
 
+See more in [STATEMACHINE.md](./STATEMACHINE.md)
+
 ### Snapshotting and log replay
 
 When a transaction is committed, the changes are saved on disk to mnesia DB.
@@ -197,11 +199,4 @@ There is a demo rabbitmq integration in the `ramnesia-experimental` branch
 More unit tests are needed for the context module.
 
 More property tests are needed for multi-node setup.
-
-
-
-
-
-
-
 

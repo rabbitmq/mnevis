@@ -285,6 +285,7 @@ commit(Tid, Source, Writes, Deletes, DeletesObject, State0) ->
             State2 = add_committed(Tid, Source, State1),
             {State2, Effects, {ok, ok}};
         {aborted, Reason} ->
+            %% TODO: maybe clean transaction here
             {State0, [], {ramnesia_error, {aborted, Reason}}}
     end.
 
