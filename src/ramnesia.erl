@@ -192,21 +192,6 @@ rollback_transaction() ->
     {ok, _} = execute_command_with_retry(get_transaction_context(), rollback, []),
     ok.
 
-execute_command_with_retry(Context, Command, Args) ->
-    Tid = ramnesia_context:transaction_id(Context),
-    RaCommand = {Command, Tid, self(), Args},
-    NodeId = ramnesia_node:node_id(),
-    Leader = retry_ra_command(NodeId, RaCommand),
-    {ok, Leader}.
-
-retry_ra_command(NodeId, RaCommand) ->
-    case ra:send_and_await_consensus(NodeId, RaCommand) of
-        {ok, {ok, ok}, Leader}   -> Leader;
-        {ok, {error, Reason}, _} -> mnesia:abort({apply_error, Reason});
-        {error, Reason}          -> mnesia:abort(Reason);
-        {timeout, _}             -> retry_ra_command(NodeId, RaCommand)
-    end.
-
 start_transaction() ->
     {ok, Tid} = run_ra_command({start_transaction, self()}),
     update_transaction_context(ramnesia_context:init(Tid)).
@@ -397,6 +382,22 @@ run_ra_command(RaCommand) ->
         {ok, {ramnesia_error, Reason}, _}            -> {error, Reason};
         {error, Reason}                              -> mnesia:abort(Reason);
         {timeout, _}                                 -> mnesia:abort(timeout)
+    end.
+
+execute_command_with_retry(Context, Command, Args) ->
+    Tid = ramnesia_context:transaction_id(Context),
+    RaCommand = {Command, Tid, self(), Args},
+    NodeId = ramnesia_node:node_id(),
+    Leader = retry_ra_command(NodeId, RaCommand),
+    {ok, Leader}.
+
+retry_ra_command(NodeId, RaCommand) ->
+    case ra:send_and_await_consensus(NodeId, RaCommand) of
+        {ok, {ok, ok}, Leader}            -> Leader;
+        {ok, {ramnesia_error, Reason}, _} -> mnesia:abort({apply_error, Reason});
+        {error, _Reason}         -> timer:sleep(100),
+                                    retry_ra_command(NodeId, RaCommand);
+        {timeout, _}             -> retry_ra_command(NodeId, RaCommand)
     end.
 
 do_index_read(Context, Tab, SecondaryKey, Pos, LockKind) ->
