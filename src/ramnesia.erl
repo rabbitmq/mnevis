@@ -377,11 +377,11 @@ execute_command(Context, Command, Args) ->
 run_ra_command(RaCommand) ->
     NodeId = ramnesia_node:node_id(),
     case ra:send_and_await_consensus(NodeId, RaCommand) of
-        {ok, {ok, Result}, _}                        -> {ok, Result};
-        {ok, {ramnesia_error, {aborted, Reason}}, _} -> mnesia:abort(Reason);
-        {ok, {ramnesia_error, Reason}, _}            -> {error, Reason};
-        {error, Reason}                              -> mnesia:abort(Reason);
-        {timeout, _}                                 -> mnesia:abort(timeout)
+        {ok, {ok, Result}, _}               -> {ok, Result};
+        {ok, {error, {aborted, Reason}}, _} -> mnesia:abort(Reason);
+        {ok, {error, Reason}, _}            -> {error, Reason};
+        {error, Reason}                     -> mnesia:abort(Reason);
+        {timeout, _}                        -> mnesia:abort(timeout)
     end.
 
 execute_command_with_retry(Context, Command, Args) ->
@@ -393,8 +393,9 @@ execute_command_with_retry(Context, Command, Args) ->
 
 retry_ra_command(NodeId, RaCommand) ->
     case ra:send_and_await_consensus(NodeId, RaCommand) of
-        {ok, {ok, ok}, Leader}            -> Leader;
-        {ok, {ramnesia_error, Reason}, _} -> mnesia:abort({apply_error, Reason});
+        {ok, {ok, ok}, Leader}              -> Leader;
+        {ok, {error, {aborted, Reason}}, _} -> mnesia:abort(Reason);
+        {ok, {error, Reason}, _} -> mnesia:abort({apply_error, Reason});
         {error, _Reason}         -> timer:sleep(100),
                                     retry_ra_command(NodeId, RaCommand);
         {timeout, _}             -> retry_ra_command(NodeId, RaCommand)
