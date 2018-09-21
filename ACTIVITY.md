@@ -44,6 +44,7 @@ Mnesia implements transactions as activities. Activity is a context in which
 transaction function (or activity function) is called.
 
 http://erlang.org/doc/man/mnesia.html#activity-4
+http://erlang.org/doc/apps/mnesia/Mnesia_App_B.html
 
 Activity is stared implicitly by `mnesia:transaction` or explicitly with `mnesia:activity`.
 
