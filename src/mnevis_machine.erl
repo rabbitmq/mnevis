@@ -274,11 +274,17 @@ start_transaction(State, Source) ->
 -spec commit(transaction_id(), pid(), [change()], [change()], [change()], state()) -> apply_result(ok).
 commit(Tid, Source, Writes, Deletes, DeletesObject, State0) ->
     case mnesia:sync_transaction(fun() ->
-            ok = save_committed_transaction(Tid),
-            _ = apply_deletes(Deletes),
-            _ = apply_writes(Writes),
-            _ = apply_deletes_object(DeletesObject),
-            ok
+            case mnesia:read(committed_transaction, Tid) of
+                [] ->
+                    ok = save_committed_transaction(Tid),
+                    _ = apply_deletes(Deletes),
+                    _ = apply_writes(Writes),
+                    _ = apply_deletes_object(DeletesObject),
+                    ok;
+                %% Transaction is already committed.
+                [{committed_transaction, Tid, committed}] ->
+                    ok
+            end
         end) of
         {atomic, ok} ->
             {Effects, State1} = cleanup_transaction(Tid, Source, State0),
