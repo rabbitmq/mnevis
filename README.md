@@ -108,6 +108,8 @@ Ramnesia is designed to support (most of) mnesia transaction functions as is.
 This project uses [mnesia activity](http://erlang.org/doc/man/mnesia.html#activity-4)
 feature to implement a custom transaction layer for mnesia.
 
+Little bit more on activities [here](./ACTIVITY.md)
+
 The `mnevis` module implements the `mnesia_activity` behaviour, providing
 APIs for mnesia operations (like read/write/delete/delete_object etc.)
 
