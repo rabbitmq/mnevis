@@ -10,56 +10,56 @@ by the RabbitMQ.
 
 ## Usage
 
-You need to start a ramnesia ra node and trigger election:
+You need to start a mnevis ra node and trigger election:
 
 ```
-ramnesia:start("my/ra/directory"),
-ramnesia_node:trigger_election().
+mnevis:start("my/ra/directory"),
+mnevis_node:trigger_election().
 ```
 
 This will start a single node cluster. Not so useful.
 
 To start a multi-node configuration, you will have to provide `initital_nodes`
-environment variable to the `ramnesia` application:
+environment variable to the `mnevis` application:
 
 ```
 [
-{ramnesia, [{initial_nodes, [node1, node2]}]}
+{mnevis, [{initial_nodes, [node1, node2]}]}
 ].
 ```
 
 If you use nodenames without domains, the `inet_db:gethostname()` is used.
 
-If your application includes ramnesia as a dependency, you will also have to
+If your application includes mnevis as a dependency, you will also have to
 provide a ra directory, because it's used by ra on application start,
 **this should be fixed in future ra versions**
 
 ```
 [
 {ra, data_dir, "my/ra/directory"},
-{ramnesia, [{initial_nodes, [node1, node2]}]}
+{mnevis, [{initial_nodes, [node1, node2]}]}
 ].
 ```
 
 In this case you can run
 ```
-ramnesia_node:start(),
-ramnesia_node:trigger_election().
+mnevis_node:start(),
+mnevis_node:trigger_election().
 ```
 
 To start a node.
 
 To make sure all nodes are started, you can run
 ```
-{ok, _, _} = ra:members(ramnesia_node:node_id()).
+{ok, _, _} = ra:members(mnevis_node:node_id()).
 ```
 
-If everything is fine, you should be able to use ramnesia transactions.
+If everything is fine, you should be able to use mnevis transactions.
 
 If you want to integrate with existing mnesia configuration, **you should configure
-mnesia first**, and then start a ramnesia node.
+mnesia first**, and then start a mnevis node.
 
-**Mnesia should not be clustered on the same nodes as ramnesia
+**Mnesia should not be clustered on the same nodes as mnevis
 this behaviour is undefined.**
 
 TODO: more info on configuration
@@ -68,7 +68,7 @@ TODO: more info on configuration
 You can run transactions the same way as in mnesia:
 
 ```
-{atomic, ok} = ramnesia:transaction(fun() -> mnesia:write({foo, bar, baz}) end).
+{atomic, ok} = mnevis:transaction(fun() -> mnesia:write({foo, bar, baz}) end).
 ```
 
 ## How does it work?
@@ -86,7 +86,7 @@ For example, to run a transaction:
 end).
 
 %% Ranesia transaction
-{atomic, ok} = ramnesia:transaction(fun() ->
+{atomic, ok} = mnevis:transaction(fun() ->
     ok = mnesia:write({foo, bar, baz}),
     [{foo, bar, baz}] = mnesia:read(foo, bar),
     ok = mnesia:write({foo, bar, bazz})
@@ -101,21 +101,21 @@ Ramnesia is designed to support (most of) mnesia transaction functions as is.
 - For writes, locks are coordinated wit Raft during a transaction
 - Reads are always performed in a Raft cluster (with some optimisations) on a leader node.
 - Writes are preformed on mnesia DB on commit.
-- Commit runs a mnesia transaction, which can abort and it aborts a ramnesia transaction.
+- Commit runs a mnesia transaction, which can abort and it aborts a mnevis transaction.
 
 ### Transactoins on the caller side
 
 This project uses [mnesia activity](http://erlang.org/doc/man/mnesia.html#activity-4)
 feature to implement a custom transaction layer for mnesia.
 
-The `ramnesia` module implements the `mnesia_activity` behaviour, providing
+The `mnevis` module implements the `mnesia_activity` behaviour, providing
 APIs for mnesia operations (like read/write/delete/delete_object etc.)
 
 `write`, `delete` and `delete_object` operations are "write operations".
 They change the world state and should be isolated in a transaction,
 while read operations should only check the locks.
 
-There is more on operation convergence in the [`ramnesia_context.erl`](./src/ramnesia_context.erl)
+There is more on operation convergence in the [`mnevis_context.erl`](./src/mnevis_context.erl)
 
 For this purpose (similarly to mnesia transactions) there is an internal context
 storage, which stores all the write operations until transaction is committed
@@ -133,7 +133,7 @@ Commit and rollback are commands to the Raft cluster.
 ### Raft cluster and lock management
 
 Ramnesia uses a single Ra node per erlang node with a constant nodeID:
-`ramnesia_node:node_id()`
+`mnevis_node:node_id()`
 
 The statemachine in the cluster mostly does lock management. Read and commit
 operations also access mnesia database.
@@ -184,7 +184,7 @@ A snapshot is requested via release_cursor on every successful commit operation.
 `select` operations are not implementing, which means that `qlc` quieries will not work.
 
 Table manipulation functions are not fully implemented and tables should be pre-created
-on all nodes with all the indexes for ramnesia to work.
+on all nodes with all the indexes for mnevis to work.
 
 Startup of ra currrently requires a global `data_dir` setting, which is not nice.
 
@@ -192,9 +192,9 @@ Startup configuration can be improved.
 
 More docs?
 
-There is a tutorial jepsen test which needs more scenarios https://github.com/hairyhum/jepsen.ramnesia
+There is a tutorial jepsen test which needs more scenarios https://github.com/hairyhum/jepsen.mnevis
 
-There is a demo rabbitmq integration in the `ramnesia-experimental` branch
+There is a demo rabbitmq integration in the `mnevis-experimental` branch
 
 More unit tests are needed for the context module.
 

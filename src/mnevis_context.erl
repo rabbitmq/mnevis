@@ -1,4 +1,4 @@
--module(ramnesia_context).
+-module(mnevis_context).
 
 -export([init/1,
          add_write_set/4, add_write_bag/4, add_delete/4, add_delete_object/4,
@@ -143,7 +143,7 @@ add_write_set(#context{write_set = WriteSet,
                        delete = Delete,
                        delete_object = DeleteObject} = Context,
               Tab, Rec, LockKind) ->
-    Key = ramnesia:record_key(Rec),
+    Key = mnevis:record_key(Rec),
     Item = {Tab, Rec, LockKind},
     Context#context{write_set = maps:put({Tab, Key}, Item, WriteSet),
                     delete = maps:remove({Tab, Key}, Delete),
@@ -153,7 +153,7 @@ add_write_set(#context{write_set = WriteSet,
 add_write_bag(#context{write_bag = WriteBag,
                        delete_object = DeleteObject} = Context,
               Tab, Rec, LockKind) ->
-    Key = ramnesia:record_key(Rec),
+    Key = mnevis:record_key(Rec),
     Item = {Tab, Rec, LockKind},
     OldBag = maps:get({Tab, Key}, WriteBag, []) -- [Item],
     DeleteObjectItems = maps:get({Tab, Key}, DeleteObject, []) -- [Item],
@@ -173,7 +173,7 @@ add_delete(#context{delete = Delete,
 
 -spec add_delete_object(context(), table(), record(), lock_kind()) -> context().
 add_delete_object(#context{write_set = WriteSet} = Context, Tab, Rec, LockKind) ->
-    Key = ramnesia:record_key(Rec),
+    Key = mnevis:record_key(Rec),
     case maps:get({Tab, Key}, WriteSet, not_found) of
         not_found ->
             add_delete_object_1(Context, Tab, Rec, LockKind);
@@ -188,7 +188,7 @@ add_delete_object(#context{write_set = WriteSet} = Context, Tab, Rec, LockKind) 
 add_delete_object_1(#context{delete_object = DeleteObject,
                              write_bag = WriteBag} = Context,
                     Tab, Rec, LockKind) ->
-    Key = ramnesia:record_key(Rec),
+    Key = mnevis:record_key(Rec),
     Item = {Tab, Rec, LockKind},
     WriteBagItems = lists:filter(fun({_Tab, WriteRec, _LockKind}) ->
         case WriteRec of
@@ -238,7 +238,7 @@ filter_from_context(Context, Fun, Tab, RecList) ->
              delete_object = DeleteObject,
              delete = Delete} = Context,
     RecListNotDeleted = lists:filter(fun(Rec) ->
-        Key = ramnesia:record_key(Rec),
+        Key = mnevis:record_key(Rec),
         CacheKey = {Tab, Key},
         case maps:get(CacheKey, Delete, not_found) of
             not_found ->
@@ -272,7 +272,7 @@ filter_from_context(Context, Fun, Tab, RecList) ->
     lists:usort(RecListNotDeleted ++ get_records(WriteSetItems) ++ get_records(WriteBagItems)).
 
 record_deleted_object(Rec, Table, DeleteObject) ->
-    lists:member(Rec, get_records(maps:get({Table, ramnesia:record_key(Rec)}, DeleteObject, []))).
+    lists:member(Rec, get_records(maps:get({Table, mnevis:record_key(Rec)}, DeleteObject, []))).
 
 -spec filter_match_from_context(context(), table(), term(), [record()]) -> [record()].
 filter_match_from_context(Context, Tab, Pattern, RecList) ->
@@ -288,7 +288,7 @@ filter_index_from_context(Context, Tab, SecondaryKey, Pos, RecList) ->
 filter_all_keys_from_context(Context, Tab, Keys) ->
     #context{delete_object = DeleteObject} = Context,
     DeleteKeys = [ Key || {_, Key, _} <- deletes(Context, Tab) ],
-    WriteKeys = [ ramnesia:record_key(Rec) || {_, Rec, _} <- writes(Context, Tab),
+    WriteKeys = [ mnevis:record_key(Rec) || {_, Rec, _} <- writes(Context, Tab),
                   not record_deleted_object(Rec, Tab, DeleteObject) ],
     lists:usort(Keys ++ WriteKeys) -- DeleteKeys.
 

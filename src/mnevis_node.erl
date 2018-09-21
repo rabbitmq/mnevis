@@ -1,4 +1,4 @@
--module(ramnesia_node).
+-module(mnevis_node).
 
 -export([start/0, node_id/0, trigger_election/0]).
 -export([make_initial_nodes/1]).
@@ -7,12 +7,12 @@ node_id() ->
     node_id(node()).
 
 node_id(Node) ->
-    {ramnesia_node, Node}.
+    {mnevis_node, Node}.
 
 start() ->
-    Name = ramnesia_node,
+    Name = mnevis_node,
     NodeId = node_id(),
-    InitialNodes = case application:get_env(ramnesia, initial_nodes) of
+    InitialNodes = case application:get_env(mnevis, initial_nodes) of
         undefined   -> [NodeId];
         {ok, []}    -> [NodeId];
         {ok, Nodes} -> make_initial_nodes(Nodes)
@@ -22,7 +22,7 @@ start() ->
         net_adm:ping(N)
     end,
     InitialNodes),
-    ok = ra:start_node(Name, NodeId, {module, ramnesia_machine, #{}}, InitialNodes).
+    ok = ra:start_node(Name, NodeId, {module, mnevis_machine, #{}}, InitialNodes).
 
 trigger_election() ->
     ok = ra:trigger_election(node_id()).

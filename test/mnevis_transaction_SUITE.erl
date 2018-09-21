@@ -1,6 +1,6 @@
 
 
--module(ramnesia_transaction_SUITE).
+-module(mnevis_transaction_SUITE).
 
 -include_lib("common_test/include/ct.hrl").
 -include_lib("eunit/include/eunit.hrl").
@@ -56,8 +56,8 @@ groups() ->
 
 init_per_suite(Config) ->
     PrivDir = ?config(priv_dir, Config),
-    ramnesia:start(PrivDir),
-    ramnesia_node:trigger_election(),
+    mnevis:start(PrivDir),
+    mnevis_node:trigger_election(),
     Config.
 
 end_per_suite(Config) -> Config.
@@ -139,45 +139,45 @@ delete_sample_tables() ->
     ok.
 
 add_sample({Tab, Key, Val}) ->
-    {atomic, ok} = ramnesia:transaction(fun() ->
+    {atomic, ok} = mnevis:transaction(fun() ->
         mnesia:write({Tab, Key, Val})
     end),
-    {atomic, Read} = ramnesia:transaction(fun() ->
+    {atomic, Read} = mnevis:transaction(fun() ->
         mnesia:read(Tab, Key)
     end),
     true = lists:member({Tab, Key, Val}, Read).
 
 delete_sample(Tab, Key) ->
-    {atomic, ok} = ramnesia:transaction(fun() ->
+    {atomic, ok} = mnevis:transaction(fun() ->
         mnesia:delete({Tab, Key}),
         [] = mnesia:read(Tab, Key),
         ok
     end).
 
 empty_transaction(_Config) ->
-    {atomic, ok} = ramnesia:transaction(fun() -> ok end).
+    {atomic, ok} = mnevis:transaction(fun() -> ok end).
 empty_transaction_abort(_Config) ->
-    {aborted, error} = ramnesia:transaction(fun() -> mnesia:abort(error) end).
+    {aborted, error} = mnevis:transaction(fun() -> mnesia:abort(error) end).
 empty_transaction_error(_Config) ->
-    {aborted, {reason, _ST}} = ramnesia:transaction(fun() -> error(reason) end).
+    {aborted, {reason, _ST}} = mnevis:transaction(fun() -> error(reason) end).
 
 
 nested_empty_transaction(_Config) ->
-    {atomic, ok} = ramnesia:transaction(fun() ->
-        {atomic, ok} = ramnesia:transaction(fun() -> ok end),
+    {atomic, ok} = mnevis:transaction(fun() ->
+        {atomic, ok} = mnevis:transaction(fun() -> ok end),
         ok
     end).
 nested_empty_transaction_abort(_Config) ->
-    {aborted, error} = ramnesia:transaction(fun() ->
-        ramnesia:transaction(fun() -> mnesia:abort(error) end)
+    {aborted, error} = mnevis:transaction(fun() ->
+        mnevis:transaction(fun() -> mnesia:abort(error) end)
     end).
 nested_empty_transaction_error(_Config) ->
-    {aborted, {reason, _ST}} = ramnesia:transaction(fun() ->
-        ramnesia:transaction(fun() -> error(reason) end)
+    {aborted, {reason, _ST}} = mnevis:transaction(fun() ->
+        mnevis:transaction(fun() -> error(reason) end)
     end).
 
 transaction_abort(_Config) ->
-    {aborted, {no_exists, [foo,foo]}} = ramnesia:transaction(fun() ->
+    {aborted, {no_exists, [foo,foo]}} = mnevis:transaction(fun() ->
         mnesia:read(foo, foo)
     end).
 
@@ -187,7 +187,7 @@ writes_aborted(Config) ->
     writes_aborted(Config, sample_ordered_set).
 
 writes_aborted(_Config, Tab) ->
-    {aborted, {read, ReadAborted}} = ramnesia:transaction(fun() ->
+    {aborted, {read, ReadAborted}} = mnevis:transaction(fun() ->
         mnesia:write({Tab, foo, bar}),
         Read = mnesia:read(Tab, foo),
         mnesia:abort({read, Read})
@@ -200,33 +200,33 @@ writes_aborted(_Config, Tab) ->
     {atomic, []} = mnesia:transaction(fun() -> mnesia:read(Tab, foo) end).
 
 deletes_aborted(_Config) ->
-    {aborted, abort_delete} = ramnesia:transaction(fun() ->
+    {aborted, abort_delete} = mnevis:transaction(fun() ->
         mnesia:delete({sample, foo}),
         [] = mnesia:read(sample, foo),
         mnesia:abort(abort_delete)
     end),
 
     %% Value is still there
-    {atomic, [{sample, foo, bar}]} = ramnesia:transaction(fun() ->
+    {atomic, [{sample, foo, bar}]} = mnevis:transaction(fun() ->
         mnesia:read(sample, foo)
     end).
 
 delete_object_aborted(_Config) ->
-    {aborted, abort_delete_object} = ramnesia:transaction(fun() ->
+    {aborted, abort_delete_object} = mnevis:transaction(fun() ->
         mnesia:delete_object({sample, foo, bar}),
         [] = mnesia:read(sample, foo),
         mnesia:abort(abort_delete_object)
     end),
 
     %% Value is still there
-    {atomic, [{sample, foo, bar}]} = ramnesia:transaction(fun() ->
+    {atomic, [{sample, foo, bar}]} = mnevis:transaction(fun() ->
         mnesia:read(sample, foo)
     end).
 
 lock_aborts_if_no_retries(_Config) ->
     lock_for(2000, {sample, foo}, write),
     receive locked ->
-        {aborted, locked} = ramnesia:transaction(fun() ->
+        {aborted, locked} = mnevis:transaction(fun() ->
             mnesia:lock({sample, foo}, write)
         end, [], 10)
     after 2000 ->
@@ -234,14 +234,14 @@ lock_aborts_if_no_retries(_Config) ->
     end.
 lock_succedes_eventually_on_retries(_Config) ->
     lock_for(2000, {sample, foo}, write),
-    {atomic, ok} = ramnesia:transaction(fun() ->
+    {atomic, ok} = mnevis:transaction(fun() ->
         mnesia:lock({sample, foo}, write)
     end).
 
 lock_for(Time, LockItem, LockKind) ->
     Pid = self(),
     spawn(fun() ->
-        ramnesia:transaction(fun() ->
+        mnevis:transaction(fun() ->
             mnesia:lock(LockItem, LockKind),
             Pid ! locked,
             timer:sleep(Time)
@@ -250,13 +250,13 @@ lock_for(Time, LockItem, LockKind) ->
 
 operations_succeed_while_different_key_locked(_Config) ->
     lock_for(2000, {sample, foo}, write),
-    {atomic, [{sample, bar, val}]} = ramnesia:transaction(fun() ->
+    {atomic, [{sample, bar, val}]} = mnevis:transaction(fun() ->
         ok = mnesia:write({sample, bar, val}),
         [{sample, bar, val}] = mnesia:read(sample, bar)
     end, [], 1).
 
 read_cached_state(_Config) ->
-    {aborted, foo} = ramnesia:transaction(fun() ->
+    {aborted, foo} = mnevis:transaction(fun() ->
         %% Initial data
         [{sample, foo, bar}] = mnesia:read(sample, foo),
         [{sample_bag, foo, baj},
@@ -320,7 +320,7 @@ read_cached_state(_Config) ->
         [] = mnesia:read(sample_bag, foo),
         mnesia:abort(foo)
     end),
-    ramnesia:transaction(fun() ->
+    mnevis:transaction(fun() ->
         %% Initial data
         [{sample, foo, bar}] = mnesia:read(sample, foo),
         [{sample_bag, foo, baj},
@@ -331,7 +331,7 @@ read_cached_state(_Config) ->
 
 
 index_read_cached_state(_Config) ->
-    {aborted, foo} = ramnesia:transaction(fun() ->
+    {aborted, foo} = mnevis:transaction(fun() ->
         %% Initial data
         [{sample, foo, bar}] = mnesia:index_read(sample, bar, 3),
         [{sample_bag, foo, bar}] = mnesia:index_read(sample_bag, bar, 3),
@@ -383,7 +383,7 @@ index_read_cached_state(_Config) ->
         [] = mnesia:index_read(sample_bag, baz, 3),
         mnesia:abort(foo)
     end),
-    ramnesia:transaction(fun() ->
+    mnevis:transaction(fun() ->
         %% Initial data
         [{sample, foo, bar}] = mnesia:index_read(sample, bar, 3),
         [{sample_bag, foo, bar}] = mnesia:index_read(sample_bag, bar, 3),
@@ -391,7 +391,7 @@ index_read_cached_state(_Config) ->
     end).
 
 match_object_cached_state(_Config) ->
-    {aborted, foo} = ramnesia:transaction(fun() ->
+    {aborted, foo} = mnevis:transaction(fun() ->
         %% Initial data
         [{sample, foo, bar}] = mnesia:match_object({sample, foo, bar}),
         [{sample_bag, foo, bar}] = mnesia:match_object({sample_bag, foo, bar}),
@@ -445,7 +445,7 @@ match_object_cached_state(_Config) ->
         [] = mnesia:match_object({sample_bag, '_', baz}),
         mnesia:abort(foo)
     end),
-    ramnesia:transaction(fun() ->
+    mnevis:transaction(fun() ->
         %% Initial data
         [{sample, foo, bar}] = mnesia:match_object({sample, foo, bar}),
         [{sample_bag, foo, bar}] = mnesia:match_object({sample_bag, foo, bar}),
@@ -453,7 +453,7 @@ match_object_cached_state(_Config) ->
     end).
 
 index_match_object_cached_state(_Config) ->
-    {aborted, foo} = ramnesia:transaction(fun() ->
+    {aborted, foo} = mnevis:transaction(fun() ->
         %% Initial data
         [{sample, foo, bar}] = mnesia:index_match_object({sample, foo, bar}, 3),
         [{sample_bag, foo, bar}] = mnesia:index_match_object({sample_bag, foo, bar}, 3),
@@ -513,7 +513,7 @@ index_match_object_cached_state(_Config) ->
         [] = mnesia:index_match_object({sample_bag, '_', baz}, 3),
         mnesia:abort(foo)
     end),
-    ramnesia:transaction(fun() ->
+    mnevis:transaction(fun() ->
         %% Initial data
         [{sample, foo, bar}] = mnesia:index_match_object({sample, foo, bar}, 3),
         [{sample_bag, foo, bar}] = mnesia:index_match_object({sample_bag, foo, bar}, 3),
@@ -521,7 +521,7 @@ index_match_object_cached_state(_Config) ->
     end).
 
 all_keys_cached_state(_Config) ->
-    {aborted, foo} = ramnesia:transaction(fun() ->
+    {aborted, foo} = mnevis:transaction(fun() ->
         [foo] = mnesia:all_keys(sample),
         [foo] = mnesia:all_keys(sample_bag),
         [foo] = mnesia:all_keys(sample_ordered_set),
@@ -572,7 +572,7 @@ all_keys_cached_state(_Config) ->
         [] = mnesia:all_keys(sample_bag),
         mnesia:abort(foo)
     end),
-    ramnesia:transaction(fun() ->
+    mnevis:transaction(fun() ->
         [foo] = mnesia:all_keys(sample),
         [foo] = mnesia:all_keys(sample_bag),
         [foo] = mnesia:all_keys(sample_ordered_set)
@@ -584,7 +584,7 @@ first_cached_state(_Config) ->
     add_sample({sample_bag, foo, baz}),
     add_sample({sample_bag, foo, baj}),
     add_sample({sample_ordered_set, foo, bar}),
-    {aborted, foo} = ramnesia:transaction(fun() ->
+    {aborted, foo} = mnevis:transaction(fun() ->
         foo = mnesia:first(sample),
         foo = mnesia:first(sample_bag),
         foo = mnesia:first(sample_ordered_set),
@@ -613,7 +613,7 @@ first_cached_state(_Config) ->
         % foo = mnesia:first(sample_ordered_set),
         mnesia:abort(foo)
     end),
-    ramnesia:transaction(fun() ->
+    mnevis:transaction(fun() ->
         foo = mnesia:first(sample),
         foo = mnesia:first(sample_bag),
         foo = mnesia:first(sample_ordered_set)
@@ -625,7 +625,7 @@ last_cached_state(_Config) ->
     add_sample({sample_bag, foo, baz}),
     add_sample({sample_bag, foo, baj}),
     add_sample({sample_ordered_set, foo, bar}),
-    {aborted, foo} = ramnesia:transaction(fun() ->
+    {aborted, foo} = mnevis:transaction(fun() ->
         foo = mnesia:last(sample),
         foo = mnesia:last(sample_bag),
         foo = mnesia:last(sample_ordered_set),
@@ -654,7 +654,7 @@ last_cached_state(_Config) ->
         foo = mnesia:last(sample_ordered_set),
         mnesia:abort(foo)
     end),
-    ramnesia:transaction(fun() ->
+    mnevis:transaction(fun() ->
         foo = mnesia:last(sample),
         foo = mnesia:last(sample_bag),
         foo = mnesia:last(sample_ordered_set)
@@ -666,7 +666,7 @@ prev_cached_state(_Config) ->
     add_sample({sample_bag, foo, baz}),
     add_sample({sample_bag, foo, baj}),
     add_sample({sample_ordered_set, foo, bar}),
-    {aborted, foo} = ramnesia:transaction(fun() ->
+    {aborted, foo} = mnevis:transaction(fun() ->
         '$end_of_table' = mnesia:prev(sample, foo),
         '$end_of_table' = mnesia:prev(sample_bag, foo),
         '$end_of_table' = mnesia:prev(sample_ordered_set, foo),
@@ -688,7 +688,7 @@ prev_cached_state(_Config) ->
         foo = mnesia:prev(sample_ordered_set, fox),
         mnesia:abort(foo)
     end),
-    ramnesia:transaction(fun() ->
+    mnevis:transaction(fun() ->
         '$end_of_table' = mnesia:prev(sample, foo),
         '$end_of_table' = mnesia:prev(sample_bag, foo),
         '$end_of_table' = mnesia:prev(sample_ordered_set, foo)
@@ -699,7 +699,7 @@ next_cached_state(_Config) ->
     add_sample({sample_bag, foo, baz}),
     add_sample({sample_bag, foo, baj}),
     add_sample({sample_ordered_set, foo, bar}),
-    {aborted, foo} = ramnesia:transaction(fun() ->
+    {aborted, foo} = mnevis:transaction(fun() ->
         '$end_of_table' = mnesia:next(sample, foo),
         '$end_of_table' = mnesia:next(sample_bag, foo),
         '$end_of_table' = mnesia:next(sample_ordered_set, foo),
@@ -721,7 +721,7 @@ next_cached_state(_Config) ->
         % foo = mnesia:next(sample_ordered_set, fbb),
         mnesia:abort(foo)
     end),
-    ramnesia:transaction(fun() ->
+    mnevis:transaction(fun() ->
         '$end_of_table' = mnesia:next(sample, foo),
         '$end_of_table' = mnesia:next(sample_bag, foo),
         '$end_of_table' = mnesia:next(sample_ordered_set, foo)
@@ -733,7 +733,7 @@ foldl_cached_state(_Config) ->
     add_sample({sample_bag, foo, baz}),
     add_sample({sample_bag, foo, baj}),
     add_sample({sample_ordered_set, foo, bar}),
-    {aborted, foo} = ramnesia:transaction(fun() ->
+    {aborted, foo} = mnevis:transaction(fun() ->
         KeysFold = fun(Tab) ->
             mnesia:foldl(fun(R, Acc) ->
                 {_, K, _} = R,
@@ -805,10 +805,10 @@ foldl_cached_state(_Config) ->
 
 write_delete_converge(_Config) ->
     %% Delete afte write is deleted.
-    ramnesia:transaction(fun() ->
+    mnevis:transaction(fun() ->
         ok = mnesia:write({sample, foo, bar})
     end),
-    {atomic, []} = ramnesia:transaction(fun() ->
+    {atomic, []} = mnevis:transaction(fun() ->
         ok = mnesia:write({sample, foo, baz}),
         ok = mnesia:delete({sample, foo}),
         [] = mnesia:read(sample, foo)
@@ -816,10 +816,10 @@ write_delete_converge(_Config) ->
     [] = mnesia:dirty_read(sample, foo),
 
     %% Write after delete is written
-    ramnesia:transaction(fun() ->
+    mnevis:transaction(fun() ->
         ok = mnesia:write({sample, bar, bar})
     end),
-    {atomic, [{sample, bar, baz}]} = ramnesia:transaction(fun() ->
+    {atomic, [{sample, bar, baz}]} = mnevis:transaction(fun() ->
         ok = mnesia:delete({sample, bar}),
         ok = mnesia:write({sample, bar, baz}),
         [{sample, bar, baz}] = mnesia:read(sample, bar)
@@ -828,11 +828,11 @@ write_delete_converge(_Config) ->
 
 write_delete_object_converge(_Config) ->
     %% Delete pbject after update deletes
-    ramnesia:transaction(fun() ->
+    mnevis:transaction(fun() ->
         ok = mnesia:write({sample, foo, bar})
     end),
     [{sample, foo, bar}] = mnesia:dirty_read(sample, foo),
-    {atomic, []} = ramnesia:transaction(fun() ->
+    {atomic, []} = mnevis:transaction(fun() ->
         ok = mnesia:write({sample, foo, baz}),
         ok = mnesia:delete_object({sample, foo, baz}),
         [] = mnesia:read(sample, foo)
@@ -840,11 +840,11 @@ write_delete_object_converge(_Config) ->
     [] = mnesia:dirty_read(sample, foo),
 
     %% Delete object after update to different does not delete
-    ramnesia:transaction(fun() ->
+    mnevis:transaction(fun() ->
         ok = mnesia:write({sample, bar, bar})
     end),
     [{sample, bar, bar}] = mnesia:dirty_read(sample, bar),
-    {atomic, [{sample, bar, baz}]} = ramnesia:transaction(fun() ->
+    {atomic, [{sample, bar, baz}]} = mnevis:transaction(fun() ->
         ok = mnesia:write({sample, bar, baz}),
         ok = mnesia:delete_object({sample, bar, bar}),
         [{sample, bar, baz}] = mnesia:read(sample, bar)
@@ -852,11 +852,11 @@ write_delete_object_converge(_Config) ->
     [{sample, bar, baz}] = mnesia:dirty_read(sample, bar),
 
     %% Different object is not deleted
-    ramnesia:transaction(fun() ->
+    mnevis:transaction(fun() ->
         ok = mnesia:write({sample, baz, bar})
     end),
     [{sample, baz, bar}] = mnesia:dirty_read(sample, baz),
-    {atomic, [{sample, baz, baz}]} = ramnesia:transaction(fun() ->
+    {atomic, [{sample, baz, baz}]} = mnevis:transaction(fun() ->
         ok = mnesia:write({sample, baz, baz}),
         ok = mnesia:delete_object({sample, baz, baq}),
         [{sample, baz, baz}] = mnesia:read(sample, baz)
@@ -865,10 +865,10 @@ write_delete_object_converge(_Config) ->
 
 write_bag_delete_converge(_Config) ->
     %% Bag write is deleted on delete
-    ramnesia:transaction(fun() ->
+    mnevis:transaction(fun() ->
         ok = mnesia:write({sample_bag, foo, bar})
     end),
-    {atomic, []} = ramnesia:transaction(fun() ->
+    {atomic, []} = mnevis:transaction(fun() ->
         ok = mnesia:write({sample_bag, foo, baz}),
         [{sample_bag, foo, bar}, {sample_bag, foo, baz}] = mnesia:read(sample_bag, foo),
         ok = mnesia:delete({sample_bag, foo}),
@@ -877,10 +877,10 @@ write_bag_delete_converge(_Config) ->
     [] = mnesia:dirty_read(sample_bag, foo),
 
     %% Delete from bag deletes old items
-    ramnesia:transaction(fun() ->
+    mnevis:transaction(fun() ->
         ok = mnesia:write({sample_bag, bar, bar})
     end),
-    {atomic, [{sample_bag, bar, baz}]} = ramnesia:transaction(fun() ->
+    {atomic, [{sample_bag, bar, baz}]} = mnevis:transaction(fun() ->
         ok = mnesia:delete({sample_bag, bar}),
         [] = mnesia:read(sample_bag, bar),
         ok = mnesia:write({sample_bag, bar, baz}),
@@ -890,11 +890,11 @@ write_bag_delete_converge(_Config) ->
 
 write_bag_delete_object_converge(_Config) ->
     %% Delete pbject deletes written
-    ramnesia:transaction(fun() ->
+    mnevis:transaction(fun() ->
         ok = mnesia:write({sample_bag, foo, bar})
     end),
     [{sample_bag, foo, bar}] = mnesia:dirty_read(sample_bag, foo),
-    {atomic, [{sample_bag, foo, bar}]} = ramnesia:transaction(fun() ->
+    {atomic, [{sample_bag, foo, bar}]} = mnevis:transaction(fun() ->
         ok = mnesia:write({sample_bag, foo, baz}),
         [{sample_bag, foo, bar}, {sample_bag, foo, baz}] = mnesia:read(sample_bag, foo),
         ok = mnesia:delete_object({sample_bag, foo, baz}),
@@ -903,11 +903,11 @@ write_bag_delete_object_converge(_Config) ->
     [{sample_bag, foo, bar}] = mnesia:dirty_read(sample_bag, foo),
 
     %% Delete object deletes old
-    ramnesia:transaction(fun() ->
+    mnevis:transaction(fun() ->
         ok = mnesia:write({sample_bag, bar, bar})
     end),
     [{sample_bag, bar, bar}] = mnesia:dirty_read(sample_bag, bar),
-    {atomic, [{sample_bag, bar, baz}]} = ramnesia:transaction(fun() ->
+    {atomic, [{sample_bag, bar, baz}]} = mnevis:transaction(fun() ->
         ok = mnesia:write({sample_bag, bar, baz}),
         [{sample_bag, bar, bar}, {sample_bag, bar, baz}] = mnesia:read(sample_bag, bar),
         ok = mnesia:delete_object({sample_bag, bar, bar}),
@@ -916,11 +916,11 @@ write_bag_delete_object_converge(_Config) ->
     [{sample_bag, bar, baz}] = mnesia:dirty_read(sample_bag, bar),
 
     %% Different object is not deleted
-    ramnesia:transaction(fun() ->
+    mnevis:transaction(fun() ->
         ok = mnesia:write({sample_bag, baz, bar})
     end),
     [{sample_bag, baz, bar}] = mnesia:dirty_read(sample_bag, baz),
-    {atomic, [{sample_bag, baz, bar}, {sample_bag, baz, baz}]} = ramnesia:transaction(fun() ->
+    {atomic, [{sample_bag, baz, bar}, {sample_bag, baz, baz}]} = mnevis:transaction(fun() ->
         ok = mnesia:write({sample_bag, baz, baz}),
         [{sample_bag, baz, bar}, {sample_bag, baz, baz}] = mnesia:read(sample_bag, baz),
         ok = mnesia:delete_object({sample_bag, baz, baq}),

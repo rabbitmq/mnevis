@@ -1,6 +1,6 @@
 .erlang.mk/
 deps/
 ebin/
-ramnesia.d
+mnevis.d
 test/*.beam
 _rel/

@@ -1,7 +1,7 @@
 -module(simple_dgraph).
 
 %% Minimal graph data structure.
-%% Only suitable for use in ramnesia_machine.
+%% Only suitable for use in mnevis_machine.
 
 -export([
     new/0,

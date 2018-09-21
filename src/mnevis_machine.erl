@@ -1,4 +1,4 @@
--module(ramnesia_machine).
+-module(mnevis_machine).
 -behaviour(ra_machine).
 
 -include_lib("ra/include/ra.hrl").
@@ -483,7 +483,7 @@ cleanup_transaction_locks(Tid, State) ->
                 {ok, LockedSource} = simple_dgraph:vertex_label(TLGraph1, LockedTid),
                 case transaction_for_source(LockedSource, State) of
                     {ok, LockedTid}         ->
-                        {true, {send_msg, LockedSource, {ramnesia_unlock, LockedTid}}};
+                        {true, {send_msg, LockedSource, {mnevis_unlock, LockedTid}}};
                     %% We expect dead transactions to be claned up by the monitor.
                     {error, no_transaction} -> false;
                     %% A different transaction started by the locked source
@@ -649,5 +649,5 @@ maybe_skip_committed(Tid, Source, State, Fun) ->
     end.
 
 -ifdef(TEST).
--include("ramnesia_machine.eunit").
+-include("mnevis_machine.eunit").
 -endif.

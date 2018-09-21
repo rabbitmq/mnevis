@@ -1,4 +1,4 @@
--module(ramnesia_isolation_SUITE).
+-module(mnevis_isolation_SUITE).
 
 -compile(export_all).
 
@@ -19,8 +19,8 @@ groups() ->
 
 init_per_suite(Config) ->
     PrivDir = ?config(priv_dir, Config),
-    ramnesia:start(PrivDir),
-    ramnesia_node:trigger_election(),
+    mnevis:start(PrivDir),
+    mnevis_node:trigger_election(),
     Config.
 
 end_per_suite(Config) ->
@@ -46,10 +46,10 @@ delete_sample_table() ->
     ok.
 
 add_sample(Key, Val) ->
-    {atomic, ok} = ramnesia:transaction(fun() ->
+    {atomic, ok} = mnevis:transaction(fun() ->
         mnesia:write({sample, Key, Val})
     end),
-    {atomic, [{sample, Key, Val}]} = ramnesia:transaction(fun() ->
+    {atomic, [{sample, Key, Val}]} = mnevis:transaction(fun() ->
         mnesia:read(sample, Key)
     end),
     ok.
@@ -58,7 +58,7 @@ write_invisible_outside_transaction(_Config) ->
     add_sample(foo, bar),
     Pid = self(),
     BackgroundTransaction = spawn_link(fun() ->
-        ramnesia:transaction(fun() ->
+        mnevis:transaction(fun() ->
             %% Update foo key
             % ct:pal("Write invisible ~p~n", [self()]),
             mnesia:write({sample, foo, baz}),
@@ -84,7 +84,7 @@ delete_invisible_outside_transaction(_Config) ->
     add_sample(bar, baz),
     Pid = self(),
     BackgroundTransaction = spawn_link(fun() ->
-        ramnesia:transaction(fun() ->
+        mnevis:transaction(fun() ->
             % ct:pal("Delete invisible ~p~n", [self()]),
             mnesia:delete({sample, foo}),
             mnesia:delete_object({sample, bar, baz}),
@@ -115,12 +115,12 @@ consistent_counter(_Config) ->
     end,
     % Spawn 100 updates
     Updates = [ spawn_link(fun() ->
-                    {atomic, ok} = ramnesia:transaction(UpdateCounter)
+                    {atomic, ok} = mnevis:transaction(UpdateCounter)
                 end)
                 || _ <- lists:seq(1, 100) ],
     % timer:sleep(600),
     ct:pal("Time: ~p~n", [timer:tc(fun() -> wait_for_finish(Updates) end)]),
-    {atomic, ok} = ramnesia:transaction(fun() ->
+    {atomic, ok} = mnevis:transaction(fun() ->
         [{sample, counter, 100}] = mnesia:read(sample, counter),
         ok
     end).

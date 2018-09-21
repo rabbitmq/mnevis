@@ -1,4 +1,4 @@
--module(ramnesia_prop_SUITE).
+-module(mnevis_prop_SUITE).
 -compile(export_all).
 
 -include_lib("proper/include/proper.hrl").
@@ -8,22 +8,22 @@
 %% TOFO: test failure scenarios
 all() ->
     [
-    mnesia_transaction_yield_same_result_as_ramnesia
+    mnesia_transaction_yield_same_result_as_mnevis
     ].
 
 init_per_suite(Config) ->
     PrivDir = ?config(priv_dir, Config),
-    ramnesia:start(PrivDir),
-    ramnesia_node:trigger_election(),
+    mnevis:start(PrivDir),
+    mnevis_node:trigger_election(),
     Config.
 
 end_per_suite(Config) -> Config.
 
-mnesia_transaction_yield_same_result_as_ramnesia(_Config) ->
+mnesia_transaction_yield_same_result_as_mnevis(_Config) ->
     ct:timetrap(18000000),
-    true = proper:quickcheck(mnesia_transaction_yield_same_result_as_ramnesia_prop(), 1000).
+    true = proper:quickcheck(mnesia_transaction_yield_same_result_as_mnevis_prop(), 1000).
 
-mnesia_transaction_yield_same_result_as_ramnesia_prop() ->
+mnesia_transaction_yield_same_result_as_mnevis_prop() ->
     ?FORALL(
         Actions, non_empty(list(oneof([action_gen(), action_list_gen()]))),
         transaction_equal(Actions)).
@@ -75,7 +75,7 @@ transaction_equal(Actions0) ->
     Actions = lists:flatten(Actions0),
     mnesia:delete_table(mnesia_table),
     mnesia:create_table(mnesia_table, []),
-    % mnesia:create_table(ramnesia_table, []),
+    % mnesia:create_table(mnevis_table, []),
 
     MnesiaRes = mnesia:transaction(fun() ->
         [run_op(mnesia_table, Action) || Action <- Actions]
@@ -86,7 +86,7 @@ transaction_equal(Actions0) ->
     mnesia:delete_table(mnesia_table),
     mnesia:create_table(mnesia_table, []),
 
-    RamnesiaRes = ramnesia:transaction(fun() ->
+    RamnesiaRes = mnevis:transaction(fun() ->
         [run_op(mnesia_table, Action) || Action <- Actions]
     end),
 

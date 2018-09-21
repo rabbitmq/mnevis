@@ -81,13 +81,13 @@ transaction functions in the client code.
 
 Implementation:
 
-On the higher level there is the `ramnesia:transaction` function with the same
+On the higher level there is the `mnevis:transaction` function with the same
 API as `mnesia:transaction`.
 
 It creates a transaction context in the current process
 (currently implemented with process dictionary).
 
-Then it runs a mnesia activity with `ets` access context and the `ramnesia` access module.
+Then it runs a mnesia activity with `ets` access context and the `mnevis` access module.
 
 The access module implements callbacks for each transactional function, which
 modify the local process transaction state and communicate with the raft cluster

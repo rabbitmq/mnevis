@@ -1,4 +1,4 @@
--module(ramnesia).
+-module(mnevis).
 
 -export([start/1]).
 
@@ -46,7 +46,7 @@
     ]).
 
 -type table() :: atom().
--type context() :: ramnesia_context:context().
+-type context() :: mnevis_context:context().
 -type key() :: term().
 
 -export([record_key/1]).
@@ -55,17 +55,17 @@
 start(DataDir) ->
     _ = application:load(ra),
     application:set_env(ra, data_dir, DataDir),
-    application:ensure_all_started(ramnesia),
-    ramnesia_node:start().
+    application:ensure_all_started(mnevis),
+    mnevis_node:start().
 
 -spec db_nodes() -> [node()].
 db_nodes() ->
-    {ok, Nodes, _L} = ra:members(ramnesia_node:node_id()),
+    {ok, Nodes, _L} = ra:members(mnevis_node:node_id()),
     [Node || {_, Node} <- Nodes].
 
 -spec running_db_nodes() -> [node()].
 running_db_nodes() ->
-    {ok, Nodes, _L} = ra:members(ramnesia_node:node_id()),
+    {ok, Nodes, _L} = ra:members(mnevis_node:node_id()),
     [Node || {Name, Node} <- Nodes,
              pong == net_adm:ping(Node)
              andalso
@@ -90,7 +90,7 @@ transaction(Fun, Args, Retries) ->
 transaction(Fun, Args, Retries, Err) ->
     case is_transaction() of
         true ->
-            {atomic, mnesia:activity(ets, Fun, Args, ramnesia)};
+            {atomic, mnesia:activity(ets, Fun, Args, mnevis)};
         false ->
             transaction0(Fun, Args, Retries, Err)
     end.
@@ -114,7 +114,7 @@ transaction0(Fun, Args, Retries, _Err) ->
             true  -> ok;
             false -> start_transaction()
         end,
-        Res = mnesia:activity(ets, Fun, Args, ramnesia),
+        Res = mnesia:activity(ets, Fun, Args, mnevis),
         ok = commit_transaction(),
         {atomic, Res}
     catch
@@ -124,7 +124,7 @@ transaction0(Fun, Args, Retries, _Err) ->
             %% Thansaction is still there, but it's locks were cleared.
             %% Wait for unlocked message meaning that locking transactions finished
             Context = get_transaction_context(),
-            Tid = ramnesia_context:transaction_id(Context),
+            Tid = mnevis_context:transaction_id(Context),
             wait_for_unlock(Tid),
             retry_locked_transaction(Fun, Args, Retries);
         exit:{aborted, Reason} ->
@@ -140,7 +140,7 @@ transaction0(Fun, Args, Retries, _Err) ->
     end.
 
 wait_for_unlock(Tid) ->
-    receive {ra_event, _From, {machine, {ramnesia_unlock, Tid}}} -> ok
+    receive {ra_event, _From, {machine, {mnevis_unlock, Tid}}} -> ok
     after 5000 -> ok
     end.
 
@@ -151,15 +151,15 @@ retry_locked_transaction(Fun, Args, Retries) ->
     end,
     %% Reset transaction context
     Context = get_transaction_context(),
-    Tid = ramnesia_context:transaction_id(Context),
-    Context1 = ramnesia_context:init(Tid),
-    update_transaction_context(ramnesia_context:set_retry(Context1)),
+    Tid = mnevis_context:transaction_id(Context),
+    Context1 = mnevis_context:init(Tid),
+    update_transaction_context(mnevis_context:set_retry(Context1)),
     transaction0(Fun, Args, NextRetries, locked).
 
 is_retry() ->
     case get_transaction_context() of
         undefined -> false;
-        Context   -> ramnesia_context:is_retry(Context)
+        Context   -> mnevis_context:is_retry(Context)
     end.
 
 is_transaction() ->
@@ -170,12 +170,12 @@ is_transaction() ->
 
 commit_transaction() ->
     Context = get_transaction_context(),
-    Writes = ramnesia_context:writes(Context),
-    Deletes = ramnesia_context:deletes(Context),
-    DeletesObject = ramnesia_context:deletes_object(Context),
+    Writes = mnevis_context:writes(Context),
+    Deletes = mnevis_context:deletes(Context),
+    DeletesObject = mnevis_context:deletes_object(Context),
 
     Context = get_transaction_context(),
-    Tid = ramnesia_context:transaction_id(Context),
+    Tid = mnevis_context:transaction_id(Context),
     {ok, Leader} = execute_command_with_retry(Context, commit,
                                               [Writes, Deletes, DeletesObject]),
     %% Notify the machine to cleanup the commited transaction record
@@ -194,17 +194,17 @@ rollback_transaction() ->
 
 start_transaction() ->
     {ok, Tid} = run_ra_command({start_transaction, self()}),
-    update_transaction_context(ramnesia_context:init(Tid)).
+    update_transaction_context(mnevis_context:init(Tid)).
 
 update_transaction_context(Context) ->
-    put(ramnesia_transaction_context, Context).
+    put(mnevis_transaction_context, Context).
 
 clean_transaction_context() ->
     cleanup_all_unlock_messages(),
-    erase(ramnesia_transaction_context).
+    erase(mnevis_transaction_context).
 
 get_transaction_context() ->
-    get(ramnesia_transaction_context).
+    get(mnevis_transaction_context).
 
 %% Mnesia activity API
 
@@ -215,48 +215,48 @@ write(ActivityId, Opaque, Tab, Rec, LockKind) ->
     Context = get_transaction_context(),
     Context1 = case table_info(ActivityId, Opaque, Tab, type) of
         bag ->
-            ramnesia_context:add_write_bag(Context, Tab, Rec, LockKind);
+            mnevis_context:add_write_bag(Context, Tab, Rec, LockKind);
         Set when Set =:= set; Set =:= ordered_set ->
-            ramnesia_context:add_write_set(Context, Tab, Rec, LockKind)
+            mnevis_context:add_write_set(Context, Tab, Rec, LockKind)
     end,
     update_transaction_context(Context1),
     execute_command_ok(Context1, lock, [{Tab, record_key(Rec)}, LockKind]).
 
 delete(_ActivityId, _Opaque, Tab, Key, LockKind) ->
     Context = get_transaction_context(),
-    Context1 = ramnesia_context:add_delete(Context, Tab, Key, LockKind),
+    Context1 = mnevis_context:add_delete(Context, Tab, Key, LockKind),
     update_transaction_context(Context1),
     execute_command_ok(Context1, lock, [{Tab, Key}, LockKind]).
 
 delete_object(_ActivityId, _Opaque, Tab, Rec, LockKind) ->
     Context = get_transaction_context(),
-    Context1 = ramnesia_context:add_delete_object(Context, Tab, Rec, LockKind),
+    Context1 = mnevis_context:add_delete_object(Context, Tab, Rec, LockKind),
     update_transaction_context(Context1),
     execute_command_ok(Context1, lock, [{Tab, record_key(Rec)}, LockKind]).
 
 read(_ActivityId, _Opaque, Tab, Key, LockKind) ->
     Context = get_transaction_context(),
-    case ramnesia_context:read_from_context(Context, Tab, Key) of
+    case mnevis_context:read_from_context(Context, Tab, Key) of
         {written, set, Record} ->
-            ramnesia_context:filter_read_from_context(Context, Tab, Key, [Record]);
+            mnevis_context:filter_read_from_context(Context, Tab, Key, [Record]);
         deleted -> [];
         {deleted_and_written, bag, Recs} -> Recs;
         _ ->
             RecList = execute_command_ok(Context, read, [Tab, Key, LockKind]),
-            ramnesia_context:filter_read_from_context(Context, Tab, Key, RecList)
+            mnevis_context:filter_read_from_context(Context, Tab, Key, RecList)
     end.
 
 match_object(_ActivityId, _Opaque, Tab, Pattern, LockKind) ->
     Context = get_transaction_context(),
     RecList = execute_command_ok(Context, match_object, [Tab, Pattern, LockKind]),
-    ramnesia_context:filter_match_from_context(Context, Tab, Pattern, RecList).
+    mnevis_context:filter_match_from_context(Context, Tab, Pattern, RecList).
 
 all_keys(ActivityId, Opaque, Tab, LockKind) ->
     Context = get_transaction_context(),
     AllKeys = execute_command_ok(Context, all_keys, [Tab, LockKind]),
-    case ramnesia_context:deletes_object(Context, Tab) of
+    case mnevis_context:deletes_object(Context, Tab) of
         [] ->
-            ramnesia_context:filter_all_keys_from_context(Context, Tab, AllKeys);
+            mnevis_context:filter_all_keys_from_context(Context, Tab, AllKeys);
         Deletes ->
             DeletedKeys = lists:filtermap(fun({_, Rec, _}) ->
                 Key = record_key(Rec),
@@ -266,7 +266,7 @@ all_keys(ActivityId, Opaque, Tab, LockKind) ->
                 end
             end,
             Deletes),
-            ramnesia_context:filter_all_keys_from_context(Context, Tab, AllKeys -- DeletedKeys)
+            mnevis_context:filter_all_keys_from_context(Context, Tab, AllKeys -- DeletedKeys)
     end.
 
 first(ActivityId, Opaque, Tab) ->
@@ -287,7 +287,7 @@ prev(ActivityId, Opaque, Tab, Key) ->
         {error, {key_not_found, ClosestKey}} ->
             ClosestKey;
         {error, key_not_found} ->
-            ramnesia_context:prev_cached_key(Context, Tab, Key)
+            mnevis_context:prev_cached_key(Context, Tab, Key)
     end,
     check_key(ActivityId, Opaque, Tab, NewKey, Key, prev, Context).
 
@@ -299,7 +299,7 @@ next(ActivityId, Opaque, Tab, Key) ->
         {error, {key_not_found, ClosestKey}} ->
             ClosestKey;
         {error, key_not_found} ->
-            ramnesia_context:next_cached_key(Context, Tab, Key)
+            mnevis_context:next_cached_key(Context, Tab, Key)
     end,
     check_key(ActivityId, Opaque, Tab, NewKey, Key, next, Context).
 
@@ -330,12 +330,12 @@ do_foldr(ActivityId, Opaque, Fun, Acc, Tab, LockKind, Key) ->
 index_match_object(_ActivityId, _Opaque, Tab, Pattern, Pos, LockKind) ->
     Context = get_transaction_context(),
     RecList = execute_command_ok(Context, index_match_object, [Tab, Pattern, Pos, LockKind]),
-    ramnesia_context:filter_match_from_context(Context, Tab, Pattern, RecList).
+    mnevis_context:filter_match_from_context(Context, Tab, Pattern, RecList).
 
 index_read(_ActivityId, _Opaque, Tab, SecondaryKey, Pos, LockKind) ->
     Context = get_transaction_context(),
     RecList = do_index_read(Context, Tab, SecondaryKey, Pos, LockKind),
-    ramnesia_context:filter_index_from_context(Context, Tab, SecondaryKey, Pos, RecList).
+    mnevis_context:filter_index_from_context(Context, Tab, SecondaryKey, Pos, RecList).
 
 %% TODO: table can be not present on the current node or not up-to-date
 %% Make table manipulation consistent.
@@ -370,12 +370,12 @@ execute_command_ok(Context, Command, Args) ->
 
 -spec execute_command(context(), atom(), list()) -> {ok, term()} | {error, term()}.
 execute_command(Context, Command, Args) ->
-    RaCommand = {Command, ramnesia_context:transaction_id(Context), self(), Args},
+    RaCommand = {Command, mnevis_context:transaction_id(Context), self(), Args},
     run_ra_command(RaCommand).
 
 -spec run_ra_command(term()) -> {ok, term()} | {error, term()}.
 run_ra_command(RaCommand) ->
-    NodeId = ramnesia_node:node_id(),
+    NodeId = mnevis_node:node_id(),
     case ra:send_and_await_consensus(NodeId, RaCommand) of
         {ok, {ok, Result}, _}               -> {ok, Result};
         {ok, {error, {aborted, Reason}}, _} -> mnesia:abort(Reason);
@@ -385,9 +385,9 @@ run_ra_command(RaCommand) ->
     end.
 
 execute_command_with_retry(Context, Command, Args) ->
-    Tid = ramnesia_context:transaction_id(Context),
+    Tid = mnevis_context:transaction_id(Context),
     RaCommand = {Command, Tid, self(), Args},
-    NodeId = ramnesia_node:node_id(),
+    NodeId = mnevis_node:node_id(),
     Leader = retry_ra_command(NodeId, RaCommand),
     {ok, Leader}.
 
@@ -416,11 +416,11 @@ check_key(ActivityId, Opaque, Tab, Key, PrevKey, Direction, Context) ->
         {_, {ok, NewKey}}       -> NewKey;
         {'$end_of_table', none} -> '$end_of_table';
         {_, none} ->
-            case ramnesia_context:key_deleted(Context, Tab, Key) of
+            case mnevis_context:key_deleted(Context, Tab, Key) of
                 true ->
                     NextFun(ActivityId, Opaque, Tab, Key);
                 false ->
-                    case ramnesia_context:delete_object_for_key(Context, Tab, Key) of
+                    case mnevis_context:delete_object_for_key(Context, Tab, Key) of
                         [] -> Key;
                         _Recs ->
                             %% read will take cached deletes into account
@@ -451,8 +451,8 @@ key_inserted_between(Tab, PrevKey, Key, Direction, Context) ->
         end
     end,
     [record_key(Rec) || {_, Rec, _} <-
-        ramnesia_context:writes(Context, Tab) --
-            ramnesia_context:deletes_object(Context, Tab)
+        mnevis_context:writes(Context, Tab) --
+            mnevis_context:deletes_object(Context, Tab)
     ])),
     case WriteKeys of
         [] -> none;
@@ -465,7 +465,7 @@ key_inserted_between(Tab, PrevKey, Key, Direction, Context) ->
 
 cleanup_all_unlock_messages() ->
     receive
-        {ra_event, _From, {machine, {ramnesia_unlock, Tid}}} ->
+        {ra_event, _From, {machine, {mnevis_unlock, Tid}}} ->
             error_logger:info_msg("Transaction unlock message for transaction ~p on process ~p", [Tid, self()]),
             cleanup_all_unlock_messages()
     after 0 ->
