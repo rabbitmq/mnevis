@@ -202,3 +202,6 @@ More unit tests are needed for the context module.
 
 More property tests are needed for multi-node setup.
 
+Committed transactions table may be size optimised to have
+"all committed before" value and remove old IDs.
+
