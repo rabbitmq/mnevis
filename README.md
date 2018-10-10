@@ -19,7 +19,7 @@ mnevis_node:trigger_election().
 
 This will start a single node cluster. Not so useful.
 
-To start a multi-node configuration, you will have to provide `initital_nodes`
+To start a multi-node configuration, you will have to provide `initial_nodes`
 environment variable to the `mnevis` application:
 
 ```
@@ -85,7 +85,7 @@ For example, to run a transaction:
     ok = mnesia:write({foo, bar, bazz})
 end).
 
-%% Ranesia transaction
+%% Ramnesia transaction
 {atomic, ok} = mnevis:transaction(fun() ->
     ok = mnesia:write({foo, bar, baz}),
     [{foo, bar, baz}] = mnesia:read(foo, bar),
@@ -103,7 +103,7 @@ Ramnesia is designed to support (most of) mnesia transaction functions as is.
 - Writes are preformed on mnesia DB on commit.
 - Commit runs a mnesia transaction, which can abort and it aborts a mnevis transaction.
 
-### Transactoins on the caller side
+### Transactions on the caller side
 
 This project uses [mnesia activity](http://erlang.org/doc/man/mnesia.html#activity-4)
 feature to implement a custom transaction layer for mnesia.
@@ -146,7 +146,7 @@ The first command in a transaction is `start_transaction`, which will return a
 transaction ID.
 
 Each transaction command is addressed with a transaction ID and the current
-process Pid. Processes runing a transaction are monitored and transaction will
+process Pid. Processes running a transaction are monitored and transaction will
 be cancelled if its process stops.
 
 Most of transaction commands, except commit and rollback, check and aquire locks
@@ -159,7 +159,7 @@ with a higher transaction ID are recorded as locking.
 
 When transaction get a response from the machine that it's locked - it will wait
 to be unlocked if there are locking transactions recorded, or restart instantly if
-there are no locking trasactions (with higher transaction ID).
+there are no locking transactions (with higher transaction ID).
 
 When a transaction is restarted, its context store is reset but its transaction ID
 kept the same (no start_transaction command). This allows better lock management.
@@ -188,7 +188,7 @@ A snapshot is requested via release_cursor on every successful commit operation.
 Table manipulation functions are not fully implemented and tables should be pre-created
 on all nodes with all the indexes for mnevis to work.
 
-Startup of ra currrently requires a global `data_dir` setting, which is not nice.
+Startup of ra currently requires a global `data_dir` setting, which is not nice.
 
 Startup configuration can be improved.
 
