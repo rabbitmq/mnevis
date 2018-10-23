@@ -56,19 +56,23 @@ init(_Conf) ->
     end,
     {#state{}, []}.
 
-create_committed_transaction_table() ->
-    OnDiskOpt = case mnesia:system_info(use_dir) of
-        true  -> [{disc_copies, [node()]}];
-        false -> []
-    end,
-    mnesia:create_table(committed_transaction,
-        [{attributes, record_info(fields, committed_transaction)},
-         {record_name, committed_transaction}] ++ OnDiskOpt).
-
 -spec apply(map(), command(), ra_machine:effects(), state()) ->
     {state(), ra_machine:effects()} | {state(), ra_machine:effects(), reply()}.
 apply(Meta, Command, Effects0, State) ->
     with_pre_effects(Effects0, apply_command(Meta, Command, State)).
+
+-spec leader_effects(state()) -> ra_machine:effects().
+leader_effects(State) -> remonitor_sources(State).
+
+-spec eol_effects(state()) -> ra_machine:effects().
+eol_effects(_State) -> [].
+
+-spec tick(TimeMs :: integer(), state()) -> ra_machine:effects().
+tick(_Time, _State) -> [].
+
+-spec overview(state()) -> map().
+overview(_State) -> #{}.
+
 
 -spec apply_command(map(), command(), state()) ->
     {state(), ra_machine:effects()} | apply_result().
@@ -235,21 +239,18 @@ apply_command(_Meta, {down, Source, _Reason}, State) ->
             {State, [], ok}
     end.
 
--spec leader_effects(state()) -> ra_machine:effects().
-leader_effects(State) -> remonitor_sources(State).
-
--spec eol_effects(state()) -> ra_machine:effects().
-eol_effects(_State) -> [].
-
--spec tick(TimeMs :: integer(), state()) -> ra_machine:effects().
-tick(_Time, _State) -> [].
-
--spec overview(state()) -> map().
-overview(_State) -> #{}.
-
 %% ==========================
 
 %% Top level helpers
+
+create_committed_transaction_table() ->
+    OnDiskOpt = case mnesia:system_info(use_dir) of
+        true  -> [{disc_copies, [node()]}];
+        false -> []
+    end,
+    mnesia:create_table(committed_transaction,
+        [{attributes, record_info(fields, committed_transaction)},
+         {record_name, committed_transaction}] ++ OnDiskOpt).
 
 -spec start_transaction(state(), pid()) ->
     apply_result(transaction_id()).
@@ -340,6 +341,10 @@ lock(LockItem, LockKind, Tid, Source, State) ->
 
 -spec snapshot_effects(map(), state()) -> [ra_machine:effects()].
 snapshot_effects(#{index := RaftIdx}, State) ->
+    CheckpointName = RaftIdx,
+    {ok, CheckpointName, _} =
+        mnesia:activate_checkpoint({name, CheckpointName},
+                                   {min, mnesia:system_info(tables)}),
     [{release_cursor, RaftIdx, State}].
 
 %% ==========================

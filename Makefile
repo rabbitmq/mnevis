@@ -6,7 +6,7 @@ DEPS = ra
 LOCAL_DEPS = mnesia
 TEST_DEPS = proper
 
-dep_ra = git https://github.com/rabbitmq/ra master
+dep_ra = git https://github.com/rabbitmq/ra custom-snapshot
 
 include erlang.mk
 
