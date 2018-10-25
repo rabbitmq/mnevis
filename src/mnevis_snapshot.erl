@@ -4,10 +4,21 @@
 
 -include_lib("ra/include/ra.hrl").
 
--export([release/2, write/3, save/3, read/1, recover/1, install/2, read_indexterm/1]).
+-export([release/2, prepare/2, write/3, save/3, read/1, recover/1, install/2, read_indexterm/1]).
 
 -spec release(Index :: ra_index(), State) -> State.
 release(_Index, State) -> State.
+
+-spec prepare(Index :: ra_index(), State) -> Ref :: {ra_index(), State}.
+prepare(Index, State) ->
+    CheckpointName = Index,
+    {Time, {ok, CheckpointName, _}} =
+        timer:tc(mnesia, activate_checkpoint,
+                  [[{name, CheckpointName},
+                    {min, mnesia:system_info(tables)}]]),
+    io:format("Activate checkpoint ~p : ~p us ~n", [Index, Time]),
+    io:format("Checkpoints ~p ~n", [timer:tc(mnesia, system_info, [checkpoints])]),
+    {CheckpointName, State}.
 
 %% Saves snapshot from external state to disk.
 %% Runs in a separate process.
@@ -16,13 +27,16 @@ release(_Index, State) -> State.
                 Meta :: ra_snapshot:meta(),
                 Ref :: term()) ->
     ok | {error, ra_snapshot:file_err()}.
-write(Dir, {Index, _, _} =  Meta, State) ->
+write(Dir, Meta, {CheckpointName, State}) ->
     %% TODO operation order
     case ra_log_snapshot:write(Dir, Meta, State) of
         ok ->
             MnesiaFile = mnesia_file(Dir),
-            case mnesia:backup_checkpoint(Index, MnesiaFile) of
-                ok               -> mnesia:deactivate_checkpoint(Index);
+            io:format("Backup checkpoint ~p~n", [element(1, Meta)]),
+            case mnesia:backup_checkpoint(CheckpointName, MnesiaFile) of
+                ok               ->
+                    io:format("Deactivate checkpoint ~p~n", [CheckpointName]),
+                    mnesia:deactivate_checkpoint(CheckpointName);
                 %% TODO cleanup
                 {error, _} = Err -> Err
             end;

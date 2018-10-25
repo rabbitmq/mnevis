@@ -24,7 +24,7 @@ init_mnesia_table() ->
 
 start_transaction_test() ->
     init_mnesia_table(),
-    InitState = #state{},
+    InitState = #state{last_transaction_id = 0},
     Source = self(),
     {#state{transactions = #{Source := Tid}, last_transaction_id = Tid},
      [{monitor, process, Source}],
@@ -82,7 +82,7 @@ start_transaction_cleanup_locks_test() ->
 
 rollback_no_transaction_error_test() ->
     init_mnesia_table(),
-    InitState = #state{},
+    InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     Tid = 1,
     {InitState, [], {error, no_transaction_for_pid}} =
@@ -100,7 +100,7 @@ rollback_wrong_transaction_error_test() ->
 rollback_cleanup_test() ->
     init_mnesia_table(),
     Source = self(),
-    InitState = #state{},
+    InitState = #state{ last_transaction_id = 0 },
     {State = #state{last_transaction_id = LastTid}, [{monitor, process, Source}], {ok, Tid}} =
         mnevis_machine:apply(none, {start_transaction, Source}, [], InitState),
     {State1, [{demonitor, process, Source}], _} =
@@ -146,7 +146,7 @@ rollback_cleanup_locks_test() ->
 
 commit_no_transaction_error_test() ->
     init_mnesia_table(),
-    InitState = #state{},
+    InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     Tid = 1,
     {InitState, [], {error, no_transaction_for_pid}} =
@@ -164,7 +164,7 @@ commit_wrong_transaction_error_test() ->
 commit_cleanup_test() ->
     init_mnesia_table(),
     Source = self(),
-    InitState = #state{},
+    InitState = #state{ last_transaction_id = 0 },
     {State = #state{last_transaction_id = LastTid}, [{monitor, process, Source}], {ok, Tid}} =
         mnevis_machine:apply(none, {start_transaction, Source}, [], InitState),
     %% Release cursor on commit
@@ -174,7 +174,7 @@ commit_cleanup_test() ->
                       transactions = #{},
                       committed_transactions = #{Tid => Source}},
     Expected = State1,
-    {State2, [{demonitor, process, Source}]} =
+    {State2, [{demonitor, process, Source}], ok} =
         mnevis_machine:apply(none, {finish, Tid, Source}, [], State1),
     Expected1 = #state{last_transaction_id = LastTid},
     Expected1 = State2.
@@ -197,7 +197,7 @@ commit_cleanup_locks_test() ->
                        read_locks = #{readlock => [Tid],
                                       readlock_1 => [Tid, Tid1],
                                       readlock_2 => [Tid2]}},
-    {State1, [{demonitor, process, Source}]} =
+    {State1, [{demonitor, process, Source}], ok} =
         mnevis_machine:apply(none, {finish, Tid, Source}, [],
             element(1, mnevis_machine:apply(#{index => 1}, {commit, Tid, Source, [[], [], []]}, [], InitState))),
 
@@ -226,7 +226,7 @@ commit_write_test() ->
     %% To reqrite during write
     mnesia:dirty_write({foo, to_rewrite, val}),
     Source = self(),
-    InitState = #state{},
+    InitState = #state{ last_transaction_id = 0 },
     {State1, _, {ok, Tid}} =
         mnevis_machine:apply(none, {start_transaction, Source}, [], InitState),
     %% Writes are of {Table, Record, LockKind} format
@@ -257,7 +257,7 @@ commit_write_test() ->
 
 lock_no_transaction_error_test() ->
     init_mnesia_table(),
-    InitState = #state{},
+    InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     Tid = 1,
     {InitState, [], {error, no_transaction_for_pid}} =
@@ -274,7 +274,7 @@ lock_wrong_transaction_error_test() ->
 
 lock_aquire_read_test() ->
     init_mnesia_table(),
-    InitState = #state{},
+    InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     {State, _, {ok, Tid}} =
         mnevis_machine:apply(none, {start_transaction, Source}, [], InitState),
@@ -287,7 +287,7 @@ lock_aquire_read_test() ->
 
 lock_aquire_read_multiple_test() ->
     init_mnesia_table(),
-    InitState = #state{},
+    InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     Source1 = spawn(fun() -> ok end),
     {State, _, {ok, Tid}} =
@@ -309,7 +309,7 @@ lock_aquire_read_multiple_test() ->
 
 lock_aquire_write_test() ->
     init_mnesia_table(),
-    InitState = #state{},
+    InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     {State, _, {ok, Tid}} =
         mnevis_machine:apply(none, {start_transaction, Source}, [], InitState),
@@ -320,7 +320,7 @@ lock_aquire_write_test() ->
 
 lock_read_blocked_by_write_test() ->
     init_mnesia_table(),
-    InitState = #state{},
+    InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     Source1 = spawn(fun() -> ok end),
     {State, _, {ok, Tid}} =
@@ -346,7 +346,7 @@ lock_read_blocked_by_write_test() ->
 
 lock_read_blocked_by_table_write_test() ->
     init_mnesia_table(),
-    InitState = #state{},
+    InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     Source1 = spawn(fun() -> ok end),
     {State, _, {ok, Tid}} =
@@ -363,7 +363,7 @@ lock_read_blocked_by_table_write_test() ->
 
 lock_read_cleanup_when_blocked_test() ->
     init_mnesia_table(),
-    InitState = #state{},
+    InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     Source1 = spawn(fun() -> ok end),
     {State, _, {ok, Tid}} =
@@ -399,7 +399,7 @@ lock_read_cleanup_when_blocked_test() ->
 
 lock_write_blocked_by_write_test() ->
     init_mnesia_table(),
-    InitState = #state{},
+    InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     Source1 = spawn(fun() -> ok end),
     {State, _, {ok, Tid}} =
@@ -416,7 +416,7 @@ lock_write_blocked_by_write_test() ->
 
 lock_write_blocked_by_table_write_test() ->
     init_mnesia_table(),
-    InitState = #state{},
+    InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     Source1 = spawn(fun() -> ok end),
     {State, _, {ok, Tid}} =
@@ -433,7 +433,7 @@ lock_write_blocked_by_table_write_test() ->
 
 lock_write_blocked_by_read_test() ->
     init_mnesia_table(),
-    InitState = #state{},
+    InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     Source1 = spawn(fun() -> ok end),
     {State, _, {ok, Tid}} =
@@ -450,7 +450,7 @@ lock_write_blocked_by_read_test() ->
 
 lock_write_blocked_by_table_read_test() ->
     init_mnesia_table(),
-    InitState = #state{},
+    InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     Source1 = spawn(fun() -> ok end),
     {State, _, {ok, Tid}} =
@@ -472,7 +472,7 @@ lock_write_blocked_by_table_read_test() ->
 
 read_no_transaction_error_test() ->
     init_mnesia_table(),
-    InitState = #state{},
+    InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     Tid = 1,
     {InitState, [], {error, no_transaction_for_pid}} =
@@ -489,7 +489,7 @@ read_wrong_transaction_error_test() ->
 
 read_locked_by_write_test() ->
     init_mnesia_table(),
-    InitState = #state{},
+    InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     Source1 = spawn(fun() -> ok end),
     {State, _, {ok, Tid}} =
@@ -506,7 +506,7 @@ read_locked_by_write_test() ->
 
 read_with_write_lock_locked_by_read_test() ->
     init_mnesia_table(),
-    InitState = #state{},
+    InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     Source1 = spawn(fun() -> ok end),
     {State, _, {ok, Tid}} =
@@ -526,7 +526,7 @@ read_returns_and_aquires_lock_test() ->
     mnesia:delete_table(foo),
     mnesia:create_table(foo, []),
     mnesia:dirty_write({foo, foo, val}),
-    InitState = #state{},
+    InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     {State, _, {ok, Tid}} =
         mnevis_machine:apply(none, {start_transaction, Source}, [], InitState),
@@ -544,7 +544,7 @@ read_returns_and_aquires_lock_test() ->
 
 index_read_no_transaction_error_test() ->
     init_mnesia_table(),
-    InitState = #state{},
+    InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     Tid = 1,
     {InitState, [], {error, no_transaction_for_pid}} =
@@ -561,7 +561,7 @@ index_read_wrong_transaction_error_test() ->
 
 index_read_locked_by_write_test() ->
     init_mnesia_table(),
-    InitState = #state{},
+    InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     Source1 = spawn(fun() -> ok end),
     {State, _, {ok, Tid}} =
@@ -582,7 +582,7 @@ index_read_returns_and_aquires_lock_test() ->
     mnesia:create_table(foo, []),
     mnesia:add_table_index(foo, val),
     mnesia:dirty_write({foo, foo, val}),
-    InitState = #state{},
+    InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     {State, _, {ok, Tid}} =
         mnevis_machine:apply(none, {start_transaction, Source}, [], InitState),
@@ -596,7 +596,7 @@ index_read_returns_and_aquires_lock_test() ->
 match_object_no_transaction_error_test() ->
     init_mnesia_table(),
     Pattern = {foo, '_', val},
-    InitState = #state{},
+    InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     Tid = 1,
     {InitState, [], {error, no_transaction_for_pid}} =
@@ -615,7 +615,7 @@ match_object_wrong_transaction_error_test() ->
 match_object_locked_by_write_test() ->
     init_mnesia_table(),
     Pattern = {foo, '_', val},
-    InitState = #state{},
+    InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     Source1 = spawn(fun() -> ok end),
     {State, _, {ok, Tid}} =
@@ -636,7 +636,7 @@ match_object_returns_and_aquires_lock_test() ->
     mnesia:delete_table(foo),
     mnesia:create_table(foo, []),
     mnesia:dirty_write({foo, foo, val}),
-    InitState = #state{},
+    InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     {State, _, {ok, Tid}} =
         mnevis_machine:apply(none, {start_transaction, Source}, [], InitState),
@@ -650,7 +650,7 @@ match_object_returns_and_aquires_lock_test() ->
 index_match_object_no_transaction_error_test() ->
     init_mnesia_table(),
     Pattern = {foo, '_', val},
-    InitState = #state{},
+    InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     Tid = 1,
     {InitState, [], {error, no_transaction_for_pid}} =
@@ -669,7 +669,7 @@ index_match_object_wrong_transaction_error_test() ->
 index_match_object_locked_by_write_test() ->
     init_mnesia_table(),
     Pattern = {foo, '_', val},
-    InitState = #state{},
+    InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     Source1 = spawn(fun() -> ok end),
     {State, _, {ok, Tid}} =
@@ -691,7 +691,7 @@ index_match_object_returns_and_aquires_lock_test() ->
     mnesia:create_table(foo, []),
     mnesia:add_table_index(foo, val),
     mnesia:dirty_write({foo, foo, val}),
-    InitState = #state{},
+    InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     {State, _, {ok, Tid}} =
         mnevis_machine:apply(none, {start_transaction, Source}, [], InitState),
@@ -704,7 +704,7 @@ index_match_object_returns_and_aquires_lock_test() ->
 
 all_keys_no_transaction_error_test() ->
     init_mnesia_table(),
-    InitState = #state{},
+    InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     Tid = 1,
     {InitState, [], {error, no_transaction_for_pid}} =
@@ -721,7 +721,7 @@ all_keys_wrong_transaction_error_test() ->
 
 all_keys_locked_by_write_test() ->
     init_mnesia_table(),
-    InitState = #state{},
+    InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     Source1 = spawn(fun() -> ok end),
     {State, _, {ok, Tid}} =
@@ -743,7 +743,7 @@ all_keys_returns_and_aquires_lock_test() ->
     mnesia:dirty_write({foo, foo, val}),
     mnesia:dirty_write({foo, bar, val1}),
     mnesia:dirty_write({foo, baz, val2}),
-    InitState = #state{},
+    InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     {State, _, {ok, Tid}} =
         mnevis_machine:apply(none, {start_transaction, Source}, [], InitState),
@@ -763,7 +763,7 @@ all_keys_returns_and_aquires_lock_test() ->
 
 first_no_transaction_error_test() ->
     init_mnesia_table(),
-    InitState = #state{},
+    InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     Tid = 1,
     {InitState, [], {error, no_transaction_for_pid}} =
@@ -780,7 +780,7 @@ first_wrong_transaction_error_test() ->
 
 first_locked_by_write_test() ->
     init_mnesia_table(),
-    InitState = #state{},
+    InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     Source1 = spawn(fun() -> ok end),
     {State, _, {ok, Tid}} =
@@ -800,7 +800,7 @@ first_returns_and_aquires_lock_test() ->
     mnesia:delete_table(foo),
     mnesia:create_table(foo, []),
     mnesia:dirty_write({foo, bar, val}),
-    InitState = #state{},
+    InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     {State, _, {ok, Tid}} =
         mnevis_machine:apply(none, {start_transaction, Source}, [], InitState),
@@ -813,7 +813,7 @@ first_returns_and_aquires_lock_test() ->
 
 last_no_transaction_error_test() ->
     init_mnesia_table(),
-    InitState = #state{},
+    InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     Tid = 1,
     {InitState, [], {error, no_transaction_for_pid}} =
@@ -830,7 +830,7 @@ last_wrong_transaction_error_test() ->
 
 last_locked_by_write_test() ->
     init_mnesia_table(),
-    InitState = #state{},
+    InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     Source1 = spawn(fun() -> ok end),
     {State, _, {ok, Tid}} =
@@ -850,7 +850,7 @@ last_returns_and_aquires_lock_test() ->
     mnesia:delete_table(foo),
     mnesia:create_table(foo, []),
     mnesia:dirty_write({foo, bar, val}),
-    InitState = #state{},
+    InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     {State, _, {ok, Tid}} =
         mnevis_machine:apply(none, {start_transaction, Source}, [], InitState),
@@ -863,7 +863,7 @@ last_returns_and_aquires_lock_test() ->
 
 prev_no_transaction_error_test() ->
     init_mnesia_table(),
-    InitState = #state{},
+    InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     Tid = 1,
     {InitState, [], {error, no_transaction_for_pid}} =
@@ -880,7 +880,7 @@ prev_wrong_transaction_error_test() ->
 
 prev_locked_by_write_test() ->
     init_mnesia_table(),
-    InitState = #state{},
+    InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     Source1 = spawn(fun() -> ok end),
     {State, _, {ok, Tid}} =
@@ -901,7 +901,7 @@ prev_returns_and_aquires_lock_test() ->
     mnesia:create_table(foo, []),
     mnesia:dirty_write({foo, baz, val}),
     mnesia:dirty_write({foo, bar, val}),
-    InitState = #state{},
+    InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     {State, _, {ok, Tid}} =
         mnevis_machine:apply(none, {start_transaction, Source}, [], InitState),
@@ -914,7 +914,7 @@ prev_returns_and_aquires_lock_test() ->
 
 next_no_transaction_error_test() ->
     init_mnesia_table(),
-    InitState = #state{},
+    InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     Tid = 1,
     {InitState, [], {error, no_transaction_for_pid}} =
@@ -931,7 +931,7 @@ next_wrong_transaction_error_test() ->
 
 next_locked_by_write_test() ->
     init_mnesia_table(),
-    InitState = #state{},
+    InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     Source1 = spawn(fun() -> ok end),
     {State, _, {ok, Tid}} =
@@ -952,7 +952,7 @@ next_returns_and_aquires_lock_test() ->
     mnesia:create_table(foo, []),
     mnesia:dirty_write({foo, baz, val}),
     mnesia:dirty_write({foo, bar, val}),
-    InitState = #state{},
+    InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     {State, _, {ok, Tid}} =
         mnevis_machine:apply(none, {start_transaction, Source}, [], InitState),
@@ -966,7 +966,7 @@ next_returns_and_aquires_lock_test() ->
 
 down_no_transaction_test() ->
     init_mnesia_table(),
-    InitState = #state{},
+    InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     %% The return value is ignored
     {InitState, [], _} =
@@ -975,7 +975,7 @@ down_no_transaction_test() ->
 down_cleanup_test() ->
     init_mnesia_table(),
     Source = self(),
-    InitState = #state{},
+    InitState = #state{ last_transaction_id = 0 },
     {State = #state{last_transaction_id = LastTid}, [{monitor, process, Source}], _} =
         mnevis_machine:apply(none, {start_transaction, Source}, [], InitState),
     {State1, [{demonitor, process, Source}], _} =

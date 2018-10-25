@@ -55,7 +55,7 @@
 start(DataDir) ->
     _ = application:load(ra),
     application:set_env(ra, data_dir, DataDir),
-    application:ensure_all_started(mnevis),
+    {ok, _} = application:ensure_all_started(mnevis),
     mnevis_node:start().
 
 -spec db_nodes() -> [node()].
@@ -179,7 +179,7 @@ commit_transaction() ->
     {ok, Leader} = execute_command_with_retry(Context, commit,
                                               [Writes, Deletes, DeletesObject]),
     %% Notify the machine to cleanup the commited transaction record
-    ra:cast(Leader, {finish, Tid, self()}),
+    ra:pipeline_command(Leader, {finish, Tid, self()}),
     ok.
 
 maybe_rollback_transaction() ->
@@ -376,7 +376,7 @@ execute_command(Context, Command, Args) ->
 -spec run_ra_command(term()) -> {ok, term()} | {error, term()}.
 run_ra_command(RaCommand) ->
     NodeId = mnevis_node:node_id(),
-    case ra:send_and_await_consensus(NodeId, RaCommand) of
+    case ra:process_command(NodeId, RaCommand) of
         {ok, {ok, Result}, _}               -> {ok, Result};
         {ok, {error, {aborted, Reason}}, _} -> mnesia:abort(Reason);
         {ok, {error, Reason}, _}            -> {error, Reason};
@@ -392,7 +392,7 @@ execute_command_with_retry(Context, Command, Args) ->
     {ok, Leader}.
 
 retry_ra_command(NodeId, RaCommand) ->
-    case ra:send_and_await_consensus(NodeId, RaCommand) of
+    case ra:process_command(NodeId, RaCommand) of
         {ok, {ok, ok}, Leader}              -> Leader;
         {ok, {error, {aborted, Reason}}, _} -> mnesia:abort(Reason);
         {ok, {error, Reason}, _} -> mnesia:abort({apply_error, Reason});

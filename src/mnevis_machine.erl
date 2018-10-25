@@ -19,7 +19,7 @@
 -type reply(T, E) :: {ok, T} | {error, E}.
 
 
--record(state, {last_transaction_id = 0,
+-record(state, {last_transaction_id,
                 transactions = #{},
                 committed_transactions = #{},
                 read_locks = #{},
@@ -47,17 +47,20 @@
 -record(committed_transaction, { transaction_id, value }).
 %% Ra machine callbacks
 
--spec init(config()) -> {state(), ra_machine:effects()}.
+-spec init(config()) -> state().
 init(_Conf) ->
-    case create_committed_transaction_table() of
-        {atomic, ok} -> ok;
-        {aborted,{already_exists,committed_transaction}} -> ok;
-        Other -> error({cannot_create_committed_transaction_table, Other})
+    LastTid = case create_committed_transaction_table() of
+        {atomic, ok} ->
+            0;
+        {aborted,{already_exists,committed_transaction}} ->
+            get_latest_committed_transaction();
+        Other ->
+            error({cannot_create_committed_transaction_table, Other})
     end,
-    {#state{}, []}.
+    #state{last_transaction_id = LastTid}.
 
 -spec apply(map(), command(), ra_machine:effects(), state()) ->
-    {state(), ra_machine:effects()} | {state(), ra_machine:effects(), reply()}.
+    {state(), ra_machine:effects(), reply()}.
 apply(Meta, Command, Effects0, State) ->
     with_pre_effects(Effects0, apply_command(Meta, Command, State)).
 
@@ -111,7 +114,7 @@ apply_command(Meta, {commit, Tid, Source, [Writes, Deletes, DeletesObject]}, Sta
 
 apply_command(_Meta, {finish, Tid, Source}, State) ->
     State1 = cleanup_committed(Tid, Source, State),
-    {State1, [{demonitor, process, Source}]};
+    {State1, [{demonitor, process, Source}], ok};
 
 apply_command(_Meta, {lock, Tid, Source, [LockItem, LockKind]}, State) ->
     with_transaction(Tid, Source, State,
@@ -341,10 +344,6 @@ lock(LockItem, LockKind, Tid, Source, State) ->
 
 -spec snapshot_effects(map(), state()) -> [ra_machine:effects()].
 snapshot_effects(#{index := RaftIdx}, State) ->
-    CheckpointName = RaftIdx,
-    {ok, CheckpointName, _} =
-        mnesia:activate_checkpoint({name, CheckpointName},
-                                   {min, mnesia:system_info(tables)}),
     [{release_cursor, RaftIdx, State}].
 
 %% ==========================
@@ -398,6 +397,13 @@ closest_prev(Tab, Key, CurrentKey) ->
 -spec save_committed_transaction(transaction_id()) -> ok.
 save_committed_transaction(Tid) ->
     ok = mnesia:write({committed_transaction, Tid, committed}).
+
+-spec get_latest_committed_transaction() -> transaction_id().
+get_latest_committed_transaction() ->
+    {atomic, AllKeys} = mnesia:sync_transaction(fun() ->
+        mnesia:all_keys(committed_transaction)
+    end),
+    lists:max(AllKeys).
 
 -spec transaction_recorded_as_committed(transaction_id()) -> boolean().
 transaction_recorded_as_committed(Tid) ->

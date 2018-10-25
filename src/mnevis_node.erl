@@ -22,7 +22,8 @@ start() ->
         net_adm:ping(N)
     end,
     InitialNodes),
-    ok = ra:start_node(Name, NodeId, {module, mnevis_machine, #{}}, InitialNodes).
+    {ok, _, _} = ra:start_cluster(Name, {module, mnevis_machine, #{}}, InitialNodes).
+
 
 trigger_election() ->
     ok = ra:trigger_election(node_id()).

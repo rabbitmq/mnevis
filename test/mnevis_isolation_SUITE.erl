@@ -11,19 +11,24 @@ groups() ->
      {tests, [], [
         write_invisible_outside_transaction,
         delete_invisible_outside_transaction
-        ,
-        consistent_counter
+        % ,
+        % consistent_counter
         %,
         % conststent_register
         ]}].
 
 init_per_suite(Config) ->
     PrivDir = ?config(priv_dir, Config),
+    filelib:ensure_dir(PrivDir),
     mnevis:start(PrivDir),
     mnevis_node:trigger_election(),
     Config.
 
 end_per_suite(Config) ->
+    ra:stop_server(mnevis_node:node_id()),
+    application:stop(mnevis),
+    application:stop(ra),
+    % mnesia:delete_table(committed_transaction),
     Config.
 
 
