@@ -4,15 +4,11 @@
 
 -include_lib("ra/include/ra.hrl").
 
--export([release/2, prepare/2, write/3, save/3, read/1, recover/1, install/2, read_indexterm/1]).
+-export([prepare/2, write/3, save/3, read/1, recover/1, install/2, read_indexterm/1]).
 
 -record(saved_state, {state, node :: node()}).
 
 -record(transferred_state, {saved_state :: #saved_state{}, data :: binary()}).
-
-
--spec release(Index :: ra_index(), State) -> State.
-release(_Index, State) -> State.
 
 -spec prepare(Index :: ra_index(), State :: term()) -> Ref :: {ra_index(), #saved_state{}}.
 prepare(Index, State) ->
