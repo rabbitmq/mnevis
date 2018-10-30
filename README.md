@@ -181,6 +181,11 @@ a replay the client will not be there anymore.
 
 A snapshot is requested via release_cursor on every successful commit operation.
 
+This app is using a custom snapshotting module `mnesia_snapshot`. When a state
+is about to be saved as a snapshot it will take a mnesia checkpoint with
+the `prepare` callback.
+The snapshot consists of the mnesia backup and the server state saved by `ra_log_snapshot`
+
 ## TODO
 
 `select` operations are not implementing, which means that `qlc` quieries will not work.

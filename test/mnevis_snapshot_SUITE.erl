@@ -72,7 +72,7 @@ receive_results(Pids) ->
 
 mnesia_transaction(_Config) ->
     [
-    mnesia:transaction(fun() ->
+    mnesia:sync_transaction(fun() ->
         mnesia:write({sample, N, N})
     end)  || N <- lists:seq(1, 3000)
     ].
