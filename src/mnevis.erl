@@ -69,7 +69,7 @@ running_db_nodes() ->
     [Node || {Name, Node} <- Nodes,
              pong == net_adm:ping(Node)
              andalso
-             undefined =/= rpc:call(Node, erlang, whereis, Name)].
+             undefined =/= rpc:call(Node, erlang, whereis, [Name])].
 
 create_table(Tab, Opts) ->
     %% TODO: handle errors/retry

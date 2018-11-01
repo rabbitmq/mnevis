@@ -314,9 +314,9 @@ cleanup_committed(Tid, Source, State) ->
             State;
         Source    ->
             State#state{committed_transactions = maps:remove(Tid, Committed)};
-        OtherSource ->
-            error_logger:warninig_msg("Cleanup committed for a wrong source ~p",
-                                      [{Tid, Source, OtherSource}]),
+        _OtherSource ->
+            % error_logger:warninig_msg("Cleanup committed for a wrong source ~p",
+                                      % [{Tid, Source, OtherSource}]),
             State
     end.
 
@@ -342,7 +342,7 @@ lock(LockItem, LockKind, Tid, Source, State) ->
             {State2, [], Error}
     end.
 
--spec snapshot_effects(map(), state()) -> [ra_machine:effects()].
+-spec snapshot_effects(map(), state()) -> ra_machine:effects().
 snapshot_effects(#{index := RaftIdx}, State) ->
     [{release_cursor, RaftIdx, State}].
 
@@ -581,9 +581,7 @@ transaction_for_source(Source, #state{transactions = Transactions}) ->
 -spec with_pre_effects(ra_machine:effects(), {state(), ra_machine:effects()} | apply_result(T, E)) ->
     {state(), ra_machine:effects()} | apply_result(T, E).
 with_pre_effects(Effects0, {State, Effects, Result}) ->
-    {State, Effects0 ++ Effects, Result};
-with_pre_effects(Effects0, {State, Effects}) ->
-    {State, Effects0 ++ Effects}.
+    {State, Effects0 ++ Effects, Result}.
 
 %% Functional helpers to skip ops.
 

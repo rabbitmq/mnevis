@@ -4,7 +4,7 @@
 
 -include_lib("ra/include/ra.hrl").
 
--export([prepare/2, write/3, save/3, read/1, recover/1, install/2, read_indexterm/1]).
+-export([prepare/2, write/3, save/3, read/1, recover/1, read_meta/1]).
 
 -record(saved_state, {state, node :: node()}).
 
@@ -80,11 +80,9 @@ save(Dir, Meta, #transferred_state{saved_state = SavedState, data = Backup}) ->
 
 %% Side-effect function
 %% Deserialize the snapshot to external state.
--spec install(Data :: term(), Location :: file:filename()) ->
+-spec install(SavedState :: #saved_state{}, Location :: file:filename()) ->
     {ok, State :: term()} | {error, term()}.
-install(#transferred_state{saved_state = #saved_state{state = State,
-                                                      node  = SourceNode}},
-        Dir) ->
+install(#saved_state{state = State, node  = SourceNode}, Dir) ->
     ConvertedBackupFile = converted_mnesia_file(Dir),
     case filelib:is_file(ConvertedBackupFile) of
         true ->
@@ -104,7 +102,7 @@ install(#transferred_state{saved_state = #saved_state{state = State,
 recover(Dir) ->
     case ra_log_snapshot:read(ra_log_snapshot_file(Dir)) of
         {ok, Meta, SavedState} ->
-            case install(#transferred_state{saved_state = SavedState}, Dir) of
+            case install(SavedState, Dir) of
                 {ok, State} -> {ok, Meta, State};
                 {error, _} = Err -> Err
             end;
@@ -112,11 +110,11 @@ recover(Dir) ->
     end.
 
 %% Only read index and term from snapshot
--spec read_indexterm(Location :: file:filename()) ->
-    {ok, ra_idxterm()} |
+-spec read_meta(Location :: file:filename()) ->
+    {ok, ra_snapshot:meta()} |
     {error, invalid_format | {invalid_version, integer()} | checksum_error | ra_snapshot:file_err()}.
-read_indexterm(Dir) ->
-    ra_log_snapshot:read_indexterm(ra_log_snapshot_file(Dir)).
+read_meta(Dir) ->
+    ra_log_snapshot:read_meta(ra_log_snapshot_file(Dir)).
 
 ra_log_snapshot_file(Dir) ->
     filename:join(Dir, "state_snapshot").
