@@ -10,11 +10,8 @@ groups() ->
     [
      {tests, [], [
         write_invisible_outside_transaction,
-        delete_invisible_outside_transaction
-        % ,
-        % consistent_counter
-        %,
-        % conststent_register
+        delete_invisible_outside_transaction,
+        consistent_counter
         ]}].
 
 init_per_suite(Config) ->
@@ -28,7 +25,6 @@ end_per_suite(Config) ->
     ra:stop_server(mnevis_node:node_id()),
     application:stop(mnevis),
     application:stop(ra),
-    % mnesia:delete_table(committed_transaction),
     Config.
 
 
