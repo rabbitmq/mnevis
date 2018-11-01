@@ -18,7 +18,8 @@
 % [{Pid1,TID1, [...]}] -> Pid -> [{Pid1,TID1, [...]},{Pid,TID2, []}]
 
 init_mnesia_table() ->
-    mnesia:start(),
+    mnesia:delete_schema([node()]),
+    ok = mnesia:start(),
     mnesia:create_table(committed_transaction, []),
     mnesia:clear_table(committed_transaction).
 

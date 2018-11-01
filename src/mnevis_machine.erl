@@ -9,7 +9,8 @@
          leader_effects/1,
          eol_effects/1,
          tick/2,
-         overview/1]).
+         overview/1,
+         snapshot_module/0]).
 
 -type config() :: map().
 -type command() :: term().
@@ -75,6 +76,10 @@ tick(_Time, _State) -> [].
 
 -spec overview(state()) -> map().
 overview(_State) -> #{}.
+
+-spec snapshot_module() -> module().
+snapshot_module() ->
+    mnevis_snapshot.
 
 
 -spec apply_command(map(), command(), state()) ->

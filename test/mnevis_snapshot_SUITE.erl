@@ -48,12 +48,12 @@ start_cluster(Nodes, PrivDir) ->
     [start_node(Node, Nodes, PrivDir) || Node <- Nodes],
     {Name, _} = mnevis_node:node_id(),
     Servers = [{Name, Node} || Node <- Nodes],
-    {ok, _, _} = ra:start_cluster(Name, {module, mnevis_machine, #{}}, mnevis_snapshot, Servers).
+    {ok, _, _} = ra:start_cluster(Name, {module, mnevis_machine, #{}}, Servers).
 
 start_server(Node, Nodes) ->
     {Name, _} = mnevis_node:node_id(),
     Servers = [{Name, Node} || Node <- Nodes],
-    ra:start_server(Name, {Name, Node}, {module, mnevis_machine, #{}}, mnevis_snapshot, Servers).
+    ra:start_server(Name, {Name, Node}, {module, mnevis_machine, #{}}, Servers).
 
 start_node(Node, Nodes, PrivDir) ->
     Node = rpc:call(Node, erlang, node, []),
