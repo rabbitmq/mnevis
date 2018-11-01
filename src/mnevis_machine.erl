@@ -403,7 +403,10 @@ get_latest_committed_transaction() ->
     {atomic, AllKeys} = mnesia:sync_transaction(fun() ->
         mnesia:all_keys(committed_transaction)
     end),
-    lists:max(AllKeys).
+    case AllKeys of
+        [] -> 0;
+        _  -> lists:max(AllKeys)
+    end.
 
 -spec transaction_recorded_as_committed(transaction_id()) -> boolean().
 transaction_recorded_as_committed(Tid) ->
