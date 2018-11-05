@@ -11,13 +11,7 @@ all() -> [{group, tests}].
 
 groups() ->
     [
-     {tests, [], [
-        create_snapshot
-        % ,
-        % nesia_transaction
-        % ,
-        % multiple_processes
-        ]}].
+     {tests, [], [create_snapshot]}].
 
 init_per_suite(Config) ->
     PrivDir = ?config(priv_dir, Config),
@@ -116,9 +110,7 @@ create_snapshot(Config) ->
 
     % ra:members(mnevis_node:node_id()),
 
-    {Name, _} = mnevis_node:node_id(),
-
-    {ok, {{LocalIndex, _}, _}, _} = ra:local_query({Name, node()}, fun(S) -> ok end),
+    {ok, {{LocalIndex, _}, _}, _} = ra:local_query(mnevis_node:node_id(), fun(S) -> ok end),
     wait_for_index(Node2, LocalIndex),
 
     3000 = rpc:call(Node2, mnesia, table_info, [sample, size]).
@@ -142,28 +134,3 @@ wait_for_index(Node, Index, LastIndex) ->
                     wait_for_index(Node, Index)
             end
     end.
-
-multiple_processes(_Config) ->
-    Self = self(),
-    Pids = [spawn_link(fun() ->
-        {Time, _} = timer:tc(fun() ->
-            [mnevis:transaction(fun() ->
-                [mnesia:write({sample, WN*N*PN, N}) || WN <- lists:seq(1, 10)]
-             end)  || N <- lists:seq(1, 3)
-            ]
-        end),
-        ct:pal("Time to process 10 transactions ~p~n", [Time]),
-        Self ! {stop, self()}
-    end) || PN <- lists:seq(1, 100)],
-    receive_results(Pids).
-
-receive_results(Pids) ->
-    [ receive {stop, Pid} -> ok end || Pid <- Pids ].
-
-mnesia_transaction(_Config) ->
-    [
-    mnesia:sync_transaction(fun() ->
-        mnesia:write({sample, N, N})
-    end)  || N <- lists:seq(1, 3000)
-    ],
-    3000 = mnesia:table_info(sample, size).
