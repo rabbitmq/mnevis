@@ -22,7 +22,8 @@ groups() ->
 init_per_suite(Config) ->
     PrivDir = ?config(priv_dir, Config),
     ok = filelib:ensure_dir(PrivDir),
-    ct:pal("~nPriv dir ~p~n", [PrivDir]),
+    application:load(mnesia),
+    mnesia:create_schema([node()]),
     mnevis:start(PrivDir),
     mnevis_node:trigger_election(),
     Config.
@@ -58,7 +59,6 @@ mnevis_seq(_Config) ->
     end)  || N <- lists:seq(1, 3000)
     ],
     {ok, {{LocalIndex, _}, _}, _} = ra:local_query(mnevis_node:node_id(), fun(S) -> ok end),
-    ct:pal("Executed commands ~p~n", [LocalIndex]),
     3000 = mnesia:table_info(sample, size).
 
 mnesia_seq(_Config) ->
@@ -74,11 +74,11 @@ mnevis_parallel(_Config) ->
     Pids = [spawn_link(fun() ->
         {Time, _} = timer:tc(fun() ->
             [mnevis:transaction(fun() ->
-                [mnesia:write({sample, WN*N*PN, N}) || WN <- lists:seq(1, 10)]
+                [mnesia:write({sample, WN*N*100 + PN, N})
+                 || WN <- lists:seq(1, 10)]
              end)  || N <- lists:seq(1, 3)
             ]
         end),
-        ct:pal("Time to process 10 transactions ~p~n", [Time]),
         Self ! {stop, self()}
     end) || PN <- lists:seq(1, 100)],
 
@@ -91,11 +91,10 @@ mnesia_parallel(_Config) ->
     Pids = [spawn_link(fun() ->
         {Time, _} = timer:tc(fun() ->
             [mnesia:sync_transaction(fun() ->
-                [mnesia:write({sample, WN*N*PN, N}) || WN <- lists:seq(1, 10)]
+                [mnesia:write({sample, WN*N*100 + PN, N}) || WN <- lists:seq(1, 10)]
              end)  || N <- lists:seq(1, 3)
             ]
         end),
-        ct:pal("Time to process 30 transactions ~p~n", [Time]),
         Self ! {stop, self()}
     end) || PN <- lists:seq(1, 100)],
     receive_results(Pids).
