@@ -245,7 +245,10 @@ apply_command(_Meta, {down, Source, _Reason}, State) ->
             cleanup(Tid, Source, State);
         {error, no_transaction} ->
             {State, [], ok}
-    end.
+    end;
+apply_command(_Meta, Unknown, State) ->
+    error_logger:error_msg("Unknown command ~p~n", [Unknown]),
+    {State, [], {error, unknown_command}}.
 
 %% ==========================
 
