@@ -45,7 +45,7 @@ end_per_testcase(_Test, Config) ->
     Config.
 
 create_sample_table() ->
-    mnevis:create_table(sample, []),
+    mnevis:create_table(sample, [{disc_copies, [node()]}]),
     ok.
 
 delete_sample_table() ->
@@ -72,15 +72,11 @@ mnesia_seq(_Config) ->
 mnevis_parallel(_Config) ->
     Self = self(),
     Pids = [spawn_link(fun() ->
-        {Time, _} = timer:tc(fun() ->
-            [mnevis:transaction(fun() ->
-                [mnesia:write({sample, WN*N*100 + PN, N})
-                 || WN <- lists:seq(1, 10)]
-             end)  || N <- lists:seq(1, 3)
-            ]
-        end),
+        [mnevis:transaction(fun() ->
+            mnesia:write({sample, N*10 + TN, N})
+         end) || TN <- lists:seq(1, 10)],
         Self ! {stop, self()}
-    end) || PN <- lists:seq(1, 100)],
+    end) || N <- lists:seq(1, 300)],
 
     receive_results(Pids),
     {ok, {{LocalIndex, _}, _}, _} = ra:local_query(mnevis_node:node_id(), fun(S) -> ok end),
