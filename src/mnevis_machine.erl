@@ -93,28 +93,28 @@ apply_command(_Meta, {rollback, Tid0, Source, []}, State0) when ?IS_TID(Tid0) ->
         end);
 
 apply_command(Meta, {commit, Tid0, Source, [Writes, Deletes, DeletesObject]}, State0) when ?IS_TID(Tid0) ->
-    {State0, [], {ok, ok}};
-    % maybe_skip_committed(Tid0, Source, State0,
-    %     fun() ->
-    %         with_existing_transaction(Tid0, Source, State0,
-    %             fun(Tid, State) ->
-    %                 {NewState, Effects, Result} =
-    %                     commit(Tid, Source, Writes, Deletes, DeletesObject, State),
-    %                 case Result of
-    %                     {ok, ok} ->
-    %                         {NewState,
-    %                          Effects ++ snapshot_effects(Meta, NewState),
-    %                          Result};
-    %                     _ ->
-    %                         {NewState, Effects, Result}
-    %                 end
-    %             end)
-    %     end);
+    % {State0, [], {ok, ok}};
+    maybe_skip_committed(Tid0, Source, State0,
+        fun() ->
+            with_existing_transaction(Tid0, Source, State0,
+                fun(Tid, State) ->
+                    {NewState, Effects, Result} =
+                        commit(Tid, Source, Writes, Deletes, DeletesObject, State),
+                    case Result of
+                        {ok, ok} ->
+                            {NewState,
+                             Effects ++ snapshot_effects(Meta, NewState),
+                             Result};
+                        _ ->
+                            {NewState, Effects, Result}
+                    end
+                end)
+        end);
 
 apply_command(_Meta, {finish, Tid, Source}, State) when ?IS_TID(Tid) ->
-    {State, [], ok};
-    % State1 = cleanup_committed(Tid, Source, State),
-    % {State1, [{demonitor, process, Source}], ok};
+    % {State, [], ok};
+    State1 = cleanup_committed(Tid, Source, State),
+    {State1, [{demonitor, process, Source}], ok};
 
 apply_command(_Meta, {lock, Tid0, Source, [LockItem, LockKind]}, State0) ->
     with_transaction(Tid0, Source, State0,
@@ -317,9 +317,9 @@ cleanup_committed(Tid, Source, State) ->
             State;
         Source    ->
             State#state{committed_transactions = maps:remove(Tid, Committed)};
-        _OtherSource ->
-            % error_logger:warninig_msg("Cleanup committed for a wrong source ~p",
-                                      % [{Tid, Source, OtherSource}]),
+        OtherSource ->
+            error_logger:warninig_msg("Cleanup committed for a wrong source ~p",
+                                      [{Tid, Source, OtherSource}]),
             State
     end.
 

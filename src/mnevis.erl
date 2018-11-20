@@ -176,7 +176,11 @@ commit_transaction() ->
             {ok, Leader} = execute_command_with_retry(Context1, commit,
                                                       [Writes, Deletes, DeletesObject]),
             %% Notify the machine to cleanup the commited transaction record
-            ra:pipeline_command(Leader, {finish, Tid, self()})
+            Self = self(),
+            spawn(fun() ->
+                % timer:sleep(1),
+                ra:pipeline_command(Leader, {finish, Tid, Self}, no_correlation, normal)
+            end)
 
     % end
     ,

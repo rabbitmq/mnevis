@@ -75,11 +75,11 @@ mnesia_seq(_Config) ->
 mnevis_parallel(_Config) ->
     Self = self(),
     Pids = [spawn_link(fun() ->
-        [mnevis:transaction(fun() ->
-            mnesia:write({sample, N*10 + TN, N})
-         end) || TN <- lists:seq(1, 10)],
+        mnevis:transaction(fun() ->
+            mnesia:write({sample, N, N})
+        end),
         Self ! {stop, self()}
-    end) || N <- lists:seq(1, 300)],
+    end) || N <- lists:seq(1, 3000)],
 
     receive_results(Pids),
     {ok, {{LocalIndex, _}, _}, _} = ra:local_query(mnevis_node:node_id(), fun(S) -> ok end),
@@ -87,18 +87,15 @@ mnevis_parallel(_Config) ->
 
 mnesia_parallel(_Config) ->
     Self = self(),
+    mnesia_sync:start_link(),
+    mnesia_sync:sync(),
     Pids = [spawn_link(fun() ->
-        {Time, _} = timer:tc(fun() ->
-            [begin
-                mnesia:sync_transaction(fun() ->
-                    [mnesia:write({sample, WN*N*100 + PN, N}) || WN <- lists:seq(1, 10)]
-                end),
-                disk_log:sync(latest_log)
-             end  || N <- lists:seq(1, 3)
-            ]
+        mnesia:sync_transaction(fun() ->
+            mnesia:write({sample, N, N})
         end),
+        mnesia_sync:sync(),
         Self ! {stop, self()}
-    end) || PN <- lists:seq(1, 100)],
+    end) || N <- lists:seq(1, 3000)],
     receive_results(Pids).
 
 receive_results(Pids) ->
