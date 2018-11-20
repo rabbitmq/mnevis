@@ -177,6 +177,7 @@ commit_transaction() ->
                                                       [Writes, Deletes, DeletesObject]),
             %% Notify the machine to cleanup the commited transaction record
             ra:pipeline_command(Leader, {finish, Tid, self()})
+
     % end
     ,
     ok.

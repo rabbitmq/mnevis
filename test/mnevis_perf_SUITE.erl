@@ -45,7 +45,7 @@ end_per_testcase(_Test, Config) ->
     Config.
 
 create_sample_table() ->
-    mnevis:create_table(sample, [{disc_copies, [node()]}]),
+    mnevis:create_table(sample, [{disc_only_copies, [node()]}]),
     ok.
 
 delete_sample_table() ->
@@ -86,9 +86,12 @@ mnesia_parallel(_Config) ->
     Self = self(),
     Pids = [spawn_link(fun() ->
         {Time, _} = timer:tc(fun() ->
-            [mnesia:sync_transaction(fun() ->
-                [mnesia:write({sample, WN*N*100 + PN, N}) || WN <- lists:seq(1, 10)]
-             end)  || N <- lists:seq(1, 3)
+            [begin
+                mnesia:sync_transaction(fun() ->
+                    [mnesia:write({sample, WN*N*100 + PN, N}) || WN <- lists:seq(1, 10)]
+                end),
+                mnesia_sync:sync()
+             end  || N <- lists:seq(1, 3)
             ]
         end),
         Self ! {stop, self()}
