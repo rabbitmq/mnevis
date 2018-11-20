@@ -63,9 +63,12 @@ mnevis_seq(_Config) ->
 
 mnesia_seq(_Config) ->
     [
+    begin
     mnesia:sync_transaction(fun() ->
         mnesia:write({sample, N, N})
-    end)  || N <- lists:seq(1, 3000)
+    end) ,
+    disk_log:sync(latest_log)
+    end || N <- lists:seq(1, 3000)
     ],
     3000 = mnesia:table_info(sample, size).
 
@@ -90,7 +93,7 @@ mnesia_parallel(_Config) ->
                 mnesia:sync_transaction(fun() ->
                     [mnesia:write({sample, WN*N*100 + PN, N}) || WN <- lists:seq(1, 10)]
                 end),
-                mnesia_sync:sync()
+                disk_log:sync(latest_log)
              end  || N <- lists:seq(1, 3)
             ]
         end),
