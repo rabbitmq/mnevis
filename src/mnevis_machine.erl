@@ -15,9 +15,9 @@
 -type config() :: map().
 -type command() :: term().
 
--type reply() :: {ok, term()} | {error, term()}.
--type reply(T) :: {ok, T} | {error, term()}.
--type reply(T, E) :: {ok, T} | {error, E}.
+-type reply() :: {ok, term()} | {ok, transaction_id(), term()} | {error, term()} | {error, transaction_id(), term()}.
+-type reply(T) :: {ok, T} | {ok, transaction_id(), T} | {error, term()} | {error, transaction_id(), term()}.
+-type reply(T, E) :: {ok, T} | {ok, transaction_id(), T} | {error, E} | {error, transaction_id(), term()}.
 
 
 -record(state, {last_transaction_id,
@@ -46,6 +46,8 @@
 -type apply_result(T, Err) :: {state(), ra_machine:effects(), reply(T, Err)}.
 
 -record(committed_transaction, { transaction_id, value }).
+-define(IS_TID(T), is_integer(T)).
+
 %% Ra machine callbacks
 
 -spec init(config()) -> state().
@@ -64,7 +66,6 @@ init(_Conf) ->
     {state(), ra_machine:effects(), reply()}.
 apply(Meta, Command, Effects0, State) ->
     with_pre_effects(Effects0, apply_command(Meta, Command, State)).
-
 -spec leader_effects(state()) -> ra_machine:effects().
 leader_effects(State) -> remonitor_sources(State).
 
@@ -84,26 +85,17 @@ snapshot_module() ->
 
 -spec apply_command(map(), command(), state()) ->
     {state(), ra_machine:effects()} | apply_result().
-apply_command(_Meta, {start_transaction, Source}, State) ->
-    %% Cleanup stale transactions for the source.
-    %% Ignore demonitor effect, because there will be a monitor effect
-    {State1, _, _} = case transaction_for_source(Source, State) of
-        {ok, OldTid}            -> cleanup(OldTid, Source, State);
-        {error, no_transaction} -> {State, [], ok}
-    end,
-    start_transaction(State1, Source);
-
-apply_command(_Meta, {rollback, Tid, Source, []}, State) ->
-    with_transaction(Tid, Source, State,
-        fun() ->
+apply_command(_Meta, {rollback, Tid0, Source, []}, State0) when ?IS_TID(Tid0) ->
+    with_existing_transaction(Tid0, Source, State0,
+        fun(Tid, State) ->
             cleanup(Tid, Source, State)
         end);
 
-apply_command(Meta, {commit, Tid, Source, [Writes, Deletes, DeletesObject]}, State) ->
-    maybe_skip_committed(Tid, Source, State,
+apply_command(Meta, {commit, Tid0, Source, [Writes, Deletes, DeletesObject]}, State0) when ?IS_TID(Tid0) ->
+    maybe_skip_committed(Tid0, Source, State0,
         fun() ->
-            with_transaction(Tid, Source, State,
-                fun() ->
+            with_existing_transaction(Tid0, Source, State0,
+                fun(Tid, State) ->
                     {NewState, Effects, Result} =
                         commit(Tid, Source, Writes, Deletes, DeletesObject, State),
                     case Result of
@@ -117,81 +109,81 @@ apply_command(Meta, {commit, Tid, Source, [Writes, Deletes, DeletesObject]}, Sta
                 end)
         end);
 
-apply_command(_Meta, {finish, Tid, Source}, State) ->
+apply_command(_Meta, {finish, Tid, Source}, State) when ?IS_TID(Tid) ->
     State1 = cleanup_committed(Tid, Source, State),
     {State1, [{demonitor, process, Source}], ok};
 
-apply_command(_Meta, {lock, Tid, Source, [LockItem, LockKind]}, State) ->
-    with_transaction(Tid, Source, State,
-        fun() ->
+apply_command(_Meta, {lock, Tid0, Source, [LockItem, LockKind]}, State0) ->
+    with_transaction(Tid0, Source, State0,
+        fun(Tid, State) ->
             lock(LockItem, LockKind, Tid, Source, State)
         end);
-apply_command(_Meta, {read, Tid, Source, [Tab, Key, LockKind]}, State) ->
-    with_transaction(Tid, Source, State,
-        fun() ->
+apply_command(_Meta, {read, Tid0, Source, [Tab, Key, LockKind]}, State0) ->
+    with_transaction(Tid0, Source, State0,
+        fun(Tid, State) ->
             with_lock_catch_abort({Tab, Key}, LockKind, Tid, Source, State,
                 fun() ->
                     {ok, mnesia:dirty_read(Tab, Key)}
                 end)
         end);
 
-apply_command(_Meta, {index_read, Tid, Source, [Tab, SecondaryKey, Pos, LockKind]}, State) ->
-    with_transaction(Tid, Source, State,
-        fun() ->
+apply_command(_Meta, {index_read, Tid0, Source, [Tab, SecondaryKey, Pos, LockKind]}, State0) ->
+    with_transaction(Tid0, Source, State0,
+        fun(Tid, State) ->
             with_lock_catch_abort({table, Tab}, LockKind, Tid, Source, State,
                 fun() ->
                     {ok, mnesia:dirty_index_read(Tab, SecondaryKey, Pos)}
                 end)
         end);
 
-apply_command(_Meta, {match_object, Tid, Source, [Tab, Pattern, LockKind]}, State) ->
-    with_transaction(Tid, Source, State,
-        fun() ->
+apply_command(_Meta, {match_object, Tid0, Source, [Tab, Pattern, LockKind]}, State0) ->
+    with_transaction(Tid0, Source, State0,
+        fun(Tid, State) ->
             with_lock_catch_abort({table, Tab}, LockKind, Tid, Source, State,
                 fun() ->
                     {ok, mnesia:dirty_match_object(Tab, Pattern)}
                 end)
         end);
 
-apply_command(_Meta, {index_match_object, Tid, Source, [Tab, Pattern, Pos, LockKind]}, State) ->
-    with_transaction(Tid, Source, State,
-        fun() ->
+apply_command(_Meta, {index_match_object, Tid0, Source, [Tab, Pattern, Pos, LockKind]}, State0) ->
+    with_transaction(Tid0, Source, State0,
+        fun(Tid, State) ->
             with_lock_catch_abort({table, Tab}, LockKind, Tid, Source, State,
                 fun() ->
                     {ok, mnesia:dirty_index_match_object(Tab, Pattern, Pos)}
                 end)
         end);
 
-apply_command(_Meta, {all_keys, Tid, Source, [Tab, LockKind]}, State) ->
-    with_transaction(Tid, Source, State,
-        fun() ->
+apply_command(_Meta, {all_keys, Tid0, Source, [Tab, LockKind]}, State0) ->
+    with_transaction(Tid0, Source, State0,
+        fun(Tid, State) ->
             with_lock_catch_abort({table, Tab}, LockKind, Tid, Source, State,
                 fun() ->
                     {ok, mnesia:dirty_all_keys(Tab)}
                 end)
         end);
 
-apply_command(_Meta, {first, Tid, Source, [Tab]}, State) ->
-    with_transaction(Tid, Source, State,
-        fun() ->
+apply_command(_Meta, {first, Tid0, Source, [Tab]}, State0) ->
+    with_transaction(Tid0, Source, State0,
+        fun(Tid, State) ->
             with_lock_catch_abort({table, Tab}, read, Tid, Source, State,
                 fun() ->
                     {ok, mnesia:dirty_first(Tab)}
                 end)
         end);
 
-apply_command(_Meta, {last, Tid, Source, [Tab]}, State) ->
-    with_transaction(Tid, Source, State,
-        fun() ->
+apply_command(_Meta, {last, Tid0, Source, [Tab]}, State0) ->
+    with_transaction(Tid0, Source, State0,
+        fun(Tid, State) ->
             with_lock_catch_abort({table, Tab}, read, Tid, Source, State,
                 fun() ->
                     {ok, mnesia:dirty_last(Tab)}
                 end)
         end);
 
-apply_command(_Meta, {prev, Tid, Source, [Tab, Key]}, State) ->
-    with_transaction(Tid, Source, State,
-        fun() ->
+apply_command(_Meta, {prev, Tid0, Source, [Tab, Key]}, State0) ->
+    with_transaction(Tid0, Source, State0,
+        fun(Tid, State) ->
             with_lock_catch_abort({table, Tab}, read, Tid, Source, State,
                 fun() ->
                     try {ok, mnesia:dirty_prev(Tab, Key)}
@@ -211,9 +203,9 @@ apply_command(_Meta, {prev, Tid, Source, [Tab, Key]}, State) ->
                 end)
         end);
 
-apply_command(_Meta, {next, Tid, Source, [Tab, Key]}, State) ->
-    with_transaction(Tid, Source, State,
-        fun() ->
+apply_command(_Meta, {next, Tid0, Source, [Tab, Key]}, State0) ->
+    with_transaction(Tid0, Source, State0,
+        fun(Tid, State) ->
             with_lock_catch_abort({table, Tab}, read, Tid, Source, State,
                 fun() ->
                     try {ok, mnesia:dirty_next(Tab, Key)}
@@ -285,7 +277,7 @@ start_transaction(State, Source) ->
 
 -spec commit(transaction_id(), pid(), [change()], [change()], [change()], state()) -> apply_result(ok).
 commit(Tid, Source, Writes, Deletes, DeletesObject, State0) ->
-    case mnesia:sync_transaction(fun() ->
+    case mnesia:transaction(fun() ->
             case mnesia:read(committed_transaction, Tid) of
                 [] ->
                     ok = save_committed_transaction(Tid),
@@ -322,9 +314,9 @@ cleanup_committed(Tid, Source, State) ->
             State;
         Source    ->
             State#state{committed_transactions = maps:remove(Tid, Committed)};
-        _OtherSource ->
-            % error_logger:warninig_msg("Cleanup committed for a wrong source ~p",
-                                      % [{Tid, Source, OtherSource}]),
+        OtherSource ->
+            error_logger:warninig_msg("Cleanup committed for a wrong source ~p",
+                                      [{Tid, Source, OtherSource}]),
             State
     end.
 
@@ -340,8 +332,10 @@ lock(LockItem, LockKind, Tid, Source, State) ->
                             || LockingTid <- Tids,
                             LockingTid > Tid ],
             Error = case LockingTids of
-                [] -> {error, {aborted, locked_instant}};
-                _ -> {error, {aborted, locked}}
+                [] ->
+                    {error, {aborted, locked_instant}};
+                _ ->
+                    {error, {aborted, locked}}
             end,
             %% Cleanup locks for the locked transaction.
             %% The transaction will be restarted with the same ID
@@ -416,6 +410,7 @@ get_latest_committed_transaction() ->
         _  -> lists:max(AllKeys)
     end.
 
+%% TODO: store committed transactions in memory
 -spec transaction_recorded_as_committed(transaction_id()) -> boolean().
 transaction_recorded_as_committed(Tid) ->
     Res = mnesia:sync_transaction(fun() ->
@@ -470,6 +465,7 @@ apply_lock(LockItem, read, Tid, State = #state{read_locks = RLocks}) ->
 
 -spec cleanup_locks(transaction_id(), state()) -> state().
 cleanup_locks(Tid, State) ->
+%% TODO: optimise cleanup
     #state{ read_locks = RLocks,
             write_locks = WLocks} = State,
     %% Remove Tid from write locks
@@ -638,7 +634,22 @@ catch_abort(State, Tid, Fun) ->
                        state(),
                        fun(() -> apply_result(T, E))) ->
     apply_result(T, E | {wrong_transaction_id, transaction_id()} | no_transaction_for_pid).
+with_transaction(undefined, Source, State, Fun) ->
+    {State1, StartEffects, {ok, Tid}} = start_transaction(State, Source),
+    case Fun(Tid, State1) of
+        {State2, Effects, {ok, Res}} ->
+            {State2, StartEffects ++ Effects, {ok, Tid, Res}};
+        {State2, Effects, {error, Err}} ->
+            {State2, StartEffects ++ Effects, {error, Tid, Err}};
+        {State2, Effects, Other} ->
+            {State2, StartEffects ++ Effects, Other}
+    end;
 with_transaction(Tid, Source, State, Fun) ->
+    with_existing_transaction(Tid, Source, State, Fun).
+
+-spec with_existing_transaction(transaction_id(), pid(), state(), fun(() -> apply_result(T, E))) ->
+    apply_result(T, E | {wrong_transaction_id, transaction_id()} | no_transaction_for_pid).
+with_existing_transaction(Tid, Source, State, Fun) ->
     case transaction_recorded_as_committed(Tid) of
         true ->
             %% This is a log replay and the transaction is already committed.
@@ -652,7 +663,8 @@ with_transaction(Tid, Source, State, Fun) ->
                 {error, no_transaction} ->
                     {State, [], {error, no_transaction_for_pid}};
                 {ok, Tid}               ->
-                    Fun();
+                    Fun(Tid, State)
+                    ;
                 {ok, DifferentTid}      ->
                     {State, [], {error, {wrong_transaction_id, DifferentTid}}}
             end

@@ -23,49 +23,16 @@ init_mnesia_table() ->
     mnesia:create_table(committed_transaction, []),
     mnesia:clear_table(committed_transaction).
 
-start_transaction_test() ->
-    init_mnesia_table(),
-    InitState = #state{last_transaction_id = 0},
-    Source = self(),
-    {#state{transactions = #{Source := Tid}, last_transaction_id = Tid},
+start_test_transaction(Source, InitState) ->
+    {State = #state{last_transaction_id = LastTid},
      [{monitor, process, Source}],
-     {ok, Tid}} = mnevis_machine:apply(none, {start_transaction, Source}, [], InitState).
+     {ok, Tid, ok}} =
+        mnevis_machine:apply(none,
+                             {lock, undefined, Source, [{table, start_transaction}, read]},
+                             [],
+                             InitState),
+    {State, Tid, LastTid}.
 
-start_transaction_cleanup_test() ->
-    init_mnesia_table(),
-    Source = self(),
-    InitState = #state{transactions = #{Source => 1}, last_transaction_id = 1},
-    {#state{transactions = #{Source := Tid}, last_transaction_id = Tid},
-     [{monitor, process, Source}],
-     {ok, Tid}} = mnevis_machine:apply(none, {start_transaction, Source}, [], InitState),
-    true = Tid =/= 1.
-
-start_transaction_cleanup_locks_test() ->
-    init_mnesia_table(),
-    Source = self(),
-    Tid = 1,
-    Source1 = spawn(fun() -> ok end),
-    Source2 = spawn(fun() -> ok end),
-    Tid1 = 2,
-    Tid2 = 3,
-    LastTid = 3,
-    InitState = #state{transactions = #{Source => Tid,
-                                        Source1 => Tid1,
-                                        Source2 => Tid2},
-                       last_transaction_id = LastTid,
-                       write_locks = #{writelock => Tid, writelock_1 => Tid1},
-                       read_locks = #{readlock => [Tid],
-                                      readlock_1 => [Tid, Tid1],
-                                      readlock_2 => [Tid2]}},
-    {#state{transactions = #{Source := NewTid, Source1 := Tid1, Source2 := Tid2},
-            last_transaction_id = NewTid,
-            write_locks = WLocks,
-            read_locks = RLocks},
-     [{monitor, process, Source}],
-     {ok, NewTid}} = mnevis_machine:apply(none, {start_transaction, Source}, [], InitState),
-    true = Tid =/= NewTid,
-    WLocks = #{writelock_1 => Tid1},
-    RLocks = #{readlock_1 => [Tid1], readlock_2 => [Tid2]}.
 
 % rollback:
 %     fail if transaction does not match the pid
@@ -102,8 +69,7 @@ rollback_cleanup_test() ->
     init_mnesia_table(),
     Source = self(),
     InitState = #state{ last_transaction_id = 0 },
-    {State = #state{last_transaction_id = LastTid}, [{monitor, process, Source}], {ok, Tid}} =
-        mnevis_machine:apply(none, {start_transaction, Source}, [], InitState),
+    {State, Tid, LastTid} = start_test_transaction(Source, InitState),
     {State1, [{demonitor, process, Source}], _} =
         mnevis_machine:apply(none, {rollback, Tid, Source, []}, [], State),
     Expected = #state{last_transaction_id = LastTid},
@@ -166,8 +132,7 @@ commit_cleanup_test() ->
     init_mnesia_table(),
     Source = self(),
     InitState = #state{ last_transaction_id = 0 },
-    {State = #state{last_transaction_id = LastTid}, [{monitor, process, Source}], {ok, Tid}} =
-        mnevis_machine:apply(none, {start_transaction, Source}, [], InitState),
+    {State, Tid, LastTid} = start_test_transaction(Source, InitState),
     %% Release cursor on commit
     {State1, [{release_cursor,1, State1}], _} =
         mnevis_machine:apply(#{index => 1}, {commit, Tid, Source, [[], [], []]}, [], State),
@@ -228,8 +193,7 @@ commit_write_test() ->
     mnesia:dirty_write({foo, to_rewrite, val}),
     Source = self(),
     InitState = #state{ last_transaction_id = 0 },
-    {State1, _, {ok, Tid}} =
-        mnevis_machine:apply(none, {start_transaction, Source}, [], InitState),
+    {State1, Tid, _} = start_test_transaction(Source, InitState),
     %% Writes are of {Table, Record, LockKind} format
     Writes = [{foo, {foo, to_rewrite, other_val}, write},
               {foo, {foo, to_write, val}, write}],
@@ -277,12 +241,11 @@ lock_aquire_read_test() ->
     init_mnesia_table(),
     InitState = #state{ last_transaction_id = 0 },
     Source = self(),
-    {State, _, {ok, Tid}} =
-        mnevis_machine:apply(none, {start_transaction, Source}, [], InitState),
+    {State, Tid, _} = start_test_transaction(Source, InitState),
     {#state{read_locks = RLocks, write_locks = WLocks}, _, {ok, ok}} =
         mnevis_machine:apply(none, {lock, Tid, Source, [{table, foo}, read]}, [], State),
     ExpectedW = #{},
-    ExpectedR = #{{table, foo} => [Tid]},
+    ExpectedR = #{{table, foo} => [Tid], {table, start_transaction} => [Tid]},
     ExpectedW = WLocks,
     ExpectedR = RLocks.
 
@@ -291,20 +254,18 @@ lock_aquire_read_multiple_test() ->
     InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     Source1 = spawn(fun() -> ok end),
-    {State, _, {ok, Tid}} =
-        mnevis_machine:apply(none, {start_transaction, Source}, [], InitState),
-    {State1, _, {ok, Tid1}} =
-        mnevis_machine:apply(none, {start_transaction, Source1}, [], State),
+    {State, Tid, _} = start_test_transaction(Source, InitState),
+    {State1, Tid1, _} = start_test_transaction(Source1, State),
     {State2 = #state{read_locks = RLocks, write_locks = WLocks}, _, {ok, ok}} =
         mnevis_machine:apply(none, {lock, Tid, Source, [{table, foo}, read]}, [], State1),
     ExpectedW = #{},
-    ExpectedR = #{{table, foo} => [Tid]},
+    ExpectedR = #{{table, foo} => [Tid], {table, start_transaction} => [Tid1, Tid]},
     ExpectedW = WLocks,
     ExpectedR = RLocks,
     {#state{read_locks = RLocks1, write_locks = WLocks1}, _, {ok, ok}} =
         mnevis_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, read]}, [], State2),
     ExpectedW1 = #{},
-    ExpectedR1 = #{{table, foo} => [Tid1, Tid]},
+    ExpectedR1 = #{{table, foo} => [Tid1, Tid], {table, start_transaction} => [Tid1, Tid]},
     ExpectedW1 = WLocks1,
     ExpectedR1 = RLocks1.
 
@@ -312,22 +273,19 @@ lock_aquire_write_test() ->
     init_mnesia_table(),
     InitState = #state{ last_transaction_id = 0 },
     Source = self(),
-    {State, _, {ok, Tid}} =
-        mnevis_machine:apply(none, {start_transaction, Source}, [], InitState),
+    {State, Tid, _} = start_test_transaction(Source, InitState),
     {#state{read_locks = RLocks, write_locks = WLocks}, _, {ok, ok}} =
         mnevis_machine:apply(none, {lock, Tid, Source, [{table, foo}, write]}, [], State),
     WLocks = #{{table, foo} => Tid},
-    RLocks = #{}.
+    RLocks = #{{table, start_transaction} => [Tid]}.
 
 lock_read_blocked_by_write_test() ->
     init_mnesia_table(),
     InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     Source1 = spawn(fun() -> ok end),
-    {State, _, {ok, Tid}} =
-        mnevis_machine:apply(none, {start_transaction, Source}, [], InitState),
-    {State1, _, {ok, Tid1}} =
-        mnevis_machine:apply(none, {start_transaction, Source1}, [], State),
+    {State, Tid, _} = start_test_transaction(Source, InitState),
+    {State1, Tid1, _} = start_test_transaction(Source1, State),
     {State2, _, {ok, ok}} =
         mnevis_machine:apply(none, {lock, Tid1, Source1, [{foo, bar}, write]}, [], State1),
     {State3, _, {error, {aborted, locked}}} =
@@ -350,10 +308,8 @@ lock_read_blocked_by_table_write_test() ->
     InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     Source1 = spawn(fun() -> ok end),
-    {State, _, {ok, Tid}} =
-        mnevis_machine:apply(none, {start_transaction, Source}, [], InitState),
-    {State1, _, {ok, Tid1}} =
-        mnevis_machine:apply(none, {start_transaction, Source1}, [], State),
+    {State, Tid, _} = start_test_transaction(Source, InitState),
+    {State1, Tid1, _} = start_test_transaction(Source1, State),
     {State2, _, {ok, ok}} =
         mnevis_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, [], State1),
     {State3, _, {error, {aborted, locked}}} =
@@ -367,17 +323,15 @@ lock_read_cleanup_when_blocked_test() ->
     InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     Source1 = spawn(fun() -> ok end),
-    {State, _, {ok, Tid}} =
-        mnevis_machine:apply(none, {start_transaction, Source}, [], InitState),
-    {State1, _, {ok, Tid1}} =
-        mnevis_machine:apply(none, {start_transaction, Source1}, [], State),
+    {State, Tid, _} = start_test_transaction(Source, InitState),
+    {State1, Tid1, _} = start_test_transaction(Source1, State),
     {State2, _, {ok, ok}} =
         mnevis_machine:apply(none, {lock, Tid, Source, [{foo, baz}, read]}, [], State1),
     {State3, _, {ok, ok}} =
         mnevis_machine:apply(none, {lock, Tid, Source, [{foo, baq}, write]}, [], State2),
     %% Locks aquired
     #state{read_locks = RLocks, write_locks = WLocks} = State3,
-    ExpectedR = #{{foo, baz} => [Tid]},
+    ExpectedR = #{{foo, baz} => [Tid], {table, start_transaction} => [Tid1, Tid]},
     ExpectedW = #{{foo, baq} => Tid},
     ExpectedR = RLocks,
     ExpectedW = WLocks,
@@ -390,7 +344,7 @@ lock_read_cleanup_when_blocked_test() ->
     #state{read_locks = RLocks1,
            write_locks = WLocks1,
            transaction_locks = TLGraph} = State5,
-    ExpectedR1 = #{},
+    ExpectedR1 = #{{table, start_transaction} => [Tid1]},
     ExpectedW1 = #{{foo, bar} => Tid1},
     ExpectedR1 = RLocks1,
     ExpectedW1 = WLocks1,
@@ -403,10 +357,8 @@ lock_write_blocked_by_write_test() ->
     InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     Source1 = spawn(fun() -> ok end),
-    {State, _, {ok, Tid}} =
-        mnevis_machine:apply(none, {start_transaction, Source}, [], InitState),
-    {State1, _, {ok, Tid1}} =
-        mnevis_machine:apply(none, {start_transaction, Source1}, [], State),
+    {State, Tid, _} = start_test_transaction(Source, InitState),
+    {State1, Tid1, _} = start_test_transaction(Source1, State),
     {State2, _, {ok, ok}} =
         mnevis_machine:apply(none, {lock, Tid1, Source1, [{foo, bar}, write]}, [], State1),
     {State3, _, {error, {aborted, locked}}} =
@@ -420,10 +372,8 @@ lock_write_blocked_by_table_write_test() ->
     InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     Source1 = spawn(fun() -> ok end),
-    {State, _, {ok, Tid}} =
-        mnevis_machine:apply(none, {start_transaction, Source}, [], InitState),
-    {State1, _, {ok, Tid1}} =
-        mnevis_machine:apply(none, {start_transaction, Source1}, [], State),
+    {State, Tid, _} = start_test_transaction(Source, InitState),
+    {State1, Tid1, _} = start_test_transaction(Source1, State),
     {State2, _, {ok, ok}} =
         mnevis_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, [], State1),
     {State3, _, {error, {aborted, locked}}} =
@@ -437,10 +387,8 @@ lock_write_blocked_by_read_test() ->
     InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     Source1 = spawn(fun() -> ok end),
-    {State, _, {ok, Tid}} =
-        mnevis_machine:apply(none, {start_transaction, Source}, [], InitState),
-    {State1, _, {ok, Tid1}} =
-        mnevis_machine:apply(none, {start_transaction, Source1}, [], State),
+    {State, Tid, _} = start_test_transaction(Source, InitState),
+    {State1, Tid1, _} = start_test_transaction(Source1, State),
     {State2, _, {ok, ok}} =
         mnevis_machine:apply(none, {lock, Tid1, Source1, [{foo, bar}, read]}, [], State1),
     {State3, _, {error, {aborted, locked}}} =
@@ -454,10 +402,8 @@ lock_write_blocked_by_table_read_test() ->
     InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     Source1 = spawn(fun() -> ok end),
-    {State, _, {ok, Tid}} =
-        mnevis_machine:apply(none, {start_transaction, Source}, [], InitState),
-    {State1, _, {ok, Tid1}} =
-        mnevis_machine:apply(none, {start_transaction, Source1}, [], State),
+    {State, Tid, _} = start_test_transaction(Source, InitState),
+    {State1, Tid1, _} = start_test_transaction(Source1, State),
     {State2, _, {ok, ok}} =
         mnevis_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, read]}, [], State1),
     {State3, _, {error, {aborted, locked}}} =
@@ -493,10 +439,8 @@ read_locked_by_write_test() ->
     InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     Source1 = spawn(fun() -> ok end),
-    {State, _, {ok, Tid}} =
-        mnevis_machine:apply(none, {start_transaction, Source}, [], InitState),
-    {State1, _, {ok, Tid1}} =
-        mnevis_machine:apply(none, {start_transaction, Source1}, [], State),
+    {State, Tid, _} = start_test_transaction(Source, InitState),
+    {State1, Tid1, _} = start_test_transaction(Source1, State),
     {State2, _, {ok, ok}} =
         mnevis_machine:apply(none, {lock, Tid1, Source1, [{foo, foo}, write]}, [], State1),
     {State3, _, {error, {aborted, locked}}} =
@@ -510,10 +454,8 @@ read_with_write_lock_locked_by_read_test() ->
     InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     Source1 = spawn(fun() -> ok end),
-    {State, _, {ok, Tid}} =
-        mnevis_machine:apply(none, {start_transaction, Source}, [], InitState),
-    {State1, _, {ok, Tid1}} =
-        mnevis_machine:apply(none, {start_transaction, Source1}, [], State),
+    {State, Tid, _} = start_test_transaction(Source, InitState),
+    {State1, Tid1, _} = start_test_transaction(Source1, State),
     {State2, _, {ok, ok}} =
         mnevis_machine:apply(none, {lock, Tid1, Source1, [{foo, foo}, read]}, [], State1),
     {State3, _, {error, {aborted, locked}}} =
@@ -529,11 +471,10 @@ read_returns_and_aquires_lock_test() ->
     mnesia:dirty_write({foo, foo, val}),
     InitState = #state{ last_transaction_id = 0 },
     Source = self(),
-    {State, _, {ok, Tid}} =
-        mnevis_machine:apply(none, {start_transaction, Source}, [], InitState),
+    {State, Tid, _} = start_test_transaction(Source, InitState),
     {#state{read_locks = RLocks}, _, {ok, [{foo, foo, val}]}} =
         mnevis_machine:apply(none, {read, Tid, Source, [foo, foo, read]}, [], State),
-    ExpectedR = #{{foo, foo} => [Tid]},
+    ExpectedR = #{{foo, foo} => [Tid], {table, start_transaction} => [Tid]},
     ExpectedR = RLocks.
 
 % index_read/match_object/index_match_object/all_keys:
@@ -565,10 +506,8 @@ index_read_locked_by_write_test() ->
     InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     Source1 = spawn(fun() -> ok end),
-    {State, _, {ok, Tid}} =
-        mnevis_machine:apply(none, {start_transaction, Source}, [], InitState),
-    {State1, _, {ok, Tid1}} =
-        mnevis_machine:apply(none, {start_transaction, Source1}, [], State),
+    {State, Tid, _} = start_test_transaction(Source, InitState),
+    {State1, Tid1, _} = start_test_transaction(Source1, State),
     {State2, _, {ok, ok}} =
         mnevis_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, [], State1),
     {State3, _, {error, {aborted, locked}}} =
@@ -585,11 +524,10 @@ index_read_returns_and_aquires_lock_test() ->
     mnesia:dirty_write({foo, foo, val}),
     InitState = #state{ last_transaction_id = 0 },
     Source = self(),
-    {State, _, {ok, Tid}} =
-        mnevis_machine:apply(none, {start_transaction, Source}, [], InitState),
+    {State, Tid, _} = start_test_transaction(Source, InitState),
     {#state{read_locks = RLocks}, _, {ok, [{foo, foo, val}]}} =
         mnevis_machine:apply(none, {index_read, Tid, Source, [foo, val, 3, read]}, [], State),
-    ExpectedR = #{{table, foo} => [Tid]},
+    ExpectedR = #{{table, foo} => [Tid], {table, start_transaction} => [Tid]},
     ExpectedR = RLocks.
 
 %% Match object
@@ -619,10 +557,8 @@ match_object_locked_by_write_test() ->
     InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     Source1 = spawn(fun() -> ok end),
-    {State, _, {ok, Tid}} =
-        mnevis_machine:apply(none, {start_transaction, Source}, [], InitState),
-    {State1, _, {ok, Tid1}} =
-        mnevis_machine:apply(none, {start_transaction, Source1}, [], State),
+    {State, Tid, _} = start_test_transaction(Source, InitState),
+    {State1, Tid1, _} = start_test_transaction(Source1, State),
     {State2, _, {ok, ok}} =
         mnevis_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, [], State1),
     {State3, _, {error, {aborted, locked}}} =
@@ -639,11 +575,10 @@ match_object_returns_and_aquires_lock_test() ->
     mnesia:dirty_write({foo, foo, val}),
     InitState = #state{ last_transaction_id = 0 },
     Source = self(),
-    {State, _, {ok, Tid}} =
-        mnevis_machine:apply(none, {start_transaction, Source}, [], InitState),
+    {State, Tid, _} = start_test_transaction(Source, InitState),
     {#state{read_locks = RLocks}, _, {ok, [{foo, foo, val}]}} =
         mnevis_machine:apply(none, {match_object, Tid, Source, [foo, Pattern, read]}, [], State),
-    ExpectedR = #{{table, foo} => [Tid]},
+    ExpectedR = #{{table, foo} => [Tid], {table, start_transaction} => [Tid]},
     ExpectedR = RLocks.
 
 %% Index match object
@@ -673,10 +608,8 @@ index_match_object_locked_by_write_test() ->
     InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     Source1 = spawn(fun() -> ok end),
-    {State, _, {ok, Tid}} =
-        mnevis_machine:apply(none, {start_transaction, Source}, [], InitState),
-    {State1, _, {ok, Tid1}} =
-        mnevis_machine:apply(none, {start_transaction, Source1}, [], State),
+    {State, Tid, _} = start_test_transaction(Source, InitState),
+    {State1, Tid1, _} = start_test_transaction(Source1, State),
     {State2, _, {ok, ok}} =
         mnevis_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, [], State1),
     {State3, _, {error, {aborted, locked}}} =
@@ -694,11 +627,10 @@ index_match_object_returns_and_aquires_lock_test() ->
     mnesia:dirty_write({foo, foo, val}),
     InitState = #state{ last_transaction_id = 0 },
     Source = self(),
-    {State, _, {ok, Tid}} =
-        mnevis_machine:apply(none, {start_transaction, Source}, [], InitState),
+    {State, Tid, _} = start_test_transaction(Source, InitState),
     {#state{read_locks = RLocks}, _, {ok, [{foo, foo, val}]}} =
         mnevis_machine:apply(none, {index_match_object, Tid, Source, [foo, Pattern, 3, read]}, [], State),
-    ExpectedR = #{{table, foo} => [Tid]},
+    ExpectedR = #{{table, foo} => [Tid], {table, start_transaction} => [Tid]},
     ExpectedR = RLocks.
 
 %% All keys
@@ -725,10 +657,8 @@ all_keys_locked_by_write_test() ->
     InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     Source1 = spawn(fun() -> ok end),
-    {State, _, {ok, Tid}} =
-        mnevis_machine:apply(none, {start_transaction, Source}, [], InitState),
-    {State1, _, {ok, Tid1}} =
-        mnevis_machine:apply(none, {start_transaction, Source1}, [], State),
+    {State, Tid, _} = start_test_transaction(Source, InitState),
+    {State1, Tid1, _} = start_test_transaction(Source1, State),
     {State2, _, {ok, ok}} =
         mnevis_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, [], State1),
     {State3, _, {error, {aborted, locked}}} =
@@ -746,11 +676,10 @@ all_keys_returns_and_aquires_lock_test() ->
     mnesia:dirty_write({foo, baz, val2}),
     InitState = #state{ last_transaction_id = 0 },
     Source = self(),
-    {State, _, {ok, Tid}} =
-        mnevis_machine:apply(none, {start_transaction, Source}, [], InitState),
+    {State, Tid, _} = start_test_transaction(Source, InitState),
     {#state{read_locks = RLocks}, _, {ok, Keys}} =
         mnevis_machine:apply(none, {all_keys, Tid, Source, [foo, read]}, [], State),
-    ExpectedR = #{{table, foo} => [Tid]},
+    ExpectedR = #{{table, foo} => [Tid], {table, start_transaction} => [Tid]},
     ExpectedR = RLocks,
     Expected = lists:usort([foo, bar, baz]),
     Expected = lists:usort(Keys).
@@ -784,10 +713,8 @@ first_locked_by_write_test() ->
     InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     Source1 = spawn(fun() -> ok end),
-    {State, _, {ok, Tid}} =
-        mnevis_machine:apply(none, {start_transaction, Source}, [], InitState),
-    {State1, _, {ok, Tid1}} =
-        mnevis_machine:apply(none, {start_transaction, Source1}, [], State),
+    {State, Tid, _} = start_test_transaction(Source, InitState),
+    {State1, Tid1, _} = start_test_transaction(Source1, State),
     {State2, _, {ok, ok}} =
         mnevis_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, [], State1),
     {State3, _, {error, {aborted, locked}}} =
@@ -803,11 +730,10 @@ first_returns_and_aquires_lock_test() ->
     mnesia:dirty_write({foo, bar, val}),
     InitState = #state{ last_transaction_id = 0 },
     Source = self(),
-    {State, _, {ok, Tid}} =
-        mnevis_machine:apply(none, {start_transaction, Source}, [], InitState),
+    {State, Tid, _} = start_test_transaction(Source, InitState),
     {#state{read_locks = RLocks}, _, {ok, bar}} =
         mnevis_machine:apply(none, {first, Tid, Source, [foo]}, [], State),
-    ExpectedR = #{{table, foo} => [Tid]},
+    ExpectedR = #{{table, foo} => [Tid], {table, start_transaction} => [Tid]},
     ExpectedR = RLocks.
 
 %% Last
@@ -834,10 +760,8 @@ last_locked_by_write_test() ->
     InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     Source1 = spawn(fun() -> ok end),
-    {State, _, {ok, Tid}} =
-        mnevis_machine:apply(none, {start_transaction, Source}, [], InitState),
-    {State1, _, {ok, Tid1}} =
-        mnevis_machine:apply(none, {start_transaction, Source1}, [], State),
+    {State, Tid, _} = start_test_transaction(Source, InitState),
+    {State1, Tid1, _} = start_test_transaction(Source1, State),
     {State2, _, {ok, ok}} =
         mnevis_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, [], State1),
     {State3, _, {error, {aborted, locked}}} =
@@ -853,11 +777,10 @@ last_returns_and_aquires_lock_test() ->
     mnesia:dirty_write({foo, bar, val}),
     InitState = #state{ last_transaction_id = 0 },
     Source = self(),
-    {State, _, {ok, Tid}} =
-        mnevis_machine:apply(none, {start_transaction, Source}, [], InitState),
+    {State, Tid, _} = start_test_transaction(Source, InitState),
     {#state{read_locks = RLocks}, _, {ok, bar}} =
         mnevis_machine:apply(none, {last, Tid, Source, [foo]}, [], State),
-    ExpectedR = #{{table, foo} => [Tid]},
+    ExpectedR = #{{table, foo} => [Tid], {table, start_transaction} => [Tid]},
     ExpectedR = RLocks.
 
 %% Prev
@@ -884,10 +807,8 @@ prev_locked_by_write_test() ->
     InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     Source1 = spawn(fun() -> ok end),
-    {State, _, {ok, Tid}} =
-        mnevis_machine:apply(none, {start_transaction, Source}, [], InitState),
-    {State1, _, {ok, Tid1}} =
-        mnevis_machine:apply(none, {start_transaction, Source1}, [], State),
+    {State, Tid, _} = start_test_transaction(Source, InitState),
+    {State1, Tid1, _} = start_test_transaction(Source1, State),
     {State2, _, {ok, ok}} =
         mnevis_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, [], State1),
     {State3, _, {error, {aborted, locked}}} =
@@ -904,11 +825,10 @@ prev_returns_and_aquires_lock_test() ->
     mnesia:dirty_write({foo, bar, val}),
     InitState = #state{ last_transaction_id = 0 },
     Source = self(),
-    {State, _, {ok, Tid}} =
-        mnevis_machine:apply(none, {start_transaction, Source}, [], InitState),
+    {State, Tid, _} = start_test_transaction(Source, InitState),
     {#state{read_locks = RLocks}, _, {ok, baz}} =
         mnevis_machine:apply(none, {prev, Tid, Source, [foo, bar]}, [], State),
-    ExpectedR = #{{table, foo} => [Tid]},
+    ExpectedR = #{{table, foo} => [Tid], {table, start_transaction} => [Tid]},
     ExpectedR = RLocks.
 
 %% Next
@@ -935,10 +855,8 @@ next_locked_by_write_test() ->
     InitState = #state{ last_transaction_id = 0 },
     Source = self(),
     Source1 = spawn(fun() -> ok end),
-    {State, _, {ok, Tid}} =
-        mnevis_machine:apply(none, {start_transaction, Source}, [], InitState),
-    {State1, _, {ok, Tid1}} =
-        mnevis_machine:apply(none, {start_transaction, Source1}, [], State),
+    {State, Tid, _} = start_test_transaction(Source, InitState),
+    {State1, Tid1, _} = start_test_transaction(Source1, State),
     {State2, _, {ok, ok}} =
         mnevis_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, [], State1),
     {State3, _, {error, {aborted, locked}}} =
@@ -955,11 +873,10 @@ next_returns_and_aquires_lock_test() ->
     mnesia:dirty_write({foo, bar, val}),
     InitState = #state{ last_transaction_id = 0 },
     Source = self(),
-    {State, _, {ok, Tid}} =
-        mnevis_machine:apply(none, {start_transaction, Source}, [], InitState),
+    {State, Tid, _} = start_test_transaction(Source, InitState),
     {#state{read_locks = RLocks}, _, {ok, baz}} =
         mnevis_machine:apply(none, {next, Tid, Source, [foo, bar]}, [], State),
-    ExpectedR = #{{table, foo} => [Tid]},
+    ExpectedR = #{{table, foo} => [Tid], {table, start_transaction} => [Tid]},
     ExpectedR = RLocks.
 
 % DOWN from a moniror:
@@ -977,8 +894,7 @@ down_cleanup_test() ->
     init_mnesia_table(),
     Source = self(),
     InitState = #state{ last_transaction_id = 0 },
-    {State = #state{last_transaction_id = LastTid}, [{monitor, process, Source}], _} =
-        mnevis_machine:apply(none, {start_transaction, Source}, [], InitState),
+    {State, _, LastTid} = start_test_transaction(Source, InitState),
     {State1, [{demonitor, process, Source}], _} =
         mnevis_machine:apply(none, {down, Source, reason}, [], State),
     Expected = #state{last_transaction_id = LastTid},

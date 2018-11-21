@@ -32,7 +32,6 @@ end_per_suite(Config) ->
     ra:stop_server(mnevis_node:node_id()),
     application:stop(mnevis),
     application:stop(ra),
-    % mnesia:delete_table(committed_transaction),
     Config.
 
 init_per_testcase(_Test, Config) ->
@@ -63,40 +62,40 @@ mnevis_seq(_Config) ->
 
 mnesia_seq(_Config) ->
     [
+    begin
     mnesia:sync_transaction(fun() ->
         mnesia:write({sample, N, N})
-    end)  || N <- lists:seq(1, 3000)
+    end) ,
+    disk_log:sync(latest_log)
+    end || N <- lists:seq(1, 3000)
     ],
     3000 = mnesia:table_info(sample, size).
 
 mnevis_parallel(_Config) ->
     Self = self(),
     Pids = [spawn_link(fun() ->
-        {Time, _} = timer:tc(fun() ->
-            [mnevis:transaction(fun() ->
-                [mnesia:write({sample, WN*N*100 + PN, N})
-                 || WN <- lists:seq(1, 10)]
-             end)  || N <- lists:seq(1, 3)
-            ]
+        mnevis:transaction(fun() ->
+            mnesia:write({sample, N, N})
         end),
         Self ! {stop, self()}
-    end) || PN <- lists:seq(1, 100)],
+    end) || N <- lists:seq(1, 3000)],
 
     receive_results(Pids),
     {ok, {{LocalIndex, _}, _}, _} = ra:local_query(mnevis_node:node_id(), fun(S) -> ok end),
+    ct:pal("Metrics ~p~n", [lists:ukeysort(1, ets:tab2list(ra_log_wal_metrics))]),
     ct:pal("Executed commands ~p~n", [LocalIndex]).
 
 mnesia_parallel(_Config) ->
     Self = self(),
+    mnesia_sync:start_link(),
+    mnesia_sync:sync(),
     Pids = [spawn_link(fun() ->
-        {Time, _} = timer:tc(fun() ->
-            [mnesia:sync_transaction(fun() ->
-                [mnesia:write({sample, WN*N*100 + PN, N}) || WN <- lists:seq(1, 10)]
-             end)  || N <- lists:seq(1, 3)
-            ]
+        mnesia:sync_transaction(fun() ->
+            mnesia:write({sample, N, N})
         end),
+        mnesia_sync:sync(),
         Self ! {stop, self()}
-    end) || PN <- lists:seq(1, 100)],
+    end) || N <- lists:seq(1, 3000)],
     receive_results(Pids).
 
 receive_results(Pids) ->

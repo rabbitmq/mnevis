@@ -105,14 +105,11 @@ transaction0(_Fun, _Args, 0, Err) ->
 transaction0(Fun, Args, Retries, _Err) ->
     try
         cleanup_all_unlock_messages(),
-        case is_retry() of
-            %% We do not notify the machine about retry because retrying
-            %% transaction state in the machine should not be different from
-            %% the new transaction, except transaction_locks.
-            %% Worst case - some stray unlock messages in the message box,
-            %% which are cleaned up on transaction cleanup.
-            true  -> ok;
-            false -> start_transaction()
+        case get_transaction_context() of
+            undefined ->
+                InitContext = mnevis_context:init(undefined),
+                update_transaction_context(InitContext);
+            _ -> ok
         end,
         Res = mnesia:activity(ets, Fun, Args, mnevis),
         ok = commit_transaction(),
@@ -130,11 +127,10 @@ transaction0(Fun, Args, Retries, _Err) ->
         exit:{aborted, Reason} ->
             ok = maybe_rollback_transaction(),
             {aborted, Reason};
-        _:Reason ->
-            Trace = erlang:get_stacktrace(),
-            error_logger:warning_msg("Ramnesia transaction error ~p Stacktrace ~p~n", [Reason, Trace]),
+        _:Reason:ST ->
+            error_logger:warning_msg("Mnevis transaction error ~p Stacktrace ~p~n", [Reason, ST]),
             ok = maybe_rollback_transaction(),
-            {aborted, {Reason, Trace}}
+            {aborted, {Reason, ST}}
     after
         clean_transaction_context()
     end.
@@ -156,12 +152,6 @@ retry_locked_transaction(Fun, Args, Retries) ->
     update_transaction_context(mnevis_context:set_retry(Context1)),
     transaction0(Fun, Args, NextRetries, locked).
 
-is_retry() ->
-    case get_transaction_context() of
-        undefined -> false;
-        Context   -> mnevis_context:is_retry(Context)
-    end.
-
 is_transaction() ->
     case get_transaction_context() of
         undefined -> false;
@@ -170,16 +160,23 @@ is_transaction() ->
 
 commit_transaction() ->
     Context = get_transaction_context(),
-    Writes = mnevis_context:writes(Context),
-    Deletes = mnevis_context:deletes(Context),
-    DeletesObject = mnevis_context:deletes_object(Context),
+    case mnevis_context:transaction_id(Context) of
+        undefined -> ok;
+        Tid ->
+            Writes = mnevis_context:writes(Context),
+            Deletes = mnevis_context:deletes(Context),
+            DeletesObject = mnevis_context:deletes_object(Context),
 
-    Context = get_transaction_context(),
-    Tid = mnevis_context:transaction_id(Context),
-    {ok, Leader} = execute_command_with_retry(Context, commit,
-                                              [Writes, Deletes, DeletesObject]),
-    %% Notify the machine to cleanup the commited transaction record
-    ra:pipeline_command(Leader, {finish, Tid, self()}),
+            {ok, Leader} = execute_command_with_retry(Context, commit,
+                                                      [Writes, Deletes, DeletesObject]),
+            %% Notify the machine to cleanup the commited transaction record
+            Self = self(),
+            spawn(fun() ->
+                ra:pipeline_command(Leader, {finish, Tid, Self}, no_correlation, normal)
+            end)
+
+    end
+    ,
     ok.
 
 maybe_rollback_transaction() ->
@@ -189,12 +186,12 @@ maybe_rollback_transaction() ->
     end.
 
 rollback_transaction() ->
-    {ok, _} = execute_command_with_retry(get_transaction_context(), rollback, []),
+    Context = get_transaction_context(),
+    case mnevis_context:transaction_id(Context) of
+        undefined -> ok;
+        _         -> {ok, _} = execute_command_with_retry(Context, rollback, [])
+    end,
     ok.
-
-start_transaction() ->
-    {ok, Tid} = run_ra_command({start_transaction, self()}),
-    update_transaction_context(mnevis_context:init(Tid)).
 
 update_transaction_context(Context) ->
     put(mnevis_transaction_context, Context).
@@ -370,18 +367,40 @@ execute_command_ok(Context, Command, Args) ->
 
 -spec execute_command(context(), atom(), list()) -> {ok, term()} | {error, term()}.
 execute_command(Context, Command, Args) ->
-    RaCommand = {Command, mnevis_context:transaction_id(Context), self(), Args},
-    run_ra_command(RaCommand).
+    Tid = mnevis_context:transaction_id(Context),
+    RaCommand = {Command, Tid, self(), Args},
+    run_ra_command(Context, RaCommand).
+
 
 -spec run_ra_command(term()) -> {ok, term()} | {error, term()}.
 run_ra_command(RaCommand) ->
+    run_ra_command(nocontext, RaCommand).
+
+-spec run_ra_command(context(), term()) -> {ok, term()} | {error, term()}.
+run_ra_command(Context, RaCommand) ->
     NodeId = mnevis_node:node_id(),
+    %% TODO: timeout?
     case ra:process_command(NodeId, RaCommand) of
-        {ok, {ok, Result}, _}               -> {ok, Result};
-        {ok, {error, {aborted, Reason}}, _} -> mnesia:abort(Reason);
-        {ok, {error, Reason}, _}            -> {error, Reason};
-        {error, Reason}                     -> mnesia:abort(Reason);
-        {timeout, _}                        -> mnesia:abort(timeout)
+        {ok, {ok, Tid, Result}, _}               ->
+            true = Context =/= nocontext,
+            Context1 = mnevis_context:set_transaction_id(Context, Tid),
+            update_transaction_context(Context1),
+            {ok, Result};
+        {ok, {error, Tid, {aborted, Reason}}, _} ->
+            true = Context =/= nocontext,
+            Context1 = mnevis_context:set_transaction_id(Context, Tid),
+            update_transaction_context(Context1),
+            mnesia:abort(Reason);
+        {ok, {error, Tid, Reason}, _}            ->
+            true = Context =/= nocontext,
+            Context1 = mnevis_context:set_transaction_id(Context, Tid),
+            update_transaction_context(Context1),
+            {error, Reason};
+        {ok, {ok, Result}, _}                    -> {ok, Result};
+        {ok, {error, {aborted, Reason}}, _}      -> mnesia:abort(Reason);
+        {ok, {error, Reason}, _}                 -> {error, Reason};
+        {error, Reason}                          -> mnesia:abort(Reason);
+        {timeout, _}                             -> mnesia:abort(timeout)
     end.
 
 execute_command_with_retry(Context, Command, Args) ->
@@ -392,6 +411,7 @@ execute_command_with_retry(Context, Command, Args) ->
     {ok, Leader}.
 
 retry_ra_command(NodeId, RaCommand) ->
+    %% TODO: timeout?
     case ra:process_command(NodeId, RaCommand) of
         {ok, {ok, ok}, Leader}              -> Leader;
         {ok, {error, {aborted, Reason}}, _} -> mnesia:abort(Reason);

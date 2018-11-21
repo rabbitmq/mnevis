@@ -36,12 +36,19 @@ write(Dir, Meta, {CheckpointName, SavedState = #saved_state{}}) ->
         ok ->
             MnesiaFile = mnesia_file(Dir),
             io:format("Backup checkpoint ~p~n", [element(1, Meta)]),
-            case mnesia:backup_checkpoint(CheckpointName, MnesiaFile) of
-                ok               ->
-                    io:format("Deactivate checkpoint ~p~n", [CheckpointName]),
-                    mnesia:deactivate_checkpoint(CheckpointName);
-                %% TODO cleanup
-                {error, _} = Err -> Err
+            %% TODO: checkpoint may be deleted when deleting a table.
+            case lists:member(CheckpointName, mnesia:system_info(checkpoints)) of
+                true ->
+                    case mnesia:backup_checkpoint(CheckpointName, MnesiaFile) of
+                        ok               ->
+                            io:format("Deactivate checkpoint ~p~n", [CheckpointName]),
+                            mnesia:deactivate_checkpoint(CheckpointName);
+                        %% TODO cleanup
+                        {error, _} = Err -> Err
+                    end;
+                false ->
+                    %% TODO: Checkpoint was deleted. Do nothing?
+                    ok
             end;
         {error, _} = Err ->
             io:format("Can't write ra_log_snapshot ~p : ~p~n", [ra_log_snapshot_file(Dir), Err]),

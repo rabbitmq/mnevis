@@ -19,6 +19,7 @@
          prev_cached_key/3,
          next_cached_key/3,
          set_retry/1,
+         set_transaction_id/2,
          is_retry/1]).
 
 % Keeps track of deletes and writes.
@@ -94,6 +95,11 @@
 -spec init(transaction_id()) -> context().
 init(Tid) -> #context{transaction_id = Tid}.
 
+-spec set_transaction_id(context(), transaction_id()) -> context().
+set_transaction_id(#context{} = Context, Tid) ->
+    Context#context{transaction_id = Tid}.
+
+-spec transaction_id(context()) -> transaction_id().
 transaction_id(#context{transaction_id = Tid}) -> Tid.
 
 -spec deletes(context()) -> [delete_item()].
