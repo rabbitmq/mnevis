@@ -1,4 +1,4 @@
--module(mnevis_isolation_SUITE).
+-module(isolation_SUITE).
 
 -compile(export_all).
 

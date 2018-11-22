@@ -1,4 +1,4 @@
--module(mnevis_snapshot_SUITE).
+-module(snapshot_SUITE).
 
 -compile(export_all).
 

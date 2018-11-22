@@ -1,4 +1,4 @@
--module(mnevis_prop_SUITE).
+-module(prop_SUITE).
 -compile(export_all).
 
 -include_lib("proper/include/proper.hrl").

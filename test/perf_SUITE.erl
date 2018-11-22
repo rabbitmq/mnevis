@@ -1,4 +1,4 @@
--module(mnevis_perf_SUITE).
+-module(perf_SUITE).
 
 -compile(export_all).
 
@@ -61,12 +61,14 @@ mnevis_seq(_Config) ->
     3000 = mnesia:table_info(sample, size).
 
 mnesia_seq(_Config) ->
+    mnesia_sync:start_link(),
+    mnesia_sync:sync(),
     [
     begin
     mnesia:sync_transaction(fun() ->
         mnesia:write({sample, N, N})
     end) ,
-    disk_log:sync(latest_log)
+    mnesia_sync:sync()
     end || N <- lists:seq(1, 3000)
     ],
     3000 = mnesia:table_info(sample, size).
@@ -83,7 +85,8 @@ mnevis_parallel(_Config) ->
     receive_results(Pids),
     {ok, {{LocalIndex, _}, _}, _} = ra:local_query(mnevis_node:node_id(), fun(S) -> ok end),
     ct:pal("Metrics ~p~n", [lists:ukeysort(1, ets:tab2list(ra_log_wal_metrics))]),
-    ct:pal("Executed commands ~p~n", [LocalIndex]).
+    ct:pal("Executed commands ~p~n", [LocalIndex]),
+    ok.
 
 mnesia_parallel(_Config) ->
     Self = self(),

@@ -25,6 +25,8 @@
                 committed_transactions = #{},
                 read_locks = #{},
                 write_locks = #{},
+                reverse_read_locks = #{},
+                reverse_write_locks = #{},
                 transaction_locks = simple_dgraph:new()}).
 
 -ifdef (TEST).
@@ -247,13 +249,9 @@ apply_command(_Meta, Unknown, State) ->
 %% Top level helpers
 
 create_committed_transaction_table() ->
-    OnDiskOpt = case mnesia:system_info(use_dir) of
-        true  -> [{disc_copies, [node()]}];
-        false -> []
-    end,
     mnesia:create_table(committed_transaction,
         [{attributes, record_info(fields, committed_transaction)},
-         {record_name, committed_transaction}] ++ OnDiskOpt).
+         {record_name, committed_transaction}]).
 
 -spec start_transaction(state(), pid()) ->
     apply_result(transaction_id()).
@@ -277,7 +275,8 @@ start_transaction(State, Source) ->
 
 -spec commit(transaction_id(), pid(), [change()], [change()], [change()], state()) -> apply_result(ok).
 commit(Tid, Source, Writes, Deletes, DeletesObject, State0) ->
-    case mnesia:transaction(fun() ->
+    {Time, Res} = timer:tc(fun() ->
+        mnesia:transaction(fun() ->
             case mnesia:read(committed_transaction, Tid) of
                 [] ->
                     ok = save_committed_transaction(Tid),
@@ -289,10 +288,35 @@ commit(Tid, Source, Writes, Deletes, DeletesObject, State0) ->
                 [{committed_transaction, Tid, committed}] ->
                     ok
             end
-        end) of
+        end)
+    end),
+
+    ShouldLog = rand:uniform(500) == 200,
+    put(should_log, ShouldLog),
+    case ShouldLog of
+        true  -> ct:pal("Commit ~p~n", [Time]);
+        false -> ok
+    end,
+
+
+    case Res of
         {atomic, ok} ->
-            {Effects, State1} = cleanup_transaction(Tid, Source, State0),
-            State2 = add_committed(Tid, Source, State1),
+            {Time1, {Effects, State2}} = timer:tc(fun() ->
+                {Effects1, State11} = cleanup_transaction(Tid, Source, State0),
+                % {Time2, State12} = timer:tc(fun() ->
+                    State12 = add_committed(Tid, Source, State11)
+                    ,
+                % end),
+                % case ShouldLog of
+                    % true  -> ct:pal("Add committed ~p~n", [Time2]);
+                    % false -> ok
+                % end,
+                {Effects1, State12}
+            end),
+            case ShouldLog of
+                true  -> ct:pal("Cleanup ~p~n", [Time1]);
+                false -> ok
+            end,
             {State2, Effects, {ok, ok}};
         {aborted, Reason} ->
             %% TODO: maybe clean transaction here
@@ -457,32 +481,52 @@ lock_transaction(LockedTid, Source, LockingTids0, State) ->
     State#state{transaction_locks = TLGraph3}.
 
 -spec apply_lock(lock_item(), lock_kind(), transaction_id(), state()) -> state().
-apply_lock(LockItem, write, Tid, State = #state{write_locks = WLocks}) ->
-    State#state{ write_locks = maps:put(LockItem, Tid, WLocks) };
-apply_lock(LockItem, read, Tid, State = #state{read_locks = RLocks}) ->
+apply_lock(LockItem, write, Tid, State = #state{write_locks = WLocks, reverse_write_locks = RWLocks}) ->
+    OldReverseLocks = maps:get(Tid, RWLocks, []) -- [LockItem],
+    RWLocks1 = maps:put(Tid, [LockItem | OldReverseLocks], RWLocks),
+    State#state{ write_locks = maps:put(LockItem, Tid, WLocks),
+                 reverse_write_locks = RWLocks1};
+apply_lock(LockItem, read, Tid, State = #state{read_locks = RLocks, reverse_read_locks = RRLocks}) ->
     OldLocks = maps:get(LockItem, RLocks, []) -- [Tid],
-    State#state{ read_locks = maps:put(LockItem, [Tid | OldLocks], RLocks) }.
+    OldReverseLocks = maps:get(Tid, RRLocks, []) -- [LockItem],
+
+    RLocks1 = maps:put(LockItem, [Tid | OldLocks], RLocks),
+    RRLocks1 = maps:put(Tid, [LockItem | OldReverseLocks], RRLocks),
+
+    State#state{ read_locks = RLocks1,
+                 reverse_read_locks = RRLocks1 }.
 
 -spec cleanup_locks(transaction_id(), state()) -> state().
 cleanup_locks(Tid, State) ->
-%% TODO: optimise cleanup
     #state{ read_locks = RLocks,
-            write_locks = WLocks} = State,
+            write_locks = WLocks,
+            reverse_read_locks = RRLocks,
+            reverse_write_locks = RWLocks} = State,
     %% Remove Tid from write locks
-    WLocks1 = maps:filter(fun(_K, LockTid) -> LockTid =/= Tid end, WLocks),
+    WriteLocked = maps:get(Tid, RWLocks, []),
+    WLocks1 = maps:without(WriteLocked, WLocks),
     %% Remove Tid from read locks
-    RLocks1 = maps:filter(fun(_K, Tids) -> Tids =/= [] end,
-                maps:map(fun(_K, Tids) -> Tids -- [Tid] end, RLocks)),
-    State#state{read_locks = RLocks1, write_locks = WLocks1}.
+    ReadLocked = maps:get(Tid, RRLocks, []),
+    RLocks1 = lists:foldl(
+        fun(RLock, RLocks0) ->
+            Tids = maps:get(RLock, RLocks0),
+            case Tids -- [Tid] of
+                []    -> maps:remove(RLock, RLocks0);
+                Tids1 -> maps:put(RLock, Tids1, RLocks0)
+            end
+        end,
+        RLocks,
+        ReadLocked),
+    State#state{read_locks = RLocks1, write_locks = WLocks1,
+                reverse_read_locks = maps:remove(Tid, RRLocks),
+                reverse_write_locks = maps:remove(Tid, RWLocks)}.
 
 -spec cleanup_transaction(transaction_id(), pid(), state()) ->
     {ra_machine:effects(), state()}.
 cleanup_transaction(Tid, Source, State0) ->
     #state{ transactions = Transactions } = State0,
-
     State1 = cleanup_locks(Tid, State0),
     {UnlockedEffects, State2} = cleanup_transaction_locks(Tid, State1),
-
     {UnlockedEffects,
      State2#state{transactions = maps:remove(Source, Transactions)}}.
 
