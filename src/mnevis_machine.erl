@@ -71,9 +71,11 @@ init(_Conf) ->
 
 -spec state_enter(ra_server:ra_state() | eol, state()) -> ra_machine:effects().
 state_enter(recovered, State) ->
-    error_logger:info("mnevis machine recover"),
+    error_logger:info_msg("mnevis machine recover"),
     start_new_locker_effects(State);
-state_enter(_, _) -> [].
+state_enter(State, _) ->
+    error_logger:info_msg("mnevis machine enter state ~p~n", [State]),
+    [].
 
 -spec start_new_locker_effects(state()) -> ra_machine:effects().
 start_new_locker_effects(#state{locker_term = LockerTerm}) ->
@@ -266,7 +268,7 @@ apply_command(_Meta, {down, Pid, _Reason}, State = #state{locker_status = Locker
 
 apply_command(_Meta, {locker_up, Pid, Term},
               State = #state{locker_status = LockerStatus}) ->
-error_logger:info("mnevis locker up ~p", [{Pid, Term}]),
+error_logger:info_msg("mnevis locker up ~p", [{Pid, Term}]),
     case LockerStatus of
         up   -> {State, [], reject};
         down ->
@@ -656,7 +658,8 @@ create_locker_cache() ->
 
 -spec update_locker_cache(pid(), integer()) -> ok.
 update_locker_cache(Pid, Term) ->
-    true = ets:insert(locker_cache, {locker, {Pid, Term}}).
+    true = ets:insert(locker_cache, {locker, {Pid, Term}}),
+    ok.
 
 -spec remonitor_sources(state()) -> ra_machine:effects().
 remonitor_sources(#state{transactions = Transactions}) ->

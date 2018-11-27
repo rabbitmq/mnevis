@@ -22,12 +22,12 @@
 -type state() :: #state{}.
 
 start(Term) ->
-    error_logger:info("Start mnevis locker"),
-    gen_server:start(?MODULE, Term, []).
+    error_logger:info_msg("Start mnevis locker"),
+    gen_statem:start(?MODULE, Term, []).
 
 -spec init(leader_term()) -> gen_statem:init_result(election_states()).
 init(Term) ->
-    error_logger:info("Init mnevis locker"),
+    error_logger:info_msg("Init mnevis locker"),
     %% Delayed init
     NodeId = mnevis_node:node_id(),
     Correlation = notify_up(Term, NodeId),
@@ -36,23 +36,22 @@ init(Term) ->
      #state{term = Term,
             correlation = Correlation,
             leader = NodeId},
-     [{timeout, 1000}]}.
+     [1000]}.
 
 callback_mode() -> state_functions.
 
 -spec candidate(gen_statem:event_type(), term(), state()) ->
     gen_statem:event_handler_result(election_states()).
-candidate(info, {ra_event, Event}, State) ->
-    handle_ra_event(Event, State);
+candidate(info, {ra_event, Leader, Event}, State) ->
+    handle_ra_event(Event, State#state{leader = Leader});
 candidate(timeout, _, State = #state{term = Term, leader = Leader}) ->
-    error_logger:info("mnevis locker timeout"),
     Correlation = notify_up(Term, Leader),
-    {keep_state, State#state{correlation = Correlation}, [{timeout, 1000}]};
+    {keep_state, State#state{correlation = Correlation}, [1000]};
 candidate({call, From}, {lock, _LockItem, _LockKind}, State) ->
     {keep_state, State, [{reply, From, {error, wrong_process}}]};
 candidate(cast, _, State) ->
     {keep_state, State};
-candidate(info, _, State) ->
+candidate(info, _Info, State) ->
     {keep_state, State}.
 
 -spec leader(gen_statem:event_type(), term(), state()) ->
@@ -62,7 +61,7 @@ leader({call, From}, {lock, LockItem, LockKind}, State) ->
     {keep_state, State1, [{reply, From, LockResult}]};
 leader(cast, _, State) ->
     {keep_state, State};
-leader(info, _, State) ->
+leader(info, _Info, State) ->
     {keep_state, State}.
 
 handle_event(_Type, _Content, State) ->
@@ -109,11 +108,9 @@ renotify_up(Leader, State = #state{term = Term, correlation = Correlation}) ->
     {keep_state, State#state{leader = Leader}}.
 
 reject(_State) ->
-    error_logger:info("mnevis locker stop"),
     {stop, rejected}.
 
 confirm(State) ->
-    error_logger:info("mnevis locker confirm"),
     {next_state, leader, State}.
 
 

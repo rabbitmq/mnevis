@@ -10,5 +10,5 @@ dep_ra = git https://github.com/rabbitmq/ra read_next_chunk_api
 
 include erlang.mk
 
-repl:
+repl: all
 	erl -pa ebin -pa deps/*/ebin -sname foo
