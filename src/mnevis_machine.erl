@@ -6,6 +6,7 @@
 -export([
          init/1,
          apply/4,
+         state_enter/2,
          leader_effects/1,
          eol_effects/1,
          tick/2,
@@ -27,7 +28,10 @@
                 write_locks = #{},
                 reverse_read_locks = #{},
                 reverse_write_locks = #{},
-                transaction_locks = simple_dgraph:new()}).
+                transaction_locks = simple_dgraph:new(),
+                locker_status = down,
+                locker_pid,
+                locker_term = 0}).
 
 -ifdef (TEST).
 -include_lib("eunit/include/eunit.hrl").
@@ -62,7 +66,18 @@ init(_Conf) ->
         Other ->
             error({cannot_create_committed_transaction_table, Other})
     end,
+    ok = create_locker_cache(),
     #state{last_transaction_id = LastTid}.
+
+-spec state_enter(ra_server:ra_state() | eol, state()) -> ra_machine:effects().
+state_enter(recovered, State) ->
+    error_logger:info("mnevis machine recover"),
+    start_new_locker_effects(State);
+state_enter(_, _) -> [].
+
+-spec start_new_locker_effects(state()) -> ra_machine:effects().
+start_new_locker_effects(#state{locker_term = LockerTerm}) ->
+    [{mod_call, mnevis_lock_proc, start, [LockerTerm + 1]}].
 
 -spec apply(map(), command(), ra_machine:effects(), state()) ->
     {state(), ra_machine:effects(), reply()}.
@@ -233,12 +248,34 @@ apply_command(_Meta, {create_table, Tab, Opts}, State) ->
 apply_command(_Meta, {delete_table, Tab}, State) ->
     {State, [], {ok, mnesia:delete_table(Tab)}};
 
-apply_command(_Meta, {down, Source, _Reason}, State) ->
-    case transaction_for_source(Source, State) of
-        {ok, Tid}               ->
-            cleanup(Tid, Source, State);
-        {error, no_transaction} ->
-            {State, [], ok}
+apply_command(_Meta, {down, Pid, _Reason}, State = #state{locker_status = LockerStatus,
+                                                          locker_pid = LockerPid}) ->
+    case {Pid, LockerStatus} of
+        {LockerPid, up} ->
+            {State#state{locker_status = down},
+             start_new_locker_effects(State),
+             ok};
+        _ ->
+            case transaction_for_source(Pid, State) of
+                {ok, Tid}               ->
+                    cleanup(Tid, Pid, State);
+                {error, no_transaction} ->
+                    {State, [], ok}
+            end
+    end;
+
+apply_command(_Meta, {locker_up, Pid, Term},
+              State = #state{locker_status = LockerStatus}) ->
+error_logger:info("mnevis locker up ~p", [{Pid, Term}]),
+    case LockerStatus of
+        up   -> {State, [], reject};
+        down ->
+            ok = update_locker_cache(Pid, Term),
+            {State#state{locker_status = up,
+                         locker_pid = Pid,
+                         locker_term = Term},
+             [{monitor, process, Pid}],
+             confirm}
     end;
 apply_command(_Meta, Unknown, State) ->
     error_logger:error_msg("Unknown command ~p~n", [Unknown]),
@@ -612,6 +649,14 @@ read_locking_transactions(LockItem, Tid, #state{read_locks = RLocks}) ->
     end.
 
 %% ==========================
+
+create_locker_cache() ->
+    locker_cache = ets:new(locker_cache, [named_table, public]),
+    ok.
+
+-spec update_locker_cache(pid(), integer()) -> ok.
+update_locker_cache(Pid, Term) ->
+    true = ets:insert(locker_cache, {locker, {Pid, Term}}).
 
 -spec remonitor_sources(state()) -> ra_machine:effects().
 remonitor_sources(#state{transactions = Transactions}) ->
