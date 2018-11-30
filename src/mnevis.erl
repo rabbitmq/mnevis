@@ -239,6 +239,7 @@ read(_ActivityId, _Opaque, Tab, Key, LockKind) ->
         deleted -> [];
         {deleted_and_written, bag, Recs} -> Recs;
         _ ->
+            %% TODO: lock before read
             RecList = execute_command_ok(Context, read, [Tab, Key, LockKind]),
             mnevis_context:filter_read_from_context(Context, Tab, Key, RecList)
     end.

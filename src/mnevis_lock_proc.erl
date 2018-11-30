@@ -15,7 +15,7 @@
 
 -include_lib("ra/include/ra.hrl").
 
--record(state, {term, correlation, leader}).
+-record(state, {term, correlation, leader, lock_state}).
 
 -type election_states() :: leader | candidate.
 -type leader_term() :: integer().
@@ -35,7 +35,8 @@ init(Term) ->
      candidate,
      #state{term = Term,
             correlation = Correlation,
-            leader = NodeId},
+            leader = NodeId,
+            lock_state = mnevis_lock:init(0)},
      [1000]}.
 
 callback_mode() -> state_functions.
@@ -47,7 +48,7 @@ candidate(info, {ra_event, Leader, Event}, State) ->
 candidate(timeout, _, State = #state{term = Term, leader = Leader}) ->
     Correlation = notify_up(Term, Leader),
     {keep_state, State#state{correlation = Correlation}, [1000]};
-candidate({call, From}, {lock, _LockItem, _LockKind}, State) ->
+candidate({call, From}, {lock, _TransationId, _Source, _LockItem, _LockKind}, State) ->
     {keep_state, State, [{reply, From, {error, wrong_process}}]};
 candidate(cast, _, State) ->
     {keep_state, State};
@@ -56,8 +57,8 @@ candidate(info, _Info, State) ->
 
 -spec leader(gen_statem:event_type(), term(), state()) ->
     gen_statem:event_handler_result(election_states()).
-leader({call, From}, {lock, LockItem, LockKind}, State) ->
-    {LockResult, State1} = lock(LockItem, LockKind, State),
+leader({call, From}, {lock, TransationId, Source, LockItem, LockKind}, State) ->
+    {LockResult, State1} = lock(TransationId, Source, LockItem, LockKind, State),
     {keep_state, State1, [{reply, From, LockResult}]};
 leader(cast, _, State) ->
     {keep_state, State};
@@ -114,8 +115,9 @@ confirm(State) ->
     {next_state, leader, State}.
 
 
-lock(_LockItem, _LockKind, State) ->
-    {ok, State}.
+lock(TransationId, Source, LockItem, LockKind, State = #state{lock_state = LockState}) ->
+    LockState1 = mnevis_lock:lock(TransationId, Source, LockItem, LockKind, LockState),
+    {ok, State#state{lock_state = LockState1}}.
 
 
 
