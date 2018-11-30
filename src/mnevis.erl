@@ -377,7 +377,7 @@ execute_command(Context, Command, Args) ->
 run_ra_command(RaCommand) ->
     run_ra_command(nocontext, RaCommand).
 
--spec run_ra_command(context(), term()) -> {ok, term()} | {error, term()}.
+-spec run_ra_command(context() | nocontext, term()) -> {ok, term()} | {error, term()}.
 run_ra_command(Context, RaCommand) ->
     NodeId = mnevis_node:node_id(),
     %% TODO: timeout?

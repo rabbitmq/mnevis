@@ -7,10 +7,6 @@
          init/1,
          apply/4,
          state_enter/2,
-         leader_effects/1,
-         eol_effects/1,
-         tick/2,
-         overview/1,
          snapshot_module/0]).
 
 -type config() :: map().
@@ -31,15 +27,12 @@
 
 -type state() :: #state{}.
 -type transaction_id() :: integer().
+-type locker_term() :: integer().
+-type transaction() :: {locker_term(), transaction_id()}.
 
 -type table() :: atom().
--type lock_item() :: {table(), term()} | {table, table()} | {global, term(), [node()]}.
 -type lock_kind() :: read | write.
 -type change() :: {table(), term(), lock_kind()}.
-
--type apply_result() :: {state(), ra_machine:effects(), reply()}.
-
--type apply_result(T) :: {state(), ra_machine:effects(), reply(T)}.
 
 -type apply_result(T, Err) :: {state(), ra_machine:effects(), reply(T, Err)}.
 
@@ -84,7 +77,7 @@ apply_command(Meta, {commit, Transaction, [Writes, Deletes, DeletesObject]}, Sta
     with_valid_locker(Transaction, State,
         fun() ->
             %% TODO: check valid locker
-            Result = commit(Transaction, Writes, Deletes, DeletesObject, State),
+            Result = commit(Transaction, Writes, Deletes, DeletesObject),
             case Result of
                 {ok, ok} ->
                     {State, snapshot_effects(Meta, State), Result};
@@ -102,7 +95,7 @@ apply_command(_Meta, {read, Transaction, [Tab, Key]}, State) ->
                 end)
         end);
 
-apply_command(_Meta, {index_read, Transaction, [Tab, SecondaryKey, Pos, LockKind]}, State0) ->
+apply_command(_Meta, {index_read, Transaction, [Tab, SecondaryKey, Pos]}, State0) ->
     with_transaction(Transaction, State0,
         fun() ->
             catch_abort(
@@ -112,7 +105,7 @@ apply_command(_Meta, {index_read, Transaction, [Tab, SecondaryKey, Pos, LockKind
                 end)
         end);
 
-apply_command(_Meta, {match_object, Transaction, [Tab, Pattern, LockKind]}, State0) ->
+apply_command(_Meta, {match_object, Transaction, [Tab, Pattern]}, State0) ->
     with_transaction(Transaction, State0,
         fun() ->
             catch_abort(
@@ -121,7 +114,7 @@ apply_command(_Meta, {match_object, Transaction, [Tab, Pattern, LockKind]}, Stat
                 end)
         end);
 
-apply_command(_Meta, {index_match_object, Transaction, [Tab, Pattern, Pos, LockKind]}, State0) ->
+apply_command(_Meta, {index_match_object, Transaction, [Tab, Pattern, Pos]}, State0) ->
     with_transaction(Transaction, State0,
         fun() ->
             catch_abort(
@@ -130,7 +123,7 @@ apply_command(_Meta, {index_match_object, Transaction, [Tab, Pattern, Pos, LockK
                 end)
         end);
 
-apply_command(_Meta, {all_keys, Transaction, [Tab, LockKind]}, State0) ->
+apply_command(_Meta, {all_keys, Transaction, [Tab]}, State0) ->
     with_transaction(Transaction, State0,
         fun() ->
             catch_abort(
@@ -252,12 +245,12 @@ create_committed_transaction_table() ->
          {record_name, committed_transaction},
          {type, ordered_set}]).
 
--spec commit(transaction(), [change()], [change()], [change()], state()) -> reply(ok).
-commit(Transaction, Writes, Deletes, DeletesObject, State) ->
+-spec commit(transaction(), [change()], [change()], [change()]) -> reply(ok).
+commit(Transaction, Writes, Deletes, DeletesObject) ->
     Res = mnesia:transaction(fun() ->
-        case mnesia:read(committed_transaction, Tid) of
+        case mnesia:read(committed_transaction, Transaction) of
             [] ->
-                ok = save_committed_transaction(Tid),
+                ok = save_committed_transaction(Transaction),
                 _ = apply_deletes(Deletes),
                 _ = apply_writes(Writes),
                 _ = apply_deletes_object(DeletesObject),
@@ -327,25 +320,19 @@ closest_prev(Tab, Key, CurrentKey) ->
     end.
 
 %% TODO: optimise transaction numbers
--spec save_committed_transaction(transaction_id()) -> ok.
-save_committed_transaction(Tid) ->
-    ok = mnesia:write({committed_transaction, Tid, committed}).
-
--spec get_latest_committed_transaction() -> transaction().
-get_latest_committed_transaction() ->
-    mnesia:dirty_last(committed_transaction).
+-spec save_committed_transaction(transaction()) -> ok.
+save_committed_transaction(Transaction) ->
+    ok = mnesia:write({committed_transaction, Transaction, committed}).
 
 %% TODO: store committed transactions in memory
 -spec transaction_recorded_as_committed(transaction()) -> boolean().
 transaction_recorded_as_committed(Transaction) ->
     Res = mnesia:dirty_read(committed_transaction, Transaction),
     case Res of
-        {atomic, []} ->
+        [] ->
             false;
-        {atomic, [{committed_transaction, Transaction, committed}]} ->
-            true;
-        {aborted, Err} ->
-            error({cannot_read_committed_transaction, Err})
+        [{committed_transaction, Transaction, committed}] ->
+            true
     end.
 
 %% Locker cache
@@ -371,9 +358,9 @@ with_pre_effects(Effects0, {State, Effects, Result}) ->
 
 %% Functional helpers to skip ops.
 
--spec with_transaction(transaction(), state(),
+-spec with_valid_locker(transaction(), state(),
                        fun(() -> apply_result(T, E))) -> apply_result(T, E).
-with_valid_locker(Transaction, State, Fun) ->
+with_valid_locker({LockerTerm, _}, State = #state{locker_term = CurrentLockerTerm}, Fun) ->
     case LockerTerm of
         CurrentLockerTerm -> Fun();
         _ -> {State, [], {error, wrong_locker_term}}

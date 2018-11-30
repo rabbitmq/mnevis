@@ -85,7 +85,7 @@ notify_up(Term, NodeId) ->
 notify_up(Term, Correlation, NodeId) ->
     ra:pipeline_command(NodeId, {locker_up, self(), Term}, Correlation, normal).
 
--spec handle_ra_event(ra_server_proc:ra_event(), state()) ->
+-spec handle_ra_event(ra_server_proc:ra_event_body(), state()) ->
     gen_statem:event_handler_result(election_states()).
 handle_ra_event({applied, []}, State) -> {keep_state, State};
 handle_ra_event({applied, Replies}, State = #state{correlation = Correlation}) ->
