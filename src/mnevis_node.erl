@@ -1,6 +1,6 @@
 -module(mnevis_node).
 
--export([start/0, node_id/0, trigger_election/0]).
+-export([start/0, node_id/0]).
 -export([make_initial_nodes/1]).
 
 node_id() ->
@@ -24,9 +24,6 @@ start() ->
     InitialNodes),
     {ok, _, _} = ra:start_cluster(Name, {module, mnevis_machine, #{}}, InitialNodes).
 
-
-trigger_election() ->
-    ok = ra:trigger_election(node_id()).
 
 make_initial_nodes(Nodes) ->
     [make_initial_node(Node) || Node <- Nodes].

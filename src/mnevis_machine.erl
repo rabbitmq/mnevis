@@ -46,7 +46,9 @@
 init(_Conf) ->
     case create_committed_transaction_table() of
         {atomic, ok} -> ok;
-        {aborted,{already_exists,committed_transaction}} -> ok;
+        {aborted,{already_exists,committed_transaction}} ->
+
+            ok;
         Other -> error({cannot_create_committed_transaction_table, Other})
     end,
     ok = create_locker_cache(),
@@ -54,15 +56,16 @@ init(_Conf) ->
 
 -spec state_enter(ra_server:ra_state() | eol, state()) -> ra_machine:effects().
 state_enter(leader, State) ->
-    error_logger:info_msg("mnevis machine leader"),
+    ct:pal("Mnevis machine leader state ~p", [State]),
+    ct:pal("committed transaction table state ~p", [ets:tab2list(committed_transaction)]),
     start_new_locker_effects(State);
 state_enter(State, _) ->
     error_logger:info_msg("mnevis machine enter state ~p~n", [State]),
     [].
 
 -spec start_new_locker_effects(state()) -> ra_machine:effects().
-start_new_locker_effects(#state{}) ->
-    [{mod_call, mnevis_lock_proc, start, []}].
+start_new_locker_effects(#state{locker_term = LockerTerm}) ->
+    [{mod_call, mnevis_lock_proc, start, [LockerTerm + 1]}].
 
 -spec apply(map(), command(), ra_machine:effects(), state()) ->
     {state(), ra_machine:effects(), reply()}.
@@ -225,15 +228,16 @@ error_logger:info_msg("mnevis locker up ~p", [{Pid, Term}]),
     end;
 apply_command(_Meta, which_locker,
               State = #state{locker_status = up,
-                             locker_pid = LockerPid}) when is_pid(LockerPid) ->
-    {State, [], {ok, LockerPid}};
+                             locker_pid = LockerPid,
+                             locker_term = LockerTerm}) when is_pid(LockerPid) ->
+    {State, [], {ok, {LockerPid, LockerTerm}}};
 apply_command(_Meta, which_locker, State = #state{locker_status = down}) ->
     {State, [], {error, locker_down}};
 %% TODO: flush_locker_transactions request
 %% TODO: cleanup term transactions for previous terms
 apply_command(_Meta, Unknown, State) ->
     error_logger:error_msg("Unknown command ~p~n", [Unknown]),
-    {State, [], {error, unknown_command}}.
+    {State, [], {error, {unknown_command, Unknown}}}.
 
 %% ==========================
 
@@ -382,11 +386,11 @@ with_transaction(Transaction, State, Fun) ->
             case transaction_recorded_as_committed(Transaction) of
                 %% This is a log replay and the transaction is already committed.
                 %% Result will not be received by any client.
-                true  -> {State, [], {error, transaction_committed}};
+                true  -> {State, [], {error, {transaction_committed, Transaction}}};
                 false -> {State, [], Fun()}
             end
         end).
 
 -ifdef(TEST).
--include("mnevis_machine.eunit").
+% -include("mnevis_machine.eunit").
 -endif.

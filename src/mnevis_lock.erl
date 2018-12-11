@@ -1,6 +1,6 @@
 -module(mnevis_lock).
 
--export([init/1, lock/5, cleanup/3]).
+-export([init/1, lock/5, cleanup/3, monitor_down/4]).
 
 
 -record(state, {last_transaction_id,
@@ -51,6 +51,15 @@ cleanup(Tid, Source, State0) ->
     State1 = cleanup_transaction(Tid, Source, State0),
     demonitor_source(Source, State1).
 
+-spec monitor_down(reference(), pid(), term(), state()) -> state().
+monitor_down(_MRef, Source, _Info, State) ->
+    case transaction_for_source(Source, State) of
+        {ok, Tid}               ->
+            cleanup(Tid, Source, State);
+        {error, no_transaction} ->
+            State
+    end.
+
 -spec demonitor_source(pid(), state()) -> state().
 demonitor_source(Source, State = #state{monitors = Monitors}) ->
     case maps:get(Source, Monitors, none) of
@@ -95,10 +104,10 @@ lock_internal(Tid, Source, LockItem, LockKind, State0) ->
         [] ->
             {{ok, Tid}, apply_lock(LockItem, LockKind, Tid, State1)};
         Tids ->
-            %% To avoid cycles only wait for higher transaction Ids
+            %% To avoid cycles only wait for lower transaction Ids
             LockingTids = [ LockingTid
                             || LockingTid <- Tids,
-                            LockingTid > Tid ],
+                            LockingTid < Tid ],
             Error = case LockingTids of
                 [] ->
                     {error, {locked_nowait, Tid}};
@@ -165,7 +174,7 @@ cleanup_locks(Tid, State) ->
 -spec lock_transaction(transaction_id(), pid(), [transaction_id()], state()) -> state().
 lock_transaction(LockedTid, Source, LockingTids0, State) ->
     LockingTids = [ LockingTid || LockingTid <- LockingTids0,
-                                  LockingTid > LockedTid ],
+                                  LockingTid < LockedTid ],
 
     #state{transaction_locks = TLGraph0} = State,
 

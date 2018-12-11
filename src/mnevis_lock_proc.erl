@@ -60,8 +60,14 @@ candidate(info, _Info, State) ->
 leader({call, From}, {lock, TransationId, Source, LockItem, LockKind}, State) ->
     {LockResult, State1} = lock(TransationId, Source, LockItem, LockKind, State),
     {keep_state, State1, [{reply, From, LockResult}]};
+leader({call, From}, {rollback, TransationId, Source}, State) ->
+    LockState = mnevis_lock:cleanup(TransationId, Source, State#state.lock_state),
+    {keep_state, State#state{lock_state = LockState}, [{reply, From, ok}]};
 leader(cast, _, State) ->
     {keep_state, State};
+leader(info, {'DOWN', MRef, process, Pid, Info}, State) ->
+    LockState = mnevis_lock:monitor_down(MRef, Pid, Info, State#state.lock_state),
+    {keep_state, State#state{lock_state = LockState}};
 leader(info, _Info, State) ->
     {keep_state, State}.
 
@@ -116,8 +122,8 @@ confirm(State) ->
 
 
 lock(TransationId, Source, LockItem, LockKind, State = #state{lock_state = LockState}) ->
-    LockState1 = mnevis_lock:lock(TransationId, Source, LockItem, LockKind, LockState),
-    {ok, State#state{lock_state = LockState1}}.
+    {LockResult, LockState1} = mnevis_lock:lock(TransationId, Source, LockItem, LockKind, LockState),
+    {LockResult, State#state{lock_state = LockState1}}.
 
 
 

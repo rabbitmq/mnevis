@@ -1,6 +1,6 @@
 -module(mnevis_context).
 
--export([init/1,
+-export([init/0, init/3,
          add_write_set/4, add_write_bag/4, add_delete/4, add_delete_object/4,
          read_from_context/3,
          filter_read_from_context/4,
@@ -8,6 +8,8 @@
          filter_index_from_context/5,
          filter_all_keys_from_context/3,
          transaction_id/1,
+         locker_term/1,
+         locker/1,
          writes/1,
          deletes/1,
          deletes_object/1,
@@ -19,7 +21,6 @@
          prev_cached_key/3,
          next_cached_key/3,
          set_retry/1,
-         set_transaction_id/2,
          is_retry/1]).
 
 % Keeps track of deletes and writes.
@@ -74,7 +75,9 @@
 %         Run index filter on write_bag cache
 
 -record(context, {
-    transaction_id,
+    transaction_id = undefined,
+    locker_term = undefined,
+    locker = undefined,
     delete = #{},
     delete_object = #{},
     write_set = #{},
@@ -87,20 +90,28 @@
 -type key() :: term().
 -type table() :: atom().
 -type transaction_id() :: integer().
+-type locker_term() :: integer().
 -type delete_item() :: {table(), key(), lock_kind()}.
 -type item() :: {table(), record(), lock_kind()}.
 
 -export_type([context/0]).
 
--spec init(transaction_id()) -> context().
-init(Tid) -> #context{transaction_id = Tid}.
+-spec init() -> context().
+init() -> #context{}.
 
--spec set_transaction_id(context(), transaction_id()) -> context().
-set_transaction_id(#context{} = Context, Tid) ->
-    Context#context{transaction_id = Tid}.
+-spec init(transaction_id(), locker_term(), pid()) -> context().
+init(Tid, LockerTerm, Locker) -> #context{transaction_id = Tid,
+                                          locker_term = LockerTerm,
+                                          locker = Locker}.
 
 -spec transaction_id(context()) -> transaction_id().
 transaction_id(#context{transaction_id = Tid}) -> Tid.
+
+-spec locker_term(context()) -> locker_term().
+locker_term(#context{locker_term = LockerTerm}) -> LockerTerm.
+
+-spec locker(context()) -> pid().
+locker(#context{locker = Locker}) -> Locker.
 
 -spec deletes(context()) -> [delete_item()].
 deletes(#context{delete = Delete}) -> maps:values(Delete).

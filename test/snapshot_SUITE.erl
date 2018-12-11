@@ -33,7 +33,6 @@ start_erlang_node(NodePrefix) ->
     Node.
 
 add_paths(Node, LocalPath) ->
-ct:pal("Rpc call code path ~p~n", [Node]),
     RemotePath = rpc:call(Node, code, get_path, []),
     AddPath = LocalPath -- RemotePath,
     ok = rpc:call(Node, code, add_pathsa, [AddPath]).
@@ -60,8 +59,11 @@ node_dir(Node, Dir) ->
     filename:join(Dir, Node).
 
 end_per_suite(Config) ->
+    Nodes = ?config(nodes, Config),
+    [slave:stop(Node) || Node <- Nodes, Node =/= node()],
     ra:stop_server(mnevis_node:node_id()),
     application:stop(mnevis),
+    application:stop(mnesia),
     application:stop(ra),
     Config.
 

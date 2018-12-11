@@ -25,12 +25,14 @@ init_per_suite(Config) ->
     application:load(mnesia),
     mnesia:create_schema([node()]),
     mnevis:start(PrivDir),
-    mnevis_node:trigger_election(),
+    % mnevis_node:trigger_election(),
     Config.
 
 end_per_suite(Config) ->
     ra:stop_server(mnevis_node:node_id()),
     application:stop(mnevis),
+    application:stop(mnesia),
+    mnesia:delete_schema([node()]),
     application:stop(ra),
     Config.
 
