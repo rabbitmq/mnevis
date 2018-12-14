@@ -4,7 +4,12 @@
 
 -export([start/1, stop/1]).
 
--export([locate/0, ensure_lock_proc/2, try_lock_call/3]).
+-export([locate/0,
+         ensure_lock_proc/2,
+         try_lock_call/3]).
+
+-export([create_locker_cache/0,
+         update_locker_cache/2]).
 
 -export([init/1,
          handle_event/3,
@@ -21,7 +26,10 @@
 
 -type election_states() :: leader | candidate.
 -type leader_term() :: integer().
+-type locker() :: {pid(), leader_term()}.
 -type state() :: #state{}.
+-type lock_request() :: {lock, mnevis_lock:transaction_id(), pid(),
+                               mnevis_lock:lock_item(), mnevis_lock:lock_kind()}.
 
 start(Term) ->
     error_logger:info_msg("Start mnevis locker"),
@@ -30,12 +38,24 @@ start(Term) ->
 stop(Pid) ->
     gen_statem:cast(Pid, stop).
 
+-spec create_locker_cache() -> ok.
+create_locker_cache() ->
+    locker_cache = ets:new(locker_cache, [named_table, public]),
+    ok.
+
+-spec update_locker_cache(pid(), integer()) -> ok.
+update_locker_cache(Pid, Term) ->
+    true = ets:insert(locker_cache, {locker, {Pid, Term}}),
+    ok.
+
+-spec locate() -> locker().
 locate() ->
     case ets:lookup(locker_cache, locker) of
         [{locker, Locker}] -> {ok, Locker};
         []                 -> get_current_ra_locker()
     end.
 
+-spec ensure_lock_proc(pid(), leader_term()) -> {ok, locker()} | {error, term()}.
 ensure_lock_proc(OldPid, OldTerm) ->
     Locker = {OldPid, OldTerm},
     case ets:lookup(locker_cache, locker) of
@@ -47,6 +67,7 @@ ensure_lock_proc(OldPid, OldTerm) ->
             {ok, Other}
     end.
 
+-spec get_current_ra_locker() -> {ok, locker()} | {error, term()}.
 get_current_ra_locker() ->
     %% TODO: update locker cache
     case ra:process_command(mnevis_node:node_id(), which_locker) of
@@ -56,6 +77,7 @@ get_current_ra_locker() ->
         {timeout, _}             -> {error, timeout}
     end.
 
+-spec try_lock_call(pid(), leader_term(), lock_request()) -> mnevis_lock:lock_result() | {error, locker_not_running}.
 try_lock_call(Pid, _Term, LockRequest) ->
     try
         %% TODO: non-infinity timeout

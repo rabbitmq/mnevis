@@ -53,7 +53,7 @@ init(_Conf) ->
         {aborted,{already_exists,committed_transaction}} -> ok;
         Other -> error({cannot_create_committed_transaction_table, Other})
     end,
-    ok = create_locker_cache(),
+    ok = mnevis_lock_proc:create_locker_cache(),
     #state{}.
 
 -spec state_enter(ra_server:ra_state() | eol, state()) -> ra_machine:effects().
@@ -72,6 +72,7 @@ start_new_locker_effects(#state{locker_pid = LockerPid, locker_term = LockerTerm
 -spec apply(map(), command(), ra_machine:effects(), state()) ->
     {state(), ra_machine:effects(), reply()}.
 apply(Meta, Command, Effects0, State) ->
+    ct:pal("Meta ~p~n", [Meta]),
     with_pre_effects(Effects0, apply_command(Meta, Command, State)).
 
 -spec snapshot_module() -> module().
@@ -221,7 +222,7 @@ error_logger:info_msg("mnevis locker up ~p", [{Pid, Term}]),
     case LockerStatus of
         up   -> {State, [], reject};
         down ->
-            ok = update_locker_cache(Pid, Term),
+            ok = mnevis_lock_proc:update_locker_cache(Pid, Term),
             {State#state{locker_status = up,
                          locker_pid = Pid,
                          locker_term = Term},
@@ -340,19 +341,6 @@ transaction_recorded_as_committed(Transaction) ->
         [{committed_transaction, Transaction, committed}] ->
             true
     end.
-
-%% Locker cache
-
-%% ==========================
-
-create_locker_cache() ->
-    locker_cache = ets:new(locker_cache, [named_table, public]),
-    ok.
-
--spec update_locker_cache(pid(), integer()) -> ok.
-update_locker_cache(Pid, Term) ->
-    true = ets:insert(locker_cache, {locker, {Pid, Term}}),
-    ok.
 
 %% ==========================
 

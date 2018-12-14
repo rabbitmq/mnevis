@@ -25,6 +25,8 @@
                        {error, no_transaction_for_pid} |
                        {error, {wrong_transaction_id, transaction_id()}}.
 
+-export_type([transaction_id/0, lock_item/0, lock_kind/0, lock_result/0]).
+
 -spec init(transaction_id()) -> state().
 init(LastTid) ->
     #state{last_transaction_id = LastTid}.
