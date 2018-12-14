@@ -9,6 +9,8 @@
          state_enter/2,
          snapshot_module/0]).
 
+-export([start_new_locker/2]).
+
 -type config() :: map().
 -type command() :: term().
 
@@ -44,11 +46,11 @@
 
 -spec init(config()) -> state().
 init(_Conf) ->
+    %% TODO move committed transaction creation to the create_cluster function
+    %% separate start and recovery
     case create_committed_transaction_table() of
         {atomic, ok} -> ok;
-        {aborted,{already_exists,committed_transaction}} ->
-
-            ok;
+        {aborted,{already_exists,committed_transaction}} -> ok;
         Other -> error({cannot_create_committed_transaction_table, Other})
     end,
     ok = create_locker_cache(),
@@ -64,8 +66,8 @@ state_enter(State, _) ->
     [].
 
 -spec start_new_locker_effects(state()) -> ra_machine:effects().
-start_new_locker_effects(#state{locker_term = LockerTerm}) ->
-    [{mod_call, mnevis_lock_proc, start, [LockerTerm + 1]}].
+start_new_locker_effects(#state{locker_pid = LockerPid, locker_term = LockerTerm}) ->
+    [{mod_call, mnevis_machine, start_new_locker, [LockerPid, LockerTerm]}].
 
 -spec apply(map(), command(), ra_machine:effects(), state()) ->
     {state(), ra_machine:effects(), reply()}.
@@ -367,7 +369,7 @@ with_pre_effects(Effects0, {State, Effects, Result}) ->
 with_valid_locker({LockerTerm, _}, State = #state{locker_term = CurrentLockerTerm}, Fun) ->
     case LockerTerm of
         CurrentLockerTerm -> Fun();
-        _ -> {State, [], {error, wrong_locker_term}}
+        _ -> {State, [], {error, {aborted, wrong_locker_term}}}
     end.
 
 -spec catch_abort(fun(() -> reply(R, E))) -> reply(R, E | {aborted, term()}).
@@ -394,3 +396,10 @@ with_transaction(Transaction, State, Fun) ->
 -ifdef(TEST).
 % -include("mnevis_machine.eunit").
 -endif.
+
+%% ==============================
+
+-spec start_new_locker(pid(), locker_term()) -> ok.
+start_new_locker(OldLocker, OldTerm) ->
+    mnevis_lock_proc:stop(OldLocker),
+    {ok, _} = mnevis_lock_proc:start(OldTerm + 1).

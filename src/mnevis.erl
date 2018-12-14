@@ -13,6 +13,8 @@
 
 -compile(nowarn_deprecated_function).
 
+-define(AQUIRE_LOCK_ATTEMPTS, 10).
+
 % -behaviour(mnesia_access).
 
 %% mnesia_access behaviour
@@ -125,6 +127,12 @@ transaction0(Fun, Args, Retries, _Err) ->
             Tid = mnevis_context:transaction_id(Context),
             wait_for_unlock(Tid),
             retry_locked_transaction(Fun, Args, Retries);
+        exit:{aborted, locker_not_running} ->
+            %% Locker failed during transaction
+            retry_clean_transaction(Fun, Args, Retries, locker_not_running);
+        exit:{aborted, wrong_locker_term} ->
+            %% Locker changed during transaction
+            retry_clean_transaction(Fun, Args, Retries, wrong_locker_term);
         exit:{aborted, Reason} ->
             ok = maybe_rollback_transaction(),
             {aborted, Reason};
@@ -140,6 +148,14 @@ wait_for_unlock(Tid) ->
     receive {mnevis_unlock, Tid} -> ok
     after 5000 -> ok
     end.
+
+retry_clean_transaction(Fun, Args, Retries, Error) ->
+    NextRetries = case Retries of
+        infinity -> infinity;
+        R when is_integer(R) -> R - 1
+    end,
+    clean_transaction_context(),
+    transaction0(Fun, Args, NextRetries, Error).
 
 retry_locked_transaction(Fun, Args, Retries) ->
     NextRetries = case Retries of
@@ -520,10 +536,6 @@ cleanup_all_unlock_messages() ->
         ok
     end.
 
-
-aquire_lock(LockItem, LockKind) ->
-    aquire_lock(get_transaction_context(), LockItem, LockKind).
-
 aquire_lock(Context, LockItem, LockKind) ->
     case do_aquire_lock(Context, LockItem, LockKind) of
         {ok, Context1} ->
@@ -541,36 +553,62 @@ do_aquire_lock(Context, LockItem, LockKind) ->
     Locker = mnevis_context:locker(Context),
     case {Tid, LockerTerm, Locker} of
         {undefined, undefined, undefined} ->
-            assert_empty_context(Context),
-            {Pid, Term} = get_current_locker(),
-            %% TODO: handle noproc
-            case gen_statem:call(Pid, {lock, undefined, self(), LockItem, LockKind}) of
-                {ok, Tid1} ->
-                    NewContext = mnevis_context:init(Tid1, Term, Pid),
-                    {ok, NewContext};
-                {error, {locked, Tid1}} ->
-                    NewContext = mnevis_context:init(Tid1, Term, Pid),
-                    {error, NewContext, locked};
-                {error, {locked_nowait, Tid1}} ->
-                    NewContext = mnevis_context:init(Tid1, Term, Pid),
-                    {error, NewContext, locked_nowait};
-                {error, Err} ->
-                    mnesia:abort(Err)
-            end;
+            do_aquire_lock_with_new_locker(Context, LockItem, LockKind, ?AQUIRE_LOCK_ATTEMPTS);
         _ ->
             %% TODO: handle noproc
-            case gen_statem:call(Locker, {lock, Tid, self(), LockItem, LockKind}) of
-                {ok, Tid}                     -> {ok, Context};
-                {error, {locked, Tid}}        -> {error, Context, locked};
-                {error, {locked_nowait, Tid}} -> {error, Context, locked_nowait};
-                {error, Err}                  -> mnesia:abort(Err)
-            end
+            do_aquire_lock_with_existing_locker(Context, LockItem, LockKind)
     end.
 
-get_current_locker() ->
-    case ets:lookup(locker_cache, locker) of
-        [{locker, {Pid, Term}}] -> {Pid, Term};
-        [] -> run_ra_command(which_locker)
+do_aquire_lock_with_existing_locker(Context, LockItem, LockKind) ->
+    Tid = mnevis_context:transaction_id(Context),
+    LockerTerm = mnevis_context:locker_term(Context),
+    Locker = mnevis_context:locker(Context),
+    LockRequest = {lock, Tid, self(), LockItem, LockKind},
+    case mnevis_lock_proc:try_lock_call(Locker, LockerTerm, LockRequest) of
+        {ok, Tid}                     -> {ok, Context};
+        {error, {locked, Tid}}        -> {error, Context, locked};
+        {error, {locked_nowait, Tid}} -> {error, Context, locked_nowait};
+        {error, Err}                  -> mnesia:abort(Err)
+    end.
+
+do_aquire_lock_with_new_locker(_Context, _LockItem, _LockKind, 0) ->
+    mnesia:abort({unable_to_aquire_lock, no_promoted_lock_processes});
+do_aquire_lock_with_new_locker(Context, LockItem, LockKind, Attempts) ->
+    assert_empty_context(Context),
+    {LockerPid, LockerTerm} = case mnevis_lock_proc:locate() of
+        {ok, {Pid, Term}} -> {Pid, Term};
+        {error, Err}      -> mnesia:abort(Err)
+    end,
+    %% TODO: include lock term into lock request.
+    LockRequest = {lock, undefined, self(), LockItem, LockKind},
+    case retry_lock_call(LockerPid, LockerTerm, LockRequest) of
+        {ok, Tid1} ->
+            NewContext = mnevis_context:init(Tid1, LockerTerm, LockerPid),
+            {ok, NewContext};
+        {error, {locked, Tid1}} ->
+            NewContext = mnevis_context:init(Tid1, LockerTerm, LockerPid),
+            {error, NewContext, locked};
+        {error, {locked_nowait, Tid1}} ->
+            NewContext = mnevis_context:init(Tid1, LockerTerm, LockerPid),
+            {error, NewContext, locked_nowait};
+        {error, is_not_leader} ->
+            %% TODO: notify when leader or timeout
+            do_aquire_lock_with_new_locker(Context, LockItem, LockKind, Attempts - 1);
+        {error, Error} ->
+            mnesia:abort(Error)
+    end.
+
+retry_lock_call(Pid, Term, LockRequest) ->
+    case mnevis_lock_proc:try_lock_call(Pid, Term, LockRequest) of
+        {error, locker_not_running} ->
+            %% This function should block, so it's safe to recursively call
+            case mnevis_lock_proc:ensure_lock_proc(Pid, Term) of
+                {ok, {NewPid, NewTerm}} ->
+                    retry_lock_call(NewPid, NewTerm, LockRequest);
+                {error, Reason} ->
+                    mnesia:abort(Reason)
+            end;
+        Other -> Other
     end.
 
 assert_empty_context(Context) ->
