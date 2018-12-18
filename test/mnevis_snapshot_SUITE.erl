@@ -110,7 +110,7 @@ create_snapshot(Config) ->
 
     % ra:members(mnevis_node:node_id()),
 
-    {ok, {{LocalIndex, _}, _}, _} = ra:local_query(mnevis_node:node_id(), fun(S) -> ok end),
+    {ok, {{LocalIndex, _}, _}, _} = ra:local_query(mnevis_node:node_id(), fun(S) -> ok end, 100000),
     wait_for_index(Node2, LocalIndex),
 
     3000 = rpc:call(Node2, mnesia, table_info, [sample, size]).
@@ -120,7 +120,7 @@ wait_for_index(Node, Index) ->
 
 wait_for_index(Node, Index, LastIndex) ->
     {Name, _} = mnevis_node:node_id(),
-    {ok, {{NodeIndex, _}, _}, _} = ra:local_query({Name, Node}, fun(S) -> ok end),
+    {ok, {{NodeIndex, _}, _}, _} = ra:local_query({Name, Node}, fun(S) -> ok end, 100000),
     case NodeIndex >= Index of
         true ->
             ok;
