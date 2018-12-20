@@ -23,14 +23,14 @@
 
 -behaviour(gen_server).
 
--export([sync/0]).
+-export([sync/0, get_time/0]).
 
 -export([start_link/0, init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
 -define(SERVER, ?MODULE).
 
--record(state, {waiting, disc_node}).
+-record(state, {waiting, disc_node, time = 0}).
 
 %%----------------------------------------------------------------------------
 
@@ -44,6 +44,9 @@ start_link() ->
 sync() ->
     gen_server:call(?SERVER, sync, infinity).
 
+get_time() ->
+    gen_server:call(?SERVER, get_time, infinity).
+
 %%----------------------------------------------------------------------------
 
 init([]) ->
@@ -52,7 +55,9 @@ init([]) ->
 handle_call(sync, _From, #state{disc_node = false} = State) ->
     {reply, ok, State};
 handle_call(sync, From, #state{waiting = Waiting} = State) ->
-    {noreply, State#state{waiting = [From | Waiting]}, 1};
+    {noreply, State#state{waiting = [From | Waiting]}, 0};
+handle_call(get_time, From, #state{time = Time} = State) ->
+    {reply, Time, State#state{time = 0}};
 handle_call(Request, _From, State) ->
     {stop, {unhandled_call, Request}, State}.
 
@@ -60,10 +65,11 @@ handle_cast(Request, State) ->
     {stop, {unhandled_cast, Request}, State}.
 
 handle_info(timeout, #state{waiting = Waiting} = State) ->
-io:format("~nDisk log sync ~p~n", [length(Waiting)]),
-    ok = disk_log:sync(latest_log),
+    {Time, ok} = timer:tc(fun() ->
+    ok = disk_log:sync(latest_log)
+    end),
     _ = [gen_server:reply(From, ok) || From <- Waiting],
-    {noreply, State#state{waiting = []}};
+    {noreply, State#state{waiting = [], time = Time + State#state.time}};
 handle_info(Message, State) ->
     {stop, {unhandled_info, Message}, State}.
 

@@ -58,8 +58,6 @@ init(_Conf) ->
 
 -spec state_enter(ra_server:ra_state() | eol, state()) -> ra_machine:effects().
 state_enter(leader, State) ->
-    ct:pal("Mnevis machine leader state ~p", [State]),
-    ct:pal("committed transaction table state ~p", [ets:tab2list(committed_transaction)]),
     start_new_locker_effects(State);
 state_enter(State, _) ->
     error_logger:info_msg("mnevis machine enter state ~p~n", [State]),
@@ -72,7 +70,6 @@ start_new_locker_effects(#state{locker_pid = LockerPid, locker_term = LockerTerm
 -spec apply(map(), command(), ra_machine:effects(), state()) ->
     {state(), ra_machine:effects(), reply()}.
 apply(Meta, Command, Effects0, State) ->
-    ct:pal("Meta ~p~n", [Meta]),
     with_pre_effects(Effects0, apply_command(Meta, Command, State)).
 
 -spec snapshot_module() -> module().
@@ -217,24 +214,31 @@ apply_command(_Meta, {down, Pid, _Reason}, State = #state{locker_status = Locker
     end;
 
 apply_command(_Meta, {locker_up, Pid, Term},
-              State = #state{locker_status = LockerStatus}) ->
+              State = #state{locker_status = _LockerStatus}) ->
 error_logger:info_msg("mnevis locker up ~p", [{Pid, Term}]),
-    case LockerStatus of
-        up   -> {State, [], reject};
-        down ->
-            ok = mnevis_lock_proc:update_locker_cache(Pid, Term),
-            {State#state{locker_status = up,
-                         locker_pid = Pid,
-                         locker_term = Term},
-             [{monitor, process, Pid}],
-             confirm}
-    end;
-apply_command(_Meta, which_locker,
+    %% TODO: change locker status to something more sensible
+    ok = mnevis_lock_proc:update_locker_cache(Pid, Term),
+    {State#state{locker_status = up,
+                 locker_pid = Pid,
+                 locker_term = Term},
+     [{monitor, process, Pid}],
+     confirm};
+apply_command(_Meta, {which_locker, OldLocker},
               State = #state{locker_status = up,
                              locker_pid = LockerPid,
                              locker_term = LockerTerm}) when is_pid(LockerPid) ->
-    {State, [], {ok, {LockerPid, LockerTerm}}};
-apply_command(_Meta, which_locker, State = #state{locker_status = down}) ->
+    case OldLocker of
+        none ->
+            {State, [], {ok, {LockerPid, LockerTerm}}};
+        {_, OldTerm} when OldTerm < LockerTerm ->
+            {State, [], {ok, {LockerPid, LockerTerm}}};
+        {LockerPid, LockerTerm} ->
+            {State, start_new_locker_effects(State), {error, locker_up_to_date}};
+        _ ->
+            %% TODO: what to do?
+            {State, [], {error, {invalid_locker, OldLocker, {LockerPid, LockerTerm}}}}
+    end;
+apply_command(_Meta, {which_locker, _OldLocker}, State = #state{locker_status = down}) ->
     {State, [], {error, locker_down}};
 %% TODO: flush_locker_transactions request
 %% TODO: cleanup term transactions for previous terms
@@ -388,6 +392,6 @@ with_transaction(Transaction, State, Fun) ->
 %% ==============================
 
 -spec start_new_locker(pid(), locker_term()) -> ok.
-start_new_locker(OldLocker, OldTerm) ->
-    mnevis_lock_proc:stop(OldLocker),
+start_new_locker(OldLockerPid, OldTerm) ->
+    mnevis_lock_proc:stop(OldLockerPid),
     {ok, _} = mnevis_lock_proc:start(OldTerm + 1).

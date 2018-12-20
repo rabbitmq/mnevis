@@ -65,7 +65,9 @@ On down signal from the monitor:
     - start a new lock process
 
 When transaction process requests a lock process:
-    - ???????????
+    - if the lock process in transaction is old - inform of a new one
+    - if the lock process in transaction is current - ask transaction to wait
+        and start a new lock process (maybe check that the current is actually down)
 
 
 Lock process lifetime:
@@ -94,9 +96,6 @@ Transaction process lock:
 - commit the transaction with the transaction ID and the lock reference
     - if refused - retry the transaction with the lock reference returned in
         the refusal message
-
-
-
 
 
 

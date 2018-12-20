@@ -52,7 +52,7 @@ update_locker_cache(Pid, Term) ->
 locate() ->
     case ets:lookup(locker_cache, locker) of
         [{locker, Locker}] -> {ok, Locker};
-        []                 -> get_current_ra_locker()
+        []                 -> get_current_ra_locker(none)
     end.
 
 -spec ensure_lock_proc(pid(), leader_term()) -> {ok, locker()} | {error, term()}.
@@ -61,16 +61,16 @@ ensure_lock_proc(OldPid, OldTerm) ->
     case ets:lookup(locker_cache, locker) of
         [{locker, Locker}] ->
             %% Ets cache contains dead or unaccessible reference
-            get_current_ra_locker();
+            get_current_ra_locker(Locker);
         [{locker, Other}] ->
             %% This one may be running.
             {ok, Other}
     end.
 
--spec get_current_ra_locker() -> {ok, locker()} | {error, term()}.
-get_current_ra_locker() ->
+-spec get_current_ra_locker(locker()) -> {ok, locker()} | {error, term()}.
+get_current_ra_locker(CurrentLocker) ->
     %% TODO: update locker cache
-    case ra:process_command(mnevis_node:node_id(), which_locker) of
+    case ra:process_command(mnevis_node:node_id(), {which_locker, CurrentLocker}) of
         {ok, {ok, Locker}, _}    -> {ok, Locker};
         {ok, {error, Reason}, _} -> {error, {command_error, Reason}};
         {error, Reason}          -> {error, Reason};
@@ -125,7 +125,7 @@ leader({call, From}, {rollback, TransationId, Source}, State) ->
     LockState = mnevis_lock:cleanup(TransationId, Source, State#state.lock_state),
     {keep_state, State#state{lock_state = LockState}, [{reply, From, ok}]};
 leader(cast, stop, _State) ->
-    {stop, stopped};
+    {stop, {normal, stopped}};
 leader(cast, _, State) ->
     {keep_state, State};
 leader(info, {'DOWN', MRef, process, Pid, Info}, State) ->
@@ -158,6 +158,7 @@ notify_up(Term, Correlation, NodeId) ->
     gen_statem:event_handler_result(election_states()).
 handle_ra_event({applied, []}, State) -> {keep_state, State};
 handle_ra_event({applied, Replies}, State = #state{correlation = Correlation}) ->
+    error_logger:error_msg("Replies ~p~n", [Replies]),
     case proplists:get_value(Correlation, Replies, none) of
         none    -> {keep_state, State};
         reject  -> reject(State);
@@ -177,8 +178,8 @@ renotify_up(Leader, State = #state{term = Term, correlation = Correlation}) ->
     ok = notify_up(Term, Correlation, Leader),
     {keep_state, State#state{leader = Leader}}.
 
-reject(_State) ->
-    {stop, rejected}.
+reject(State) ->
+    {stop, {normal, {rejected, State}}}.
 
 confirm(State) ->
     {next_state, leader, State}.

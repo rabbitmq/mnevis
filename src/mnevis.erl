@@ -133,10 +133,15 @@ transaction0(Fun, Args, Retries, _Err) ->
         exit:{aborted, wrong_locker_term} ->
             %% Locker changed during transaction
             retry_clean_transaction(Fun, Args, Retries, wrong_locker_term);
+        exit:{aborted, {lock_proc_not_found, Reason}} ->
+            %% Need to retry finding the locker process
+            %% TODO: maybe wait?
+            retry_clean_transaction(Fun, Args, Retries, {lock_proc_not_found, Reason});
         exit:{aborted, Reason} ->
             ok = maybe_rollback_transaction(),
             {aborted, Reason};
-        _:Reason:ST ->
+        _:Reason ->
+            ST = erlang:get_stacktrace(),
             error_logger:warning_msg("Mnevis transaction error ~p Stacktrace ~p~n", [Reason, ST]),
             ok = maybe_rollback_transaction(),
             {aborted, {Reason, ST}}
@@ -605,6 +610,8 @@ retry_lock_call(Pid, Term, LockRequest) ->
             case mnevis_lock_proc:ensure_lock_proc(Pid, Term) of
                 {ok, {NewPid, NewTerm}} ->
                     retry_lock_call(NewPid, NewTerm, LockRequest);
+                {error, {command_error, Reason}} ->
+                    mnesia:abort({lock_proc_not_found, Reason});
                 {error, Reason} ->
                     mnesia:abort(Reason)
             end;
