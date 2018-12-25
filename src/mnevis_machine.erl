@@ -368,10 +368,6 @@ with_transaction(Transaction, State, Fun) ->
             end
         end).
 
--ifdef(TEST).
--include("mnevis_machine.eunit").
--endif.
-
 %% ==============================
 
 -spec start_new_locker(pid(), locker_term()) -> ok.
@@ -382,3 +378,7 @@ start_new_locker(OldLockerPid, OldTerm) ->
     end,
     {ok, _} = mnevis_lock_proc:start(OldTerm + 1),
     ok.
+
+-ifdef(TEST).
+-include("mnevis_machine.eunit").
+-endif.

@@ -27,6 +27,10 @@
 
 -export_type([transaction_id/0, lock_item/0, lock_kind/0, lock_result/0]).
 
+-ifdef (TEST).
+-include_lib("eunit/include/eunit.hrl").
+-endif.
+
 -spec init(transaction_id()) -> state().
 init(LastTid) ->
     #state{last_transaction_id = LastTid}.
@@ -282,3 +286,7 @@ cleanup_transaction_locks(Tid, State) ->
     end,
     LockedTids),
     State#state{ transaction_locks = TLGraph1 }.
+
+-ifdef(TEST).
+-include("mnevis_lock.eunit").
+-endif.
