@@ -104,13 +104,13 @@ init(Tid, LockerTerm, Locker) -> #context{transaction_id = Tid,
                                           locker_term = LockerTerm,
                                           locker = Locker}.
 
--spec transaction_id(context()) -> transaction_id().
+-spec transaction_id(context()) -> transaction_id() | undefined.
 transaction_id(#context{transaction_id = Tid}) -> Tid.
 
--spec locker_term(context()) -> locker_term().
+-spec locker_term(context()) -> locker_term() | undefined.
 locker_term(#context{locker_term = LockerTerm}) -> LockerTerm.
 
--spec locker(context()) -> pid().
+-spec locker(context()) -> pid() | undefined.
 locker(#context{locker = Locker}) -> Locker.
 
 -spec deletes(context()) -> [delete_item()].

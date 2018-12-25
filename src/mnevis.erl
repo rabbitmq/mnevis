@@ -579,7 +579,7 @@ do_aquire_lock_with_existing_locker(Context, LockItem, LockKind) ->
 do_aquire_lock_with_new_locker(_Context, _LockItem, _LockKind, 0) ->
     mnesia:abort({unable_to_aquire_lock, no_promoted_lock_processes});
 do_aquire_lock_with_new_locker(Context, LockItem, LockKind, Attempts) ->
-    assert_empty_context(Context),
+    ok = assert_empty_context(Context),
     {LockerPid, LockerTerm} = case mnevis_lock_proc:locate() of
         {ok, {Pid, Term}} -> {Pid, Term};
         {error, Err}      -> mnesia:abort(Err)
@@ -619,7 +619,8 @@ retry_lock_call(Pid, Term, LockRequest) ->
     end.
 
 assert_empty_context(Context) ->
-    Context = mnevis_context:init().
+    Context = mnevis_context:init(),
+    ok.
 
 with_lock(Context, LockItem, LockKind, Fun) ->
     case aquire_lock(Context, LockItem, LockKind) of

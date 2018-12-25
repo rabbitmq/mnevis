@@ -33,83 +33,21 @@ start_test_transaction(Source, InitState) ->
                              InitState),
     {State, Tid, LastTid}.
 
-
-% rollback:
-%     fail if transaction does not match the pid
-%     cleanup locks for transaction
-%     cleanup transaction for the pid
-%     demonitor the pid
-%     return ok
-
-% %% Error if no transaction
-% [] -> TID, Pid -> error: no transaction
-% %% Error if wrong transaction
-% [{Pid, TID1, [...]}] -> TID, Pid -> error: wrong transaction
-% %% Cleanup transaction
-% [{Pid, TID, [...]}] -> TID, Pid -> []
-
-rollback_no_transaction_error_test() ->
-    init_mnesia_table(),
-    InitState = #state{ last_transaction_id = 0 },
-    Source = self(),
-    Tid = 1,
-    {InitState, [], {error, no_transaction_for_pid}} =
-        mnevis_machine:apply(none, {rollback, Tid, Source, []}, [], InitState).
-
-rollback_wrong_transaction_error_test() ->
-    init_mnesia_table(),
-    Source = self(),
-    Tid = 2,
-    DifferentTid = 1,
-    InitState = #state{transactions = #{Source => DifferentTid}, last_transaction_id = DifferentTid},
-    {InitState, [], {error, {wrong_transaction_id, DifferentTid}}} =
-        mnevis_machine:apply(none, {rollback, Tid, Source, []}, [], InitState).
-
-rollback_cleanup_test() ->
-    init_mnesia_table(),
-    Source = self(),
-    InitState = #state{ last_transaction_id = 0 },
-    {State, Tid, LastTid} = start_test_transaction(Source, InitState),
-    {State1, [{demonitor, process, Source}], _} =
-        mnevis_machine:apply(none, {rollback, Tid, Source, []}, [], State),
-    Expected = #state{last_transaction_id = LastTid},
-    Expected = State1.
-
-rollback_cleanup_locks_test() ->
-    init_mnesia_table(),
-    Source = self(),
-    Tid = 1,
-    Source1 = spawn(fun() -> ok end),
-    Tid1 = 2,
-    Source2 = spawn(fun() -> ok end),
-    Tid2 = 3,
-    LastTid = 3,
-    InitState = #state{transactions = #{Source => Tid,
-                                        Source1 => Tid1,
-                                        Source2 => Tid2},
-                       last_transaction_id = LastTid,
-                       write_locks = #{writelock => Tid,
-                                       writelock_1 => Tid1},
-                       read_locks = #{readlock => [Tid],
-                                      readlock_1 => [Tid, Tid1],
-                                      readlock_2 => [Tid2]}},
-    {State1, [{demonitor, process, Source}], _} =
-        mnevis_machine:apply(none, {rollback, Tid, Source, []}, [], InitState),
-    Expected = #state{last_transaction_id = LastTid,
-                      transactions = #{Source1 => Tid1, Source2 => Tid2},
-                      write_locks = #{writelock_1 => Tid1},
-                      read_locks = #{readlock_1 => [Tid1], readlock_2 => [Tid2]}},
-    Expected = State1,
-    {State2, [{demonitor, process, Source1}], _} =
-        mnevis_machine:apply(none, {rollback, Tid1, Source1, []}, [], State1),
-    {State3, [{demonitor, process, Source2}], _} =
-        mnevis_machine:apply(none, {rollback, Tid2, Source2, []}, [], State2),
-    State3 = #state{last_transaction_id = LastTid}.
-
-
 % commit:
 %     fail if transaction does not match the pid
 %     do same as rollback
+
+init_state() ->
+    #state{locker_status = up, locker_pid = self(), locker_term = 1}.
+
+valid_transaction(State) ->
+    {State#state.locker_term, State#state.locker_pid}.
+
+commit_valid_locker_test() ->
+    init_mnesia_table(),
+    InitState = init_state(),
+    Transaction = valid_transaction(InitState),
+    mnevis_machine:apply(#{index => 1}, {commit, Transaction, [[], [], []]}, [], InitState).
 
 commit_no_transaction_error_test() ->
     init_mnesia_table(),

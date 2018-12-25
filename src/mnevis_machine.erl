@@ -5,7 +5,7 @@
 
 -export([
          init/1,
-         apply/4,
+         apply/3,
          state_enter/2,
          snapshot_module/0]).
 
@@ -30,17 +30,17 @@
 -type state() :: #state{}.
 -type transaction_id() :: integer().
 -type locker_term() :: integer().
+%% TODO: pid/term order: create a shared type
 -type transaction() :: {locker_term(), transaction_id()}.
 
 -type table() :: atom().
 -type lock_kind() :: read | write.
 -type change() :: {table(), term(), lock_kind()}.
 
--type apply_result(T, Err) :: {state(), ra_machine:effects(), reply(T, Err)}.
+-type apply_result(T, Err) :: {state(), reply(T, Err), ra_machine:effects()}.
 
 -record(committed_transaction, { transaction :: {locker_term(), transaction_id()},
                                  value }).
--define(IS_TID(T), is_integer(T)).
 
 %% Ra machine callbacks
 
@@ -67,29 +67,26 @@ state_enter(State, _) ->
 start_new_locker_effects(#state{locker_pid = LockerPid, locker_term = LockerTerm}) ->
     [{mod_call, mnevis_machine, start_new_locker, [LockerPid, LockerTerm]}].
 
--spec apply(map(), command(), ra_machine:effects(), state()) ->
-    {state(), ra_machine:effects(), reply()}.
-apply(Meta, Command, Effects0, State) ->
-    with_pre_effects(Effects0, apply_command(Meta, Command, State)).
-
 -spec snapshot_module() -> module().
 snapshot_module() ->
     mnevis_snapshot.
 
-apply_command(Meta, {commit, Transaction, [Writes, Deletes, DeletesObject]}, State)  ->
+-spec apply(map(), command(), state()) ->
+    {state(), reply(), ra_machine:effects()}.
+apply(Meta, {commit, Transaction, [Writes, Deletes, DeletesObject]}, State)  ->
     with_valid_locker(Transaction, State,
         fun() ->
             %% TODO: check valid locker
             Result = commit(Transaction, Writes, Deletes, DeletesObject),
             case Result of
                 {ok, ok} ->
-                    {State, snapshot_effects(Meta, State), Result};
+                    {State, Result, snapshot_effects(Meta, State)};
                 _ ->
-                    {State, [], Result}
+                    {State, Result, []}
             end
         end);
 
-apply_command(_Meta, {read, Transaction, [Tab, Key]}, State) ->
+apply(_Meta, {read, Transaction, [Tab, Key]}, State) ->
     with_transaction(Transaction, State,
         fun() ->
             catch_abort(
@@ -98,7 +95,7 @@ apply_command(_Meta, {read, Transaction, [Tab, Key]}, State) ->
                 end)
         end);
 
-apply_command(_Meta, {index_read, Transaction, [Tab, SecondaryKey, Pos]}, State0) ->
+apply(_Meta, {index_read, Transaction, [Tab, SecondaryKey, Pos]}, State0) ->
     with_transaction(Transaction, State0,
         fun() ->
             catch_abort(
@@ -108,7 +105,7 @@ apply_command(_Meta, {index_read, Transaction, [Tab, SecondaryKey, Pos]}, State0
                 end)
         end);
 
-apply_command(_Meta, {match_object, Transaction, [Tab, Pattern]}, State0) ->
+apply(_Meta, {match_object, Transaction, [Tab, Pattern]}, State0) ->
     with_transaction(Transaction, State0,
         fun() ->
             catch_abort(
@@ -117,7 +114,7 @@ apply_command(_Meta, {match_object, Transaction, [Tab, Pattern]}, State0) ->
                 end)
         end);
 
-apply_command(_Meta, {index_match_object, Transaction, [Tab, Pattern, Pos]}, State0) ->
+apply(_Meta, {index_match_object, Transaction, [Tab, Pattern, Pos]}, State0) ->
     with_transaction(Transaction, State0,
         fun() ->
             catch_abort(
@@ -126,7 +123,7 @@ apply_command(_Meta, {index_match_object, Transaction, [Tab, Pattern, Pos]}, Sta
                 end)
         end);
 
-apply_command(_Meta, {all_keys, Transaction, [Tab]}, State0) ->
+apply(_Meta, {all_keys, Transaction, [Tab]}, State0) ->
     with_transaction(Transaction, State0,
         fun() ->
             catch_abort(
@@ -135,7 +132,7 @@ apply_command(_Meta, {all_keys, Transaction, [Tab]}, State0) ->
                 end)
         end);
 
-apply_command(_Meta, {first, Transaction, [Tab]}, State0) ->
+apply(_Meta, {first, Transaction, [Tab]}, State0) ->
     with_transaction(Transaction, State0,
         fun() ->
             catch_abort(
@@ -144,7 +141,7 @@ apply_command(_Meta, {first, Transaction, [Tab]}, State0) ->
                 end)
         end);
 
-apply_command(_Meta, {last, Transaction, [Tab]}, State0) ->
+apply(_Meta, {last, Transaction, [Tab]}, State0) ->
     with_transaction(Transaction, State0,
         fun() ->
             catch_abort(
@@ -153,7 +150,7 @@ apply_command(_Meta, {last, Transaction, [Tab]}, State0) ->
                 end)
         end);
 
-apply_command(_Meta, {prev, Transaction, [Tab, Key]}, State0) ->
+apply(_Meta, {prev, Transaction, [Tab, Key]}, State0) ->
     with_transaction(Transaction, State0,
         fun() ->
             catch_abort(
@@ -175,7 +172,7 @@ apply_command(_Meta, {prev, Transaction, [Tab, Key]}, State0) ->
                 end)
         end);
 
-apply_command(_Meta, {next, Transaction, [Tab, Key]}, State0) ->
+apply(_Meta, {next, Transaction, [Tab, Key]}, State0) ->
     with_transaction(Transaction, State0,
         fun() ->
             catch_abort(
@@ -197,23 +194,21 @@ apply_command(_Meta, {next, Transaction, [Tab, Key]}, State0) ->
                 end)
         end);
 %% TODO: return type for create_table
-apply_command(_Meta, {create_table, Tab, Opts}, State) ->
-    {State, [], {ok, mnesia:create_table(Tab, Opts)}};
+apply(_Meta, {create_table, Tab, Opts}, State) ->
+    {State, {ok, mnesia:create_table(Tab, Opts)}, []};
 
-apply_command(_Meta, {delete_table, Tab}, State) ->
-    {State, [], {ok, mnesia:delete_table(Tab)}};
+apply(_Meta, {delete_table, Tab}, State) ->
+    {State, {ok, mnesia:delete_table(Tab)}, []};
 
-apply_command(_Meta, {down, Pid, _Reason}, State = #state{locker_status = LockerStatus,
+apply(_Meta, {down, Pid, _Reason}, State = #state{locker_status = LockerStatus,
                                                           locker_pid = LockerPid}) ->
     case {Pid, LockerStatus} of
         {LockerPid, up} ->
-            {State#state{locker_status = down},
-             start_new_locker_effects(State),
-             ok};
-        _ -> {State, [], ok}
+            {State#state{locker_status = down}, ok, start_new_locker_effects(State)};
+        _ -> {State, ok, []}
     end;
 
-apply_command(_Meta, {locker_up, Pid, Term},
+apply(_Meta, {locker_up, Pid, Term},
               State = #state{locker_status = _LockerStatus}) ->
 error_logger:info_msg("mnevis locker up ~p", [{Pid, Term}]),
     %% TODO: change locker status to something more sensible
@@ -221,30 +216,30 @@ error_logger:info_msg("mnevis locker up ~p", [{Pid, Term}]),
     {State#state{locker_status = up,
                  locker_pid = Pid,
                  locker_term = Term},
-     [{monitor, process, Pid}],
-     confirm};
-apply_command(_Meta, {which_locker, OldLocker},
+     confirm,
+     [{monitor, process, Pid}]};
+apply(_Meta, {which_locker, OldLocker},
               State = #state{locker_status = up,
                              locker_pid = LockerPid,
                              locker_term = LockerTerm}) when is_pid(LockerPid) ->
     case OldLocker of
         none ->
-            {State, [], {ok, {LockerPid, LockerTerm}}};
+            {State, {ok, {LockerPid, LockerTerm}}, []};
         {_, OldTerm} when OldTerm < LockerTerm ->
-            {State, [], {ok, {LockerPid, LockerTerm}}};
+            {State, {ok, {LockerPid, LockerTerm}}, []};
         {LockerPid, LockerTerm} ->
-            {State, start_new_locker_effects(State), {error, locker_up_to_date}};
+            {State, {error, locker_up_to_date}, start_new_locker_effects(State)};
         _ ->
             %% TODO: what to do?
-            {State, [], {error, {invalid_locker, OldLocker, {LockerPid, LockerTerm}}}}
+            {State, {error, {invalid_locker, OldLocker, {LockerPid, LockerTerm}}}, []}
     end;
-apply_command(_Meta, {which_locker, _OldLocker}, State = #state{locker_status = down}) ->
-    {State, [], {error, locker_down}};
+apply(_Meta, {which_locker, _OldLocker}, State = #state{locker_status = down}) ->
+    {State, {error, locker_down}, []};
 %% TODO: flush_locker_transactions request
 %% TODO: cleanup term transactions for previous terms
-apply_command(_Meta, Unknown, State) ->
+apply(_Meta, Unknown, State) ->
     error_logger:error_msg("Unknown command ~p~n", [Unknown]),
-    {State, [], {error, {unknown_command, Unknown}}}.
+    {State, {error, {unknown_command, Unknown}}, []}.
 
 %% ==========================
 
@@ -349,10 +344,10 @@ transaction_recorded_as_committed(Transaction) ->
 %% ==========================
 
 %% Adding effects to the apply_result.
--spec with_pre_effects(ra_machine:effects(), {state(), ra_machine:effects()} | apply_result(T, E)) ->
-    {state(), ra_machine:effects()} | apply_result(T, E).
-with_pre_effects(Effects0, {State, Effects, Result}) ->
-    {State, Effects0 ++ Effects, Result}.
+% -spec with_pre_effects(ra_machine:effects(), {state(), ra_machine:effects()} | apply_result(T, E)) ->
+%     {state(), ra_machine:effects()} | apply_result(T, E).
+% with_pre_effects(Effects0, {State, Effects, Result}) ->
+%     {State, Effects0 ++ Effects, Result}.
 
 %% Functional helpers to skip ops.
 
@@ -361,7 +356,7 @@ with_pre_effects(Effects0, {State, Effects, Result}) ->
 with_valid_locker({LockerTerm, _}, State = #state{locker_term = CurrentLockerTerm}, Fun) ->
     case LockerTerm of
         CurrentLockerTerm -> Fun();
-        _ -> {State, [], {error, {aborted, wrong_locker_term}}}
+        _ -> {State, {error, {aborted, wrong_locker_term}}, []}
     end.
 
 -spec catch_abort(fun(() -> reply(R, E))) -> reply(R, E | {aborted, term()}).
@@ -380,8 +375,8 @@ with_transaction(Transaction, State, Fun) ->
             case transaction_recorded_as_committed(Transaction) of
                 %% This is a log replay and the transaction is already committed.
                 %% Result will not be received by any client.
-                true  -> {State, [], {error, {transaction_committed, Transaction}}};
-                false -> {State, [], Fun()}
+                true  -> {State, {error, {transaction_committed, Transaction}}, []};
+                false -> {State, Fun(), []}
             end
         end).
 
@@ -393,5 +388,9 @@ with_transaction(Transaction, State, Fun) ->
 
 -spec start_new_locker(pid(), locker_term()) -> ok.
 start_new_locker(OldLockerPid, OldTerm) ->
-    mnevis_lock_proc:stop(OldLockerPid),
-    {ok, _} = mnevis_lock_proc:start(OldTerm + 1).
+    case is_pid(OldLockerPid) of
+        true  -> mnevis_lock_proc:stop(OldLockerPid);
+        false -> ok
+    end,
+    {ok, _} = mnevis_lock_proc:start(OldTerm + 1),
+    ok.

@@ -6,9 +6,9 @@
 
 -export([prepare/2,
          write/3,
-         begin_read/2,
+         begin_read/1,
          read_chunk/3,
-         begin_accept/3,
+         begin_accept/2,
          accept_chunk/2,
          complete_accept/2,
          recover/1,
@@ -83,38 +83,15 @@ cleanup_dir(Dir) ->
 
 %% Read the snapshot metadata and initialise a read state used in read_chunk/3
 %% The read state should contain all the information required to read a chunk
--spec begin_read(Size :: non_neg_integer(),
-                     Location :: file:filename()) ->
-    {ok, Crc :: non_neg_integer(), Meta :: ra_snapshot:meta(), ReadState :: term()}
+-spec begin_read(Location :: file:filename()) ->
+    {ok, Meta :: ra_snapshot:meta(), ReadState :: term()}
     | {error, term()}.
-begin_read(Size, Dir) ->
+begin_read(Dir) ->
     case read_meta(Dir) of
         {ok, Meta} ->
-            case file:read_file(state_file(Dir)) of
-                {ok, <<Crc:32/integer, SavedStateBin/binary>>} ->
-                    case byte_size(SavedStateBin) =< Size of
-                        true ->
-                            {ok, Crc, Meta, {saved_state_full, SavedStateBin}};
-                        false ->
-                            error_logger:warning_msg("Saved state ~p too big to fit the chunk ~p~n",
-                                                     [byte_size(SavedStateBin), Size]),
-
-                            SavedStateChunks = split_to_chunks(SavedStateBin, Size),
-                            {ok, Crc, Meta, {saved_state_partial, SavedStateChunks}}
-                    end;
-                {error, _} = Err ->
-                    Err
-            end;
+            {ok, Meta, saved_state_start};
         {error, _} = Error ->
             Error
-    end.
-
-split_to_chunks(Binary, Size) ->
-    case Binary of
-        <<Chunk:Size/binary, Rest/binary>> ->
-            [Chunk | split_to_chunks(Rest, Size)];
-        <<>> -> [];
-        Rest -> [Rest]
     end.
 
 %% Read a chunk of data from the snapshot using the read state
@@ -123,48 +100,64 @@ split_to_chunks(Binary, Size) ->
                  Size :: non_neg_integer(),
                  Location :: file:filename()) ->
     {ok, term(), {next, ReadState} | last} | {error, term()}.
-read_chunk({saved_state_full, SavedStateBin}, _Size, _Dir) ->
-    {ok, {saved_state_full, SavedStateBin}, {next, mnesia_backup_start}};
-read_chunk({saved_state_partial, [Chunk | Chunks]}, _Size, _Dir) ->
-    Next = case Chunks of
-        [] -> mnesia_backup_start;
-        _  -> {saved_state_partial, Chunks}
-    end,
-    {ok, {saved_state_partial, Chunk},
-         {next, Next}};
+read_chunk(saved_state_start, Size, Dir) ->
+    SavedStateFile = state_file(Dir),
+    case file:open(SavedStateFile, [read, binary, raw]) of
+        {ok, Fd} ->
+            {ok, Eof} = file:position(Fd, eof),
+            read_chunk({saved_state_chunk, {0, Eof, Fd}}, Size, Dir);
+        {error, _} = Err ->
+            Err
+    end;
+read_chunk({saved_state_chunk, FileReadState0}, Size, _Dir) ->
+    case read_file_chunk(FileReadState0, Size) of
+        {ok, Data, {next, FileReadState1}} ->
+            {ok, {saved_state_chunk, Data},
+                 {next, {saved_state_chunk, FileReadState1}}};
+        {ok, Data, last} ->
+            {ok, {saved_state_chunk, Data},
+                 {next, mnesia_backup_start}}
+    end;
 read_chunk(mnesia_backup_start, Size, Dir) ->
     Filename = mnesia_file(Dir),
     case file:open(Filename, [read, binary, raw]) of
         {ok, Fd} ->
-            {ok, DataStart} = file:position(Fd, cur),
             {ok, Eof} = file:position(Fd, eof),
-            read_file_chunk(DataStart, Size, Eof, Fd);
+            read_chunk({mnesia_backup_chunk, {0, Eof, Fd}}, Size, Dir);
         {error, _} = Err ->
             Err
     end;
-read_chunk({mnesia_backup_chunk, {Pos, Eof, Fd}}, Size, _Dir) ->
-    read_file_chunk(Pos, Size, Eof, Fd).
+read_chunk({mnesia_backup_chunk, FileReadState0}, Size, _Dir) ->
+    case read_file_chunk(FileReadState0, Size) of
+        {ok, Data, {next, FileReadState1}} ->
+            {ok, {mnesia_backup_chunk, Data},
+                 {next, {mnesia_backup_chunk, FileReadState1}}};
+        {ok, Data, last} ->
+            {ok, {mnesia_backup_chunk, Data}, last}
+    end.
 
-read_file_chunk(Pos, Size, Eof, Fd) ->
+read_file_chunk({Pos, Eof, Fd}, Size) ->
     {ok, _} = file:position(Fd, Pos),
     {ok, Data} = file:read(Fd, Size),
     case Pos + Size >= Eof of
         true ->
             _ = file:close(Fd),
-            {ok, {mnesia_backup_chunk, Data}, last};
+            {ok, Data, last};
         false ->
-            {ok, {mnesia_backup_chunk, Data}, {next, {mnesia_backup_chunk, {Pos + Size, Eof, Fd}}}}
+            {ok, Data, {next, {Pos + Size, Eof, Fd}}}
     end.
 
 %% begin a stateful snapshot acceptance process
--spec begin_accept(Dir :: file:filename(), Crc :: non_neg_integer(), Meta :: ra_snapshot:meta()) ->
+-spec begin_accept(Dir :: file:filename(), Meta :: ra_snapshot:meta()) ->
     {ok, AcceptState :: term()} | {error, term()}.
-begin_accept(Dir, Crc, Meta) ->
-    %% TODO: crc?
-    filelib:ensure_dir(filename:join(Dir, "d")),
+begin_accept(Dir, Meta) ->
+    %% TODO: crc all the things?
+    ok = filelib:ensure_dir(filename:join(Dir, "d")),
     case ra_log_snapshot:write(Dir, Meta, <<>>) of
         ok ->
-            {ok, {start_saved_state, Crc, Dir}};
+            SavedStateFile = state_file(Dir),
+            {ok, Fd} = file:open(SavedStateFile, [write, binary, raw]),
+            {ok, {saved_state, Fd, Dir}};
         {error, _} = Err ->
             Err
     end.
@@ -174,52 +167,33 @@ begin_accept(Dir, Crc, Meta) ->
 %% accept a chunk of data
 -spec accept_chunk(Chunk :: term(), AcceptState :: term()) ->
     {ok, AcceptState :: term()} | {error, term()}.
-accept_chunk({saved_state_full, SavedStateBin}, {start_saved_state, Crc, Dir}) ->
-    case accept_saved_state(SavedStateBin, state_file(Dir), Crc) of
-        ok               -> {ok, {start_mnesia_backup, Dir}};
-        {error, _} = Err -> Err
-    end;
-accept_chunk({saved_state_partial, Chunk}, {start_saved_state, Crc, Dir}) ->
-    {ok, {saved_state_partial, Chunk, Crc, Dir}};
-accept_chunk({saved_state_partial, Chunk}, {saved_state_partial, StatePartial, Crc, Dir}) ->
-    {ok, {saved_state_partial, <<StatePartial/binary, Chunk/binary>>, Crc, Dir}};
-accept_chunk({mnesia_backup_chunk, Chunk}, {saved_state_partial, StateFull, Crc, Dir}) ->
-    case accept_saved_state(StateFull, state_file(Dir), Crc) of
-        ok ->
-            %% TODO: error handling
-            MnesiaFile = mnesia_file(Dir),
-            {ok, Fd} = file:open(MnesiaFile, [write, binary, raw]),
-            ok = file:write(Fd, Chunk),
-            {ok, {mnesia_backup_file, Fd}};
-        {error, _} = Err ->
-            Err
-    end;
-accept_chunk({mnesia_backup_chunk, Chunk}, {mnesia_backup_file, Fd}) ->
+accept_chunk({saved_state_chunk, Chunk}, {saved_state, Fd, Dir}) ->
     ok = file:write(Fd, Chunk),
-    {ok, {mnesia_backup_file, Fd}}.
-
-accept_saved_state(Data, File, Crc) ->
-    Crc = erlang:crc32(Data),
-    file:write_file(File, <<Crc:32/integer, Data/binary>>).
+    {ok, {saved_state, Fd, Dir}};
+accept_chunk({mnesia_backup_chunk, Chunk}, {saved_state, StateFd, Dir}) ->
+    ok = file:sync(StateFd),
+    ok = file:close(StateFd),
+    MnesiaFile = mnesia_file(Dir),
+    {ok, Fd} = file:open(MnesiaFile, [write, binary, raw]),
+    accept_chunk({mnesia_backup_chunk, Chunk}, {mnesia_backup, Fd, Dir});
+accept_chunk({mnesia_backup_chunk, Chunk}, {mnesia_backup, Fd, Dir}) ->
+    ok = file:write(Fd, Chunk),
+    {ok, {mnesia_backup, Fd, Dir}}.
 
 %% accept the last chunk of data
 -spec complete_accept(Chunk :: term(),
                           AcceptState :: term()) ->
     ok | {error, term()}.
-complete_accept({mnesia_backup_chunk, Chunk}, {saved_state_partial, StateFull, Crc, Dir}) ->
-    case accept_saved_state(StateFull, state_file(Dir), Crc) of
-        ok ->
-            %% TODO: error handling
-            MnesiaFile = mnesia_file(Dir),
-            file:write_file(MnesiaFile, Chunk);
-        {error, _} = Err ->
-            Err
-    end;
-complete_accept({mnesia_backup_chunk, Chunk}, {start_mnesia_backup, Dir}) ->
-    file:write_file(mnesia_file(Dir), Chunk);
-complete_accept({mnesia_backup_chunk, Chunk}, {mnesia_backup_file, Fd}) ->
+complete_accept({mnesia_backup_chunk, Chunk}, {saved_state, StateFd, Dir}) ->
+    ok = file:sync(StateFd),
+    ok = file:close(StateFd),
+    MnesiaFile = mnesia_file(Dir),
+    {ok, Fd} = file:open(MnesiaFile, [write, binary, raw]),
+    complete_accept({mnesia_backup_chunk, Chunk}, {mnesia_backup, Fd, Dir});
+complete_accept({mnesia_backup_chunk, Chunk}, {mnesia_backup, Fd, _Dir}) ->
     ok = file:write(Fd, Chunk),
-    file:close(Fd).
+    ok = file:sync(Fd),
+    ok = file:close(Fd).
 
 %% Side-effect function
 %% Recover machine state from file

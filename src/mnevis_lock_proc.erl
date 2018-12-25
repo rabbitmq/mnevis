@@ -28,7 +28,7 @@
 -type leader_term() :: integer().
 -type locker() :: {pid(), leader_term()}.
 -type state() :: #state{}.
--type lock_request() :: {lock, mnevis_lock:transaction_id(), pid(),
+-type lock_request() :: {lock, mnevis_lock:transaction_id() | undefined, pid(),
                                mnevis_lock:lock_item(), mnevis_lock:lock_kind()}.
 
 start(Term) ->
@@ -48,7 +48,7 @@ update_locker_cache(Pid, Term) ->
     true = ets:insert(locker_cache, {locker, {Pid, Term}}),
     ok.
 
--spec locate() -> locker().
+-spec locate() -> {ok, locker()} | {error, term}.
 locate() ->
     case ets:lookup(locker_cache, locker) of
         [{locker, Locker}] -> {ok, Locker};
@@ -67,7 +67,7 @@ ensure_lock_proc(OldPid, OldTerm) ->
             {ok, Other}
     end.
 
--spec get_current_ra_locker(locker()) -> {ok, locker()} | {error, term()}.
+-spec get_current_ra_locker(locker() | none) -> {ok, locker()} | {error, term()}.
 get_current_ra_locker(CurrentLocker) ->
     %% TODO: update locker cache
     case ra:process_command(mnevis_node:node_id(), {which_locker, CurrentLocker}) of
@@ -77,7 +77,8 @@ get_current_ra_locker(CurrentLocker) ->
         {timeout, _}             -> {error, timeout}
     end.
 
--spec try_lock_call(pid(), leader_term(), lock_request()) -> mnevis_lock:lock_result() | {error, locker_not_running}.
+-spec try_lock_call(pid(), leader_term(), lock_request()) ->
+    mnevis_lock:lock_result() | {error, locker_not_running} | {error, is_not_leader}.
 try_lock_call(Pid, _Term, LockRequest) ->
     try
         %% TODO: non-infinity timeout
