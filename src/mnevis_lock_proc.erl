@@ -40,8 +40,12 @@ stop(Pid) ->
 
 -spec create_locker_cache() -> ok.
 create_locker_cache() ->
-    locker_cache = ets:new(locker_cache, [named_table, public]),
-    ok.
+    case ets:info(locker_cache, name) of
+        undefined ->
+            locker_cache = ets:new(locker_cache, [named_table, public]),
+            ok;
+        locker_cache -> ok
+    end.
 
 -spec update_locker_cache(pid(), integer()) -> ok.
 update_locker_cache(Pid, Term) ->
