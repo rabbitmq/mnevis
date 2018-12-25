@@ -343,12 +343,6 @@ transaction_recorded_as_committed(Transaction) ->
 
 %% ==========================
 
-%% Adding effects to the apply_result.
-% -spec with_pre_effects(ra_machine:effects(), {state(), ra_machine:effects()} | apply_result(T, E)) ->
-%     {state(), ra_machine:effects()} | apply_result(T, E).
-% with_pre_effects(Effects0, {State, Effects, Result}) ->
-%     {State, Effects0 ++ Effects, Result}.
-
 %% Functional helpers to skip ops.
 
 -spec with_valid_locker(transaction(), state(),
