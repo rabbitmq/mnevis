@@ -2,40 +2,14 @@
 
 % Machine behaviour:
 
-% start_transaction:
-%     cleanup any old transations for the pid
-%     add the pid to transactions with unique transaction ID
-%     monitor the pid
-%     return the unique transaction ID
-
-% %% Create a transaction
-% [] -> Pid -> [{Pid, TID0, []}]
-% %% Replace existing transaction for the process
-% [{Pid,TID1, []}] -> Pid -> [{Pid,TID2, []}]
-% %% Clean all locks when replacing a transaction
-% [{Pid,TID1, [L1, L2]}] -> Pid -> [{Pid,TID2, []}]
-% %% Keep other process transaction locks
-% [{Pid1,TID1, [...]}] -> Pid -> [{Pid1,TID1, [...]},{Pid,TID2, []}]
-
 init_mnesia_table() ->
     mnesia:delete_schema([node()]),
     ok = mnesia:start(),
     mnesia:create_table(committed_transaction, []),
     mnesia:clear_table(committed_transaction).
 
-start_test_transaction(Source, InitState) ->
-    {State = #state{last_transaction_id = LastTid},
-     [{monitor, process, Source}],
-     {ok, Tid, ok}} =
-        mnevis_machine:apply(none,
-                             {lock, undefined, Source, [{table, start_transaction}, read]},
-                             [],
-                             InitState),
-    {State, Tid, LastTid}.
-
 % commit:
-%     fail if transaction does not match the pid
-%     do same as rollback
+%     fail if locker is not in the current term
 
 init_state() ->
     #state{locker_status = up, locker_pid = self(), locker_term = 1}.
@@ -43,80 +17,22 @@ init_state() ->
 valid_transaction(State) ->
     {State#state.locker_term, State#state.locker_pid}.
 
+invalid_transaction(State) ->
+    {State#state.locker_term - 1, State#state.locker_pid}.
+
 commit_valid_locker_test() ->
     init_mnesia_table(),
     InitState = init_state(),
     Transaction = valid_transaction(InitState),
-    mnevis_machine:apply(#{index => 1}, {commit, Transaction, [[], [], []]}, [], InitState).
-
-commit_no_transaction_error_test() ->
-    init_mnesia_table(),
-    InitState = #state{ last_transaction_id = 0 },
-    Source = self(),
-    Tid = 1,
-    {InitState, [], {error, no_transaction_for_pid}} =
-        mnevis_machine:apply(#{index => 1}, {commit, Tid, Source, [[], [], []]}, [], InitState).
-
-commit_wrong_transaction_error_test() ->
-    init_mnesia_table(),
-    Source = self(),
-    Tid = 2,
-    DifferentTid = 1,
-    InitState = #state{transactions = #{Source => DifferentTid}, last_transaction_id = DifferentTid},
-    {InitState, [], {error, {wrong_transaction_id, DifferentTid}}} =
-        mnevis_machine:apply(#{index => 1}, {commit, Tid, Source, [[], [], []]}, [], InitState).
-
-commit_cleanup_test() ->
-    init_mnesia_table(),
-    Source = self(),
-    InitState = #state{ last_transaction_id = 0 },
-    {State, Tid, LastTid} = start_test_transaction(Source, InitState),
-    %% Release cursor on commit
-    {State1, [{release_cursor,1, State1}], _} =
-        mnevis_machine:apply(#{index => 1}, {commit, Tid, Source, [[], [], []]}, [], State),
-    Expected = #state{last_transaction_id = LastTid,
-                      transactions = #{},
-                      committed_transactions = #{Tid => Source}},
-    Expected = State1,
-    {State2, [{demonitor, process, Source}], ok} =
-        mnevis_machine:apply(none, {finish, Tid, Source}, [], State1),
-    Expected1 = #state{last_transaction_id = LastTid},
-    Expected1 = State2.
-
-commit_cleanup_locks_test() ->
-    init_mnesia_table(),
-    Source = self(),
-    Tid = 1,
-    Source1 = spawn(fun() -> ok end),
-    Tid1 = 2,
-    Source2 = spawn(fun() -> ok end),
-    Tid2 = 3,
-    LastTid = 3,
-    InitState = #state{transactions = #{Source => Tid,
-                                        Source1 => Tid1,
-                                        Source2 => Tid2},
-                       last_transaction_id = LastTid,
-                       write_locks = #{writelock => Tid,
-                                       writelock_1 => Tid1},
-                       read_locks = #{readlock => [Tid],
-                                      readlock_1 => [Tid, Tid1],
-                                      readlock_2 => [Tid2]}},
-    {State1, [{demonitor, process, Source}], ok} =
-        mnevis_machine:apply(none, {finish, Tid, Source}, [],
-            element(1, mnevis_machine:apply(#{index => 1}, {commit, Tid, Source, [[], [], []]}, [], InitState))),
-
-    Expected = #state{last_transaction_id = LastTid,
-                      transactions = #{Source1 => Tid1, Source2 => Tid2},
-                      write_locks = #{writelock_1 => Tid1},
-                      read_locks = #{readlock_1 => [Tid1], readlock_2 => [Tid2]}},
-    Expected = State1,
-    {State2, _, _} =
-        mnevis_machine:apply(#{index => 1}, {commit, Tid1, Source1, [[], [], []]}, [], State1),
-    {State3, _, _} =
-        mnevis_machine:apply(#{index => 1}, {commit, Tid2, Source2, [[], [], []]}, [], State2),
-    State3 = #state{last_transaction_id = LastTid,
-                    transactions = #{},
-                    committed_transactions = #{Tid1 => Source1, Tid2 => Source2}}.
+    {InitState, {ok, ok}, [{release_cursor, 1, InitState}]} =
+        mnevis_machine:apply(#{index => 1}, {commit, Transaction, [[], [], []]}, InitState),
+    %% Transaction is already committed
+    {InitState, {ok, ok}, []} =
+        mnevis_machine:apply(#{index => 1}, {commit, Transaction, [[], [], []]}, InitState),
+    %% Locker term is different.
+    InvalidTransaction = invalid_transaction(InitState),
+    {InitState, {error, {aborted, wrong_locker_term}}, []} =
+        mnevis_machine:apply(#{index => 1}, {commit, InvalidTransaction, [[], [], []]}, InitState).
 
 commit_write_test() ->
     init_mnesia_table(),
@@ -130,8 +46,9 @@ commit_write_test() ->
     %% To reqrite during write
     mnesia:dirty_write({foo, to_rewrite, val}),
     Source = self(),
-    InitState = #state{ last_transaction_id = 0 },
-    {State1, Tid, _} = start_test_transaction(Source, InitState),
+    InitState = init_state(),
+    Transaction = valid_transaction(InitState),
+
     %% Writes are of {Table, Record, LockKind} format
     Writes = [{foo, {foo, to_rewrite, other_val}, write},
               {foo, {foo, to_write, val}, write}],
@@ -143,730 +60,248 @@ commit_write_test() ->
     Expected = lists:usort([{foo, to_rewrite, other_val},
                             {foo, to_write, val},
                             {foo, to_not_delete_object, not_val}]),
-    {_State2, _, _} =
-        mnevis_machine:apply(#{index => 1}, {commit, Tid, Source, [Writes, Deletes, DeletesObject]}, [], State1),
+    {InitState, {ok, ok}, _} =
+        mnevis_machine:apply(#{index => 1}, {commit, Transaction, [Writes, Deletes, DeletesObject]}, InitState),
     Table = lists:usort(ets:tab2list(foo)),
     Expected = Table.
 
-% lock:
-%     fail if no transaction
-%     if write-locked:
-%         fail
-%     if read-locked;
-%         if new lock is write:
-%             fail
-%     add new lock
-%     return ok
-
-lock_no_transaction_error_test() ->
-    init_mnesia_table(),
-    InitState = #state{ last_transaction_id = 0 },
-    Source = self(),
-    Tid = 1,
-    {InitState, [], {error, no_transaction_for_pid}} =
-        mnevis_machine:apply(none, {lock, Tid, Source, [{table, foo}, read]}, [], InitState).
-
-lock_wrong_transaction_error_test() ->
-    init_mnesia_table(),
-    Source = self(),
-    Tid = 2,
-    DifferentTid = 1,
-    InitState = #state{transactions = #{Source => DifferentTid}, last_transaction_id = DifferentTid},
-    {InitState, [], {error, {wrong_transaction_id, DifferentTid}}} =
-        mnevis_machine:apply(none, {lock, Tid, Source, [{table, foo}, read]}, [], InitState).
-
-lock_aquire_read_test() ->
-    init_mnesia_table(),
-    InitState = #state{ last_transaction_id = 0 },
-    Source = self(),
-    {State, Tid, _} = start_test_transaction(Source, InitState),
-    {#state{read_locks = RLocks, write_locks = WLocks}, _, {ok, ok}} =
-        mnevis_machine:apply(none, {lock, Tid, Source, [{table, foo}, read]}, [], State),
-    ExpectedW = #{},
-    ExpectedR = #{{table, foo} => [Tid], {table, start_transaction} => [Tid]},
-    ExpectedW = WLocks,
-    ExpectedR = RLocks.
-
-lock_aquire_read_multiple_test() ->
-    init_mnesia_table(),
-    InitState = #state{ last_transaction_id = 0 },
-    Source = self(),
-    Source1 = spawn(fun() -> ok end),
-    {State, Tid, _} = start_test_transaction(Source, InitState),
-    {State1, Tid1, _} = start_test_transaction(Source1, State),
-    {State2 = #state{read_locks = RLocks, write_locks = WLocks}, _, {ok, ok}} =
-        mnevis_machine:apply(none, {lock, Tid, Source, [{table, foo}, read]}, [], State1),
-    ExpectedW = #{},
-    ExpectedR = #{{table, foo} => [Tid], {table, start_transaction} => [Tid1, Tid]},
-    ExpectedW = WLocks,
-    ExpectedR = RLocks,
-    {#state{read_locks = RLocks1, write_locks = WLocks1}, _, {ok, ok}} =
-        mnevis_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, read]}, [], State2),
-    ExpectedW1 = #{},
-    ExpectedR1 = #{{table, foo} => [Tid1, Tid], {table, start_transaction} => [Tid1, Tid]},
-    ExpectedW1 = WLocks1,
-    ExpectedR1 = RLocks1.
-
-lock_aquire_write_test() ->
-    init_mnesia_table(),
-    InitState = #state{ last_transaction_id = 0 },
-    Source = self(),
-    {State, Tid, _} = start_test_transaction(Source, InitState),
-    {#state{read_locks = RLocks, write_locks = WLocks}, _, {ok, ok}} =
-        mnevis_machine:apply(none, {lock, Tid, Source, [{table, foo}, write]}, [], State),
-    WLocks = #{{table, foo} => Tid},
-    RLocks = #{{table, start_transaction} => [Tid]}.
-
-lock_read_blocked_by_write_test() ->
-    init_mnesia_table(),
-    InitState = #state{ last_transaction_id = 0 },
-    Source = self(),
-    Source1 = spawn(fun() -> ok end),
-    {State, Tid, _} = start_test_transaction(Source, InitState),
-    {State1, Tid1, _} = start_test_transaction(Source1, State),
-    {State2, _, {ok, ok}} =
-        mnevis_machine:apply(none, {lock, Tid1, Source1, [{foo, bar}, write]}, [], State1),
-    {State3, _, {error, {aborted, locked}}} =
-        mnevis_machine:apply(none, {lock, Tid, Source, [{foo, bar}, read]}, [], State2),
-    TLGraph = State3#state.transaction_locks,
-    [{Tid1, Tid}] = simple_dgraph:out_edges(TLGraph, Tid1),
-    [{Tid1, Tid}] = simple_dgraph:in_edges(TLGraph, Tid),
-
-    %% Locking transaction finish unlocks the locked
-    {State4, [{send_msg, Source, {mnevis_unlock, Tid}},
-              {demonitor, process, Source1}], {ok, ok}} =
-        mnevis_machine:apply(none, {rollback, Tid1, Source1, []}, [], State3),
-    TLGraph1 = State4#state.transaction_locks,
-    error = simple_dgraph:vertex_label(TLGraph1, Tid1),
-    [] = simple_dgraph:in_edges(TLGraph1, Tid).
-
-
-lock_read_blocked_by_table_write_test() ->
-    init_mnesia_table(),
-    InitState = #state{ last_transaction_id = 0 },
-    Source = self(),
-    Source1 = spawn(fun() -> ok end),
-    {State, Tid, _} = start_test_transaction(Source, InitState),
-    {State1, Tid1, _} = start_test_transaction(Source1, State),
-    {State2, _, {ok, ok}} =
-        mnevis_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, [], State1),
-    {State3, _, {error, {aborted, locked}}} =
-        mnevis_machine:apply(none, {lock, Tid, Source, [{foo, bar}, read]}, [], State2),
-    TLGraph = State3#state.transaction_locks,
-    [{Tid1, Tid}] = simple_dgraph:out_edges(TLGraph, Tid1),
-    [{Tid1, Tid}] = simple_dgraph:in_edges(TLGraph, Tid).
-
-lock_read_cleanup_when_blocked_test() ->
-    init_mnesia_table(),
-    InitState = #state{ last_transaction_id = 0 },
-    Source = self(),
-    Source1 = spawn(fun() -> ok end),
-    {State, Tid, _} = start_test_transaction(Source, InitState),
-    {State1, Tid1, _} = start_test_transaction(Source1, State),
-    {State2, _, {ok, ok}} =
-        mnevis_machine:apply(none, {lock, Tid, Source, [{foo, baz}, read]}, [], State1),
-    {State3, _, {ok, ok}} =
-        mnevis_machine:apply(none, {lock, Tid, Source, [{foo, baq}, write]}, [], State2),
-    %% Locks aquired
-    #state{read_locks = RLocks, write_locks = WLocks} = State3,
-    ExpectedR = #{{foo, baz} => [Tid], {table, start_transaction} => [Tid1, Tid]},
-    ExpectedW = #{{foo, baq} => Tid},
-    ExpectedR = RLocks,
-    ExpectedW = WLocks,
-
-    {State4, _, {ok, ok}} =
-        mnevis_machine:apply(none, {lock, Tid1, Source1, [{foo, bar}, write]}, [], State3),
-    {State5, _, {error, {aborted, locked}}} =
-        mnevis_machine:apply(none, {lock, Tid, Source, [{foo, bar}, read]}, [], State4),
-    %% Read locks are empty
-    #state{read_locks = RLocks1,
-           write_locks = WLocks1,
-           transaction_locks = TLGraph} = State5,
-    ExpectedR1 = #{{table, start_transaction} => [Tid1]},
-    ExpectedW1 = #{{foo, bar} => Tid1},
-    ExpectedR1 = RLocks1,
-    ExpectedW1 = WLocks1,
-
-    [{Tid1, Tid}] = simple_dgraph:out_edges(TLGraph, Tid1),
-    [{Tid1, Tid}] = simple_dgraph:in_edges(TLGraph, Tid).
-
-lock_write_blocked_by_write_test() ->
-    init_mnesia_table(),
-    InitState = #state{ last_transaction_id = 0 },
-    Source = self(),
-    Source1 = spawn(fun() -> ok end),
-    {State, Tid, _} = start_test_transaction(Source, InitState),
-    {State1, Tid1, _} = start_test_transaction(Source1, State),
-    {State2, _, {ok, ok}} =
-        mnevis_machine:apply(none, {lock, Tid1, Source1, [{foo, bar}, write]}, [], State1),
-    {State3, _, {error, {aborted, locked}}} =
-        mnevis_machine:apply(none, {lock, Tid, Source, [{foo, bar}, write]}, [], State2),
-    TLGraph = State3#state.transaction_locks,
-    [{Tid1, Tid}] = simple_dgraph:out_edges(TLGraph, Tid1),
-    [{Tid1, Tid}] = simple_dgraph:in_edges(TLGraph, Tid).
-
-lock_write_blocked_by_table_write_test() ->
-    init_mnesia_table(),
-    InitState = #state{ last_transaction_id = 0 },
-    Source = self(),
-    Source1 = spawn(fun() -> ok end),
-    {State, Tid, _} = start_test_transaction(Source, InitState),
-    {State1, Tid1, _} = start_test_transaction(Source1, State),
-    {State2, _, {ok, ok}} =
-        mnevis_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, [], State1),
-    {State3, _, {error, {aborted, locked}}} =
-        mnevis_machine:apply(none, {lock, Tid, Source, [{foo, bar}, write]}, [], State2),
-    TLGraph = State3#state.transaction_locks,
-    [{Tid1, Tid}] = simple_dgraph:out_edges(TLGraph, Tid1),
-    [{Tid1, Tid}] = simple_dgraph:in_edges(TLGraph, Tid).
-
-lock_write_blocked_by_read_test() ->
-    init_mnesia_table(),
-    InitState = #state{ last_transaction_id = 0 },
-    Source = self(),
-    Source1 = spawn(fun() -> ok end),
-    {State, Tid, _} = start_test_transaction(Source, InitState),
-    {State1, Tid1, _} = start_test_transaction(Source1, State),
-    {State2, _, {ok, ok}} =
-        mnevis_machine:apply(none, {lock, Tid1, Source1, [{foo, bar}, read]}, [], State1),
-    {State3, _, {error, {aborted, locked}}} =
-        mnevis_machine:apply(none, {lock, Tid, Source, [{foo, bar}, write]}, [], State2),
-    TLGraph = State3#state.transaction_locks,
-    [{Tid1, Tid}] = simple_dgraph:out_edges(TLGraph, Tid1),
-    [{Tid1, Tid}] = simple_dgraph:in_edges(TLGraph, Tid).
-
-lock_write_blocked_by_table_read_test() ->
-    init_mnesia_table(),
-    InitState = #state{ last_transaction_id = 0 },
-    Source = self(),
-    Source1 = spawn(fun() -> ok end),
-    {State, Tid, _} = start_test_transaction(Source, InitState),
-    {State1, Tid1, _} = start_test_transaction(Source1, State),
-    {State2, _, {ok, ok}} =
-        mnevis_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, read]}, [], State1),
-    {State3, _, {error, {aborted, locked}}} =
-        mnevis_machine:apply(none, {lock, Tid, Source, [{foo, bar}, write]}, [], State2),
-    TLGraph = State3#state.transaction_locks,
-    [{Tid1, Tid}] = simple_dgraph:out_edges(TLGraph, Tid1),
-    [{Tid1, Tid}] = simple_dgraph:in_edges(TLGraph, Tid).
-
-% read:
-%     fail if no transaction
-%     attempt lock
+% read ops:
+%     fail if wrong transaction term
+%     skip if transaction is committed
 %     return read data
 
-read_no_transaction_error_test() ->
-    init_mnesia_table(),
-    InitState = #state{ last_transaction_id = 0 },
-    Source = self(),
-    Tid = 1,
-    {InitState, [], {error, no_transaction_for_pid}} =
-        mnevis_machine:apply(none, {read, Tid, Source, [table, foo, read]}, [], InitState).
+read_wrong_locker_transaction_error_test() ->
+    wrong_locker_transaction_error(read, [table, foo]).
 
-read_wrong_transaction_error_test() ->
-    init_mnesia_table(),
-    Source = self(),
-    Tid = 2,
-    DifferentTid = 1,
-    InitState = #state{transactions = #{Source => DifferentTid}, last_transaction_id = DifferentTid},
-    {InitState, [], {error, {wrong_transaction_id, DifferentTid}}} =
-        mnevis_machine:apply(none, {read, Tid, Source, [table, foo, read]}, [], InitState).
+read_aborted_transaction_error_test() ->
+    aborted_transaction_error(read, [unknown_table, foo], {no_exists,[unknown_table, foo]}).
 
-read_locked_by_write_test() ->
-    init_mnesia_table(),
-    InitState = #state{ last_transaction_id = 0 },
-    Source = self(),
-    Source1 = spawn(fun() -> ok end),
-    {State, Tid, _} = start_test_transaction(Source, InitState),
-    {State1, Tid1, _} = start_test_transaction(Source1, State),
-    {State2, _, {ok, ok}} =
-        mnevis_machine:apply(none, {lock, Tid1, Source1, [{foo, foo}, write]}, [], State1),
-    {State3, _, {error, {aborted, locked}}} =
-        mnevis_machine:apply(none, {read, Tid, Source, [foo, foo, read]}, [], State2),
-    TLGraph = State3#state.transaction_locks,
-    [{Tid1, Tid}] = simple_dgraph:out_edges(TLGraph, Tid1),
-    [{Tid1, Tid}] = simple_dgraph:in_edges(TLGraph, Tid).
-
-read_with_write_lock_locked_by_read_test() ->
-    init_mnesia_table(),
-    InitState = #state{ last_transaction_id = 0 },
-    Source = self(),
-    Source1 = spawn(fun() -> ok end),
-    {State, Tid, _} = start_test_transaction(Source, InitState),
-    {State1, Tid1, _} = start_test_transaction(Source1, State),
-    {State2, _, {ok, ok}} =
-        mnevis_machine:apply(none, {lock, Tid1, Source1, [{foo, foo}, read]}, [], State1),
-    {State3, _, {error, {aborted, locked}}} =
-        mnevis_machine:apply(none, {read, Tid, Source, [foo, foo, write]}, [], State2),
-    TLGraph = State3#state.transaction_locks,
-    [{Tid1, Tid}] = simple_dgraph:out_edges(TLGraph, Tid1),
-    [{Tid1, Tid}] = simple_dgraph:in_edges(TLGraph, Tid).
-
-read_returns_and_aquires_lock_test() ->
-    init_mnesia_table(),
-    mnesia:delete_table(foo),
-    mnesia:create_table(foo, []),
-    mnesia:dirty_write({foo, foo, val}),
-    InitState = #state{ last_transaction_id = 0 },
-    Source = self(),
-    {State, Tid, _} = start_test_transaction(Source, InitState),
-    {#state{read_locks = RLocks}, _, {ok, [{foo, foo, val}]}} =
-        mnevis_machine:apply(none, {read, Tid, Source, [foo, foo, read]}, [], State),
-    ExpectedR = #{{foo, foo} => [Tid], {table, start_transaction} => [Tid]},
-    ExpectedR = RLocks.
-
-% index_read/match_object/index_match_object/all_keys:
-%     fail if no transaction
-%     attempt lock table
-%     return read data
+read_committed_transaction_error_test() ->
+    committed_transaction_error(read, [table, foo]).
 
 %% Index read
 
-index_read_no_transaction_error_test() ->
-    init_mnesia_table(),
-    InitState = #state{ last_transaction_id = 0 },
-    Source = self(),
-    Tid = 1,
-    {InitState, [], {error, no_transaction_for_pid}} =
-        mnevis_machine:apply(none, {index_read, Tid, Source, [foo, foo, 1, read]}, [], InitState).
+index_read_wrong_locker_transaction_error_test() ->
+    wrong_locker_transaction_error(index_read, [table, foo, 3]).
 
-index_read_wrong_transaction_error_test() ->
-    init_mnesia_table(),
-    Source = self(),
-    Tid = 2,
-    DifferentTid = 1,
-    InitState = #state{transactions = #{Source => DifferentTid}, last_transaction_id = DifferentTid},
-    {InitState, [], {error, {wrong_transaction_id, DifferentTid}}} =
-        mnevis_machine:apply(none, {index_read, Tid, Source, [foo, foo, 1, read]}, [], InitState).
+index_read_aborted_transaction_error_test() ->
+    aborted_transaction_error(index_read, [unknown_table, foo, 3], {no_exists,[unknown_table, foo, 3]}).
 
-index_read_locked_by_write_test() ->
-    init_mnesia_table(),
-    InitState = #state{ last_transaction_id = 0 },
-    Source = self(),
-    Source1 = spawn(fun() -> ok end),
-    {State, Tid, _} = start_test_transaction(Source, InitState),
-    {State1, Tid1, _} = start_test_transaction(Source1, State),
-    {State2, _, {ok, ok}} =
-        mnevis_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, [], State1),
-    {State3, _, {error, {aborted, locked}}} =
-        mnevis_machine:apply(none, {index_read, Tid, Source, [foo, foo, 1, read]}, [], State2),
-    TLGraph = State3#state.transaction_locks,
-    [{Tid1, Tid}] = simple_dgraph:out_edges(TLGraph, Tid1),
-    [{Tid1, Tid}] = simple_dgraph:in_edges(TLGraph, Tid).
-
-index_read_returns_and_aquires_lock_test() ->
-    init_mnesia_table(),
-    mnesia:delete_table(foo),
-    mnesia:create_table(foo, []),
-    mnesia:add_table_index(foo, val),
-    mnesia:dirty_write({foo, foo, val}),
-    InitState = #state{ last_transaction_id = 0 },
-    Source = self(),
-    {State, Tid, _} = start_test_transaction(Source, InitState),
-    {#state{read_locks = RLocks}, _, {ok, [{foo, foo, val}]}} =
-        mnevis_machine:apply(none, {index_read, Tid, Source, [foo, val, 3, read]}, [], State),
-    ExpectedR = #{{table, foo} => [Tid], {table, start_transaction} => [Tid]},
-    ExpectedR = RLocks.
+index_read_committed_transaction_error_test() ->
+    committed_transaction_error(index_read, [table, foo, 3]).
 
 %% Match object
 
-match_object_no_transaction_error_test() ->
-    init_mnesia_table(),
-    Pattern = {foo, '_', val},
-    InitState = #state{ last_transaction_id = 0 },
-    Source = self(),
-    Tid = 1,
-    {InitState, [], {error, no_transaction_for_pid}} =
-        mnevis_machine:apply(none, {match_object, Tid, Source, [foo, Pattern, read]}, [], InitState).
+match_object_wrong_locker_transaction_error_test() ->
+    wrong_locker_transaction_error(match_object, [table, foo]).
 
-match_object_wrong_transaction_error_test() ->
-    init_mnesia_table(),
-    Pattern = {foo, '_', val},
-    Source = self(),
-    Tid = 2,
-    DifferentTid = 1,
-    InitState = #state{transactions = #{Source => DifferentTid}, last_transaction_id = DifferentTid},
-    {InitState, [], {error, {wrong_transaction_id, DifferentTid}}} =
-        mnevis_machine:apply(none, {match_object, Tid, Source, [foo, Pattern, read]}, [], InitState).
+match_object_aborted_transaction_error_test() ->
+    aborted_transaction_error(match_object, [unknown_table, foo], {bad_type,unknown_table,foo}).
 
-match_object_locked_by_write_test() ->
-    init_mnesia_table(),
-    Pattern = {foo, '_', val},
-    InitState = #state{ last_transaction_id = 0 },
-    Source = self(),
-    Source1 = spawn(fun() -> ok end),
-    {State, Tid, _} = start_test_transaction(Source, InitState),
-    {State1, Tid1, _} = start_test_transaction(Source1, State),
-    {State2, _, {ok, ok}} =
-        mnevis_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, [], State1),
-    {State3, _, {error, {aborted, locked}}} =
-        mnevis_machine:apply(none, {match_object, Tid, Source, [foo, Pattern, read]}, [], State2),
-    TLGraph = State3#state.transaction_locks,
-    [{Tid1, Tid}] = simple_dgraph:out_edges(TLGraph, Tid1),
-    [{Tid1, Tid}] = simple_dgraph:in_edges(TLGraph, Tid).
-
-match_object_returns_and_aquires_lock_test() ->
-    init_mnesia_table(),
-    Pattern = {foo, '_', val},
-    mnesia:delete_table(foo),
-    mnesia:create_table(foo, []),
-    mnesia:dirty_write({foo, foo, val}),
-    InitState = #state{ last_transaction_id = 0 },
-    Source = self(),
-    {State, Tid, _} = start_test_transaction(Source, InitState),
-    {#state{read_locks = RLocks}, _, {ok, [{foo, foo, val}]}} =
-        mnevis_machine:apply(none, {match_object, Tid, Source, [foo, Pattern, read]}, [], State),
-    ExpectedR = #{{table, foo} => [Tid], {table, start_transaction} => [Tid]},
-    ExpectedR = RLocks.
+match_object_committed_transaction_error_test() ->
+    committed_transaction_error(match_object, [table, foo]).
 
 %% Index match object
 
-index_match_object_no_transaction_error_test() ->
-    init_mnesia_table(),
-    Pattern = {foo, '_', val},
-    InitState = #state{ last_transaction_id = 0 },
-    Source = self(),
-    Tid = 1,
-    {InitState, [], {error, no_transaction_for_pid}} =
-        mnevis_machine:apply(none, {index_match_object, Tid, Source, [foo, Pattern, 3, read]}, [], InitState).
+index_match_object_wrong_locker_transaction_error_test() ->
+    wrong_locker_transaction_error(index_match_object, [table, foo, 3]).
 
-index_match_object_wrong_transaction_error_test() ->
-    init_mnesia_table(),
-    Pattern = {foo, '_', val},
-    Source = self(),
-    Tid = 2,
-    DifferentTid = 1,
-    InitState = #state{transactions = #{Source => DifferentTid}, last_transaction_id = DifferentTid},
-    {InitState, [], {error, {wrong_transaction_id, DifferentTid}}} =
-        mnevis_machine:apply(none, {index_match_object, Tid, Source, [foo, Pattern, 3, read]}, [], InitState).
+index_match_object_aborted_transaction_error_test() ->
+    aborted_transaction_error(index_match_object, [unknown_table, foo, 3], {bad_type,unknown_table,foo}).
 
-index_match_object_locked_by_write_test() ->
-    init_mnesia_table(),
-    Pattern = {foo, '_', val},
-    InitState = #state{ last_transaction_id = 0 },
-    Source = self(),
-    Source1 = spawn(fun() -> ok end),
-    {State, Tid, _} = start_test_transaction(Source, InitState),
-    {State1, Tid1, _} = start_test_transaction(Source1, State),
-    {State2, _, {ok, ok}} =
-        mnevis_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, [], State1),
-    {State3, _, {error, {aborted, locked}}} =
-        mnevis_machine:apply(none, {index_match_object, Tid, Source, [foo, Pattern, 3, read]}, [], State2),
-    TLGraph = State3#state.transaction_locks,
-    [{Tid1, Tid}] = simple_dgraph:out_edges(TLGraph, Tid1),
-    [{Tid1, Tid}] = simple_dgraph:in_edges(TLGraph, Tid).
-
-index_match_object_returns_and_aquires_lock_test() ->
-    init_mnesia_table(),
-    Pattern = {foo, '_', val},
-    mnesia:delete_table(foo),
-    mnesia:create_table(foo, []),
-    mnesia:add_table_index(foo, val),
-    mnesia:dirty_write({foo, foo, val}),
-    InitState = #state{ last_transaction_id = 0 },
-    Source = self(),
-    {State, Tid, _} = start_test_transaction(Source, InitState),
-    {#state{read_locks = RLocks}, _, {ok, [{foo, foo, val}]}} =
-        mnevis_machine:apply(none, {index_match_object, Tid, Source, [foo, Pattern, 3, read]}, [], State),
-    ExpectedR = #{{table, foo} => [Tid], {table, start_transaction} => [Tid]},
-    ExpectedR = RLocks.
+index_match_object_committed_transaction_error_test() ->
+    committed_transaction_error(index_match_object, [table, foo, 3]).
 
 %% All keys
 
-all_keys_no_transaction_error_test() ->
-    init_mnesia_table(),
-    InitState = #state{ last_transaction_id = 0 },
-    Source = self(),
-    Tid = 1,
-    {InitState, [], {error, no_transaction_for_pid}} =
-        mnevis_machine:apply(none, {all_keys, Tid, Source, [foo, read]}, [], InitState).
+all_keys_wrong_locker_transaction_error_test() ->
+    wrong_locker_transaction_error(all_keys, [table]).
 
-all_keys_wrong_transaction_error_test() ->
-    init_mnesia_table(),
-    Source = self(),
-    Tid = 2,
-    DifferentTid = 1,
-    InitState = #state{transactions = #{Source => DifferentTid}, last_transaction_id = DifferentTid},
-    {InitState, [], {error, {wrong_transaction_id, DifferentTid}}} =
-        mnevis_machine:apply(none, {all_keys, Tid, Source, [foo, read]}, [], InitState).
+all_keys_aborted_transaction_error_test() ->
+    aborted_transaction_error(all_keys, [unknown_table], {no_exists,unknown_table}).
 
-all_keys_locked_by_write_test() ->
-    init_mnesia_table(),
-    InitState = #state{ last_transaction_id = 0 },
-    Source = self(),
-    Source1 = spawn(fun() -> ok end),
-    {State, Tid, _} = start_test_transaction(Source, InitState),
-    {State1, Tid1, _} = start_test_transaction(Source1, State),
-    {State2, _, {ok, ok}} =
-        mnevis_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, [], State1),
-    {State3, _, {error, {aborted, locked}}} =
-        mnevis_machine:apply(none, {all_keys, Tid, Source, [foo, read]}, [], State2),
-    TLGraph = State3#state.transaction_locks,
-    [{Tid1, Tid}] = simple_dgraph:out_edges(TLGraph, Tid1),
-    [{Tid1, Tid}] = simple_dgraph:in_edges(TLGraph, Tid).
-
-all_keys_returns_and_aquires_lock_test() ->
-    init_mnesia_table(),
-    mnesia:delete_table(foo),
-    mnesia:create_table(foo, []),
-    mnesia:dirty_write({foo, foo, val}),
-    mnesia:dirty_write({foo, bar, val1}),
-    mnesia:dirty_write({foo, baz, val2}),
-    InitState = #state{ last_transaction_id = 0 },
-    Source = self(),
-    {State, Tid, _} = start_test_transaction(Source, InitState),
-    {#state{read_locks = RLocks}, _, {ok, Keys}} =
-        mnevis_machine:apply(none, {all_keys, Tid, Source, [foo, read]}, [], State),
-    ExpectedR = #{{table, foo} => [Tid], {table, start_transaction} => [Tid]},
-    ExpectedR = RLocks,
-    Expected = lists:usort([foo, bar, baz]),
-    Expected = lists:usort(Keys).
-
-% first/last/next/prev:
-%     fail if no transaction
-%     attempt lock table with read lock
-%     return read data
+all_keys_committed_transaction_error_test() ->
+    committed_transaction_error(all_keys, [table]).
 
 %% First
 
-first_no_transaction_error_test() ->
-    init_mnesia_table(),
-    InitState = #state{ last_transaction_id = 0 },
-    Source = self(),
-    Tid = 1,
-    {InitState, [], {error, no_transaction_for_pid}} =
-        mnevis_machine:apply(none, {first, Tid, Source, [foo]}, [], InitState).
+first_wrong_locker_transaction_error_test() ->
+    wrong_locker_transaction_error(first, [table]).
 
-first_wrong_transaction_error_test() ->
-    init_mnesia_table(),
-    Source = self(),
-    Tid = 2,
-    DifferentTid = 1,
-    InitState = #state{transactions = #{Source => DifferentTid}, last_transaction_id = DifferentTid},
-    {InitState, [], {error, {wrong_transaction_id, DifferentTid}}} =
-        mnevis_machine:apply(none, {first, Tid, Source, [foo]}, [], InitState).
+first_aborted_transaction_error_test() ->
+    aborted_transaction_error(first, [unknown_table], {no_exists,[unknown_table]}).
 
-first_locked_by_write_test() ->
-    init_mnesia_table(),
-    InitState = #state{ last_transaction_id = 0 },
-    Source = self(),
-    Source1 = spawn(fun() -> ok end),
-    {State, Tid, _} = start_test_transaction(Source, InitState),
-    {State1, Tid1, _} = start_test_transaction(Source1, State),
-    {State2, _, {ok, ok}} =
-        mnevis_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, [], State1),
-    {State3, _, {error, {aborted, locked}}} =
-        mnevis_machine:apply(none, {first, Tid, Source, [foo]}, [], State2),
-    TLGraph = State3#state.transaction_locks,
-    [{Tid1, Tid}] = simple_dgraph:out_edges(TLGraph, Tid1),
-    [{Tid1, Tid}] = simple_dgraph:in_edges(TLGraph, Tid).
-
-first_returns_and_aquires_lock_test() ->
-    init_mnesia_table(),
-    mnesia:delete_table(foo),
-    mnesia:create_table(foo, []),
-    mnesia:dirty_write({foo, bar, val}),
-    InitState = #state{ last_transaction_id = 0 },
-    Source = self(),
-    {State, Tid, _} = start_test_transaction(Source, InitState),
-    {#state{read_locks = RLocks}, _, {ok, bar}} =
-        mnevis_machine:apply(none, {first, Tid, Source, [foo]}, [], State),
-    ExpectedR = #{{table, foo} => [Tid], {table, start_transaction} => [Tid]},
-    ExpectedR = RLocks.
+first_committed_transaction_error_test() ->
+    committed_transaction_error(first, [table]).
 
 %% Last
 
-last_no_transaction_error_test() ->
-    init_mnesia_table(),
-    InitState = #state{ last_transaction_id = 0 },
-    Source = self(),
-    Tid = 1,
-    {InitState, [], {error, no_transaction_for_pid}} =
-        mnevis_machine:apply(none, {last, Tid, Source, [foo]}, [], InitState).
+last_wrong_locker_transaction_error_test() ->
+    wrong_locker_transaction_error(last, [table]).
 
-last_wrong_transaction_error_test() ->
-    init_mnesia_table(),
-    Source = self(),
-    Tid = 2,
-    DifferentTid = 1,
-    InitState = #state{transactions = #{Source => DifferentTid}, last_transaction_id = DifferentTid},
-    {InitState, [], {error, {wrong_transaction_id, DifferentTid}}} =
-        mnevis_machine:apply(none, {last, Tid, Source, [foo]}, [], InitState).
+last_aborted_transaction_error_test() ->
+    aborted_transaction_error(last, [unknown_table], {no_exists,[unknown_table]}).
 
-last_locked_by_write_test() ->
-    init_mnesia_table(),
-    InitState = #state{ last_transaction_id = 0 },
-    Source = self(),
-    Source1 = spawn(fun() -> ok end),
-    {State, Tid, _} = start_test_transaction(Source, InitState),
-    {State1, Tid1, _} = start_test_transaction(Source1, State),
-    {State2, _, {ok, ok}} =
-        mnevis_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, [], State1),
-    {State3, _, {error, {aborted, locked}}} =
-        mnevis_machine:apply(none, {last, Tid, Source, [foo]}, [], State2),
-    TLGraph = State3#state.transaction_locks,
-    [{Tid1, Tid}] = simple_dgraph:out_edges(TLGraph, Tid1),
-    [{Tid1, Tid}] = simple_dgraph:in_edges(TLGraph, Tid).
-
-last_returns_and_aquires_lock_test() ->
-    init_mnesia_table(),
-    mnesia:delete_table(foo),
-    mnesia:create_table(foo, []),
-    mnesia:dirty_write({foo, bar, val}),
-    InitState = #state{ last_transaction_id = 0 },
-    Source = self(),
-    {State, Tid, _} = start_test_transaction(Source, InitState),
-    {#state{read_locks = RLocks}, _, {ok, bar}} =
-        mnevis_machine:apply(none, {last, Tid, Source, [foo]}, [], State),
-    ExpectedR = #{{table, foo} => [Tid], {table, start_transaction} => [Tid]},
-    ExpectedR = RLocks.
+last_committed_transaction_error_test() ->
+    committed_transaction_error(last, [table]).
 
 %% Prev
 
-prev_no_transaction_error_test() ->
-    init_mnesia_table(),
-    InitState = #state{ last_transaction_id = 0 },
-    Source = self(),
-    Tid = 1,
-    {InitState, [], {error, no_transaction_for_pid}} =
-        mnevis_machine:apply(none, {prev, Tid, Source, [foo, bar]}, [], InitState).
+prev_wrong_locker_transaction_error_test() ->
+    wrong_locker_transaction_error(prev, [table, foo]).
 
-prev_wrong_transaction_error_test() ->
-    init_mnesia_table(),
-    Source = self(),
-    Tid = 2,
-    DifferentTid = 1,
-    InitState = #state{transactions = #{Source => DifferentTid}, last_transaction_id = DifferentTid},
-    {InitState, [], {error, {wrong_transaction_id, DifferentTid}}} =
-        mnevis_machine:apply(none, {prev, Tid, Source, [foo, bar]}, [], InitState).
+prev_aborted_transaction_error_test() ->
+    aborted_transaction_error(prev, [unknown_table, foo], {no_exists,[unknown_table, foo]}).
 
-prev_locked_by_write_test() ->
-    init_mnesia_table(),
-    InitState = #state{ last_transaction_id = 0 },
-    Source = self(),
-    Source1 = spawn(fun() -> ok end),
-    {State, Tid, _} = start_test_transaction(Source, InitState),
-    {State1, Tid1, _} = start_test_transaction(Source1, State),
-    {State2, _, {ok, ok}} =
-        mnevis_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, [], State1),
-    {State3, _, {error, {aborted, locked}}} =
-        mnevis_machine:apply(none, {prev, Tid, Source, [foo, bar]}, [], State2),
-    TLGraph = State3#state.transaction_locks,
-    [{Tid1, Tid}] = simple_dgraph:out_edges(TLGraph, Tid1),
-    [{Tid1, Tid}] = simple_dgraph:in_edges(TLGraph, Tid).
-
-prev_returns_and_aquires_lock_test() ->
-    init_mnesia_table(),
-    mnesia:delete_table(foo),
-    mnesia:create_table(foo, []),
-    mnesia:dirty_write({foo, baz, val}),
-    mnesia:dirty_write({foo, bar, val}),
-    InitState = #state{ last_transaction_id = 0 },
-    Source = self(),
-    {State, Tid, _} = start_test_transaction(Source, InitState),
-    {#state{read_locks = RLocks}, _, {ok, baz}} =
-        mnevis_machine:apply(none, {prev, Tid, Source, [foo, bar]}, [], State),
-    ExpectedR = #{{table, foo} => [Tid], {table, start_transaction} => [Tid]},
-    ExpectedR = RLocks.
+prev_committed_transaction_error_test() ->
+    committed_transaction_error(prev, [table, foo]).
 
 %% Next
 
-next_no_transaction_error_test() ->
-    init_mnesia_table(),
-    InitState = #state{ last_transaction_id = 0 },
-    Source = self(),
-    Tid = 1,
-    {InitState, [], {error, no_transaction_for_pid}} =
-        mnevis_machine:apply(none, {next, Tid, Source, [foo, bar]}, [], InitState).
+next_wrong_locker_transaction_error_test() ->
+    wrong_locker_transaction_error(next, [table, foo]).
 
-next_wrong_transaction_error_test() ->
-    init_mnesia_table(),
-    Source = self(),
-    Tid = 2,
-    DifferentTid = 1,
-    InitState = #state{transactions = #{Source => DifferentTid}, last_transaction_id = DifferentTid},
-    {InitState, [], {error, {wrong_transaction_id, DifferentTid}}} =
-        mnevis_machine:apply(none, {next, Tid, Source, [foo, bar]}, [], InitState).
+next_aborted_transaction_error_test() ->
+    aborted_transaction_error(next, [unknown_table, foo], {no_exists,[unknown_table, foo]}).
 
-next_locked_by_write_test() ->
-    init_mnesia_table(),
-    InitState = #state{ last_transaction_id = 0 },
-    Source = self(),
-    Source1 = spawn(fun() -> ok end),
-    {State, Tid, _} = start_test_transaction(Source, InitState),
-    {State1, Tid1, _} = start_test_transaction(Source1, State),
-    {State2, _, {ok, ok}} =
-        mnevis_machine:apply(none, {lock, Tid1, Source1, [{table, foo}, write]}, [], State1),
-    {State3, _, {error, {aborted, locked}}} =
-        mnevis_machine:apply(none, {next, Tid, Source, [foo, bar]}, [], State2),
-    TLGraph = State3#state.transaction_locks,
-    [{Tid1, Tid}] = simple_dgraph:out_edges(TLGraph, Tid1),
-    [{Tid1, Tid}] = simple_dgraph:in_edges(TLGraph, Tid).
+next_committed_transaction_error_test() ->
+    committed_transaction_error(next, [table, foo]).
 
-next_returns_and_aquires_lock_test() ->
-    init_mnesia_table(),
-    mnesia:delete_table(foo),
-    mnesia:create_table(foo, []),
-    mnesia:dirty_write({foo, baz, val}),
-    mnesia:dirty_write({foo, bar, val}),
-    InitState = #state{ last_transaction_id = 0 },
-    Source = self(),
-    {State, Tid, _} = start_test_transaction(Source, InitState),
-    {#state{read_locks = RLocks}, _, {ok, baz}} =
-        mnevis_machine:apply(none, {next, Tid, Source, [foo, bar]}, [], State),
-    ExpectedR = #{{table, foo} => [Tid], {table, start_transaction} => [Tid]},
-    ExpectedR = RLocks.
 
-% DOWN from a moniror:
-%     rollback a transaction for the pid
-
-down_no_transaction_test() ->
+wrong_locker_transaction_error(Command, Args) ->
     init_mnesia_table(),
-    InitState = #state{ last_transaction_id = 0 },
-    Source = self(),
-    %% The return value is ignored
-    {InitState, [], _} =
-        mnevis_machine:apply(none, {down, Source, reason}, [], InitState).
+    InitState = init_state(),
+    InvalidTransaction = invalid_transaction(InitState),
+    {InitState, {error, {aborted, wrong_locker_term}}, []} =
+        mnevis_machine:apply(none, {Command, InvalidTransaction, Args}, InitState).
 
-down_cleanup_test() ->
+aborted_transaction_error(Command, Args, Err) ->
     init_mnesia_table(),
-    Source = self(),
-    InitState = #state{ last_transaction_id = 0 },
-    {State, _, LastTid} = start_test_transaction(Source, InitState),
-    {State1, [{demonitor, process, Source}], _} =
-        mnevis_machine:apply(none, {down, Source, reason}, [], State),
-    Expected = #state{last_transaction_id = LastTid},
-    Expected = State1.
+    InitState = init_state(),
+    Transaction = valid_transaction(InitState),
+    {InitState, {error, {aborted, Err}}, []} =
+        mnevis_machine:apply(none, {Command, Transaction, Args}, InitState).
 
-down_cleanup_locks_test() ->
+committed_transaction_error(Command, Args) ->
     init_mnesia_table(),
-    Source = self(),
-    Tid = 1,
-    Source1 = spawn(fun() -> ok end),
-    Tid1 = 2,
-    Source2 = spawn(fun() -> ok end),
-    Tid2 = 3,
-    LastTid = 3,
-    InitState = #state{transactions = #{Source => Tid,
-                                        Source1 => Tid1,
-                                        Source2 => Tid2},
-                       last_transaction_id = LastTid,
-                       write_locks = #{writelock => Tid,
-                                       writelock_1 => Tid1},
-                       read_locks = #{readlock => [Tid],
-                                      readlock_1 => [Tid, Tid1],
-                                      readlock_2 => [Tid2]}},
-    {State1, [{demonitor, process, Source}], _} =
-        mnevis_machine:apply(none, {down, Source, reason}, [], InitState),
-    Expected = #state{last_transaction_id = LastTid,
-                      transactions = #{Source1 => Tid1, Source2 => Tid2},
-                      write_locks = #{writelock_1 => Tid1},
-                      read_locks = #{readlock_1 => [Tid1], readlock_2 => [Tid2]}},
-    Expected = State1,
-    {State2, [{demonitor, process, Source1}], _} =
-        mnevis_machine:apply(none, {down, Source1, reason}, [], State1),
-    {State3, [{demonitor, process, Source2}], _} =
-        mnevis_machine:apply(none, {down, Source2, reason}, [], State2),
-    State3 = #state{last_transaction_id = LastTid}.
+    InitState = init_state(),
+    Transaction = valid_transaction(InitState),
+    {InitState, {ok, _}, _} =
+        mnevis_machine:apply(#{index => 1}, {commit, Transaction, [[], [], []]}, InitState),
+
+    {InitState, {error, {transaction_committed, Transaction}}, []} =
+        mnevis_machine:apply(none, {Command, Transaction, Args}, InitState).
+
+% DOWN from a monitor:
+%     create a new locker
+
+down_creates_new_locker_test() ->
+    InitState = init_state(),
+    #state{locker_pid = Pid, locker_term = Term} = InitState,
+    NewState = InitState#state{locker_status = down},
+    {NewState, ok,
+     [{mod_call, mnevis_machine, start_new_locker, [Pid, Term]}]} =
+       mnevis_machine:apply(none, {down, InitState#state.locker_pid, reason}, InitState).
+
+down_ignores_not_current_locker_test() ->
+    InitState = init_state(),
+    NotCurrentLocker = spawn(fun() -> ok end),
+    {InitState, ok, []} =
+       mnevis_machine:apply(none, {down, NotCurrentLocker, reason}, InitState).
+
+% LOCKER UP:
+%     record a new locker if higher term
+%     reject if lower term
+
+locker_up_registers_same_locker_test() ->
+    InitState = init_state(),
+    mnevis_lock_proc:create_locker_cache(),
+    #state{locker_pid = Pid, locker_term = Term} = InitState,
+    LockerDownState = InitState#state{locker_status = down},
+    {InitState, confirm, [{monitor, process, Pid}]} =
+        mnevis_machine:apply(none, {locker_up, Pid, Term}, InitState),
+
+    {InitState, confirm, [{monitor, process, Pid}]} =
+        mnevis_machine:apply(none, {locker_up, Pid, Term}, LockerDownState).
+
+locker_up_registers_higher_term_test() ->
+    InitState = init_state(),
+    mnevis_lock_proc:create_locker_cache(),
+    #state{locker_term = Term} = InitState,
+    LockerDownState = InitState#state{locker_status = down},
+
+    NewLocker = spawn(fun() -> ok end),
+    NewTerm = Term + 1,
+
+    NewState = InitState#state{locker_pid = NewLocker,
+                               locker_term = NewTerm,
+                               locker_status = up},
+
+    {NewState, confirm, [{monitor, process, NewLocker}]} =
+        mnevis_machine:apply(none, {locker_up, NewLocker, NewTerm}, InitState),
+
+    {NewState, confirm, [{monitor, process, NewLocker}]} =
+        mnevis_machine:apply(none, {locker_up, NewLocker, NewTerm}, LockerDownState).
+
+locker_up_rejects_lower_term_test() ->
+    InitState = init_state(),
+    mnevis_lock_proc:create_locker_cache(),
+    #state{locker_term = Term} = InitState,
+    LockerDownState = InitState#state{locker_status = down},
+
+    NewLocker = spawn(fun() -> ok end),
+    NewTerm = Term - 1,
+
+    NewState = InitState#state{locker_pid = NewLocker,
+                               locker_term = NewTerm,
+                               locker_status = up},
+
+    {InitState, reject, []} =
+        mnevis_machine:apply(none, {locker_up, NewLocker, NewTerm}, InitState),
+
+    {LockerDownState, reject, []} =
+        mnevis_machine:apply(none, {locker_up, NewLocker, NewTerm}, LockerDownState).
+
+%% Which locker:
+%%     if none - return current locker
+%%     if old locker - return current locker
+%%     if current locker - start new locker
+%%     if higher term - return error
+
+which_locker_none_returns_current_test() ->
+    InitState = init_state(),
+    #state{locker_pid = Pid, locker_term = Term} = InitState,
+    {InitState, {ok, {Pid, Term}}, []} =
+        mnevis_machine:apply(none, {which_locker, none}, InitState).
+
+which_locker_old_returns_current_test() ->
+    InitState = init_state(),
+    #state{locker_pid = Pid, locker_term = Term} = InitState,
+    NewPid = spawn(fun() -> ok end),
+    NewTerm = Term + 1,
+    NewState = InitState#state{locker_pid = NewPid, locker_term = NewTerm},
+
+    {NewState, {ok, {NewPid, NewTerm}}, []} =
+        mnevis_machine:apply(none, {which_locker, {Pid, Term}}, NewState).
+
+which_locker_current_returns_error_and_effect_test() ->
+    InitState = init_state(),
+    #state{locker_pid = Pid, locker_term = Term} = InitState,
+    NewPid = spawn(fun() -> ok end),
+    NewTerm = Term + 1,
+    NewState = InitState#state{locker_pid = NewPid, locker_term = NewTerm},
+
+    {InitState, {error, locker_up_to_date},
+     [{mod_call, mnevis_machine, start_new_locker, [Pid, Term]}]} =
+        mnevis_machine:apply(none, {which_locker, {Pid, Term}}, InitState).
+
+which_locker_newer_error_test() ->
+    InitState = init_state(),
+    #state{locker_pid = Pid, locker_term = Term} = InitState,
+    NewPid = spawn(fun() -> ok end),
+    NewTerm = Term + 1,
+
+    {InitState, {error, {invalid_locker, {NewPid, NewTerm}, {Pid, Term}}}, []} =
+        mnevis_machine:apply(none, {which_locker, {NewPid, NewTerm}}, InitState).
 
 -endif.
