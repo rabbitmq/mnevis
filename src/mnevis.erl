@@ -193,8 +193,17 @@ commit_transaction() ->
             Writes = mnevis_context:writes(Context),
             Deletes = mnevis_context:deletes(Context),
             DeletesObject = mnevis_context:deletes_object(Context),
-            {ok, _} = execute_command_with_retry(Context, commit,
-                                                 [Writes, Deletes, DeletesObject]),
+            case {Writes, Deletes, DeletesObject} of
+                {[], [], []} ->
+                    %% No changes. No need to send a ra command
+                    ok;
+                _ ->
+                    {ok, _} = execute_command_with_retry(Context, commit,
+                                                         [Writes,
+                                                          Deletes,
+                                                          DeletesObject]),
+                    ok
+            end,
             cleanup_transaction(Tid, Context)
     end,
     ok.
