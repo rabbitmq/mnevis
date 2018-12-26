@@ -33,6 +33,10 @@
     in_edges = #{} :: #{vertex_name() => sets:set(vertex_name())}
 }).
 
+-type graph() :: #graph{}.
+
+-export_type([graph/0]).
+
 new() ->
     #graph{}.
 

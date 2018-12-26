@@ -2,14 +2,15 @@
 
 -behaviour(gen_statem).
 
--export([start/1, stop/1]).
+-export([start/1, stop/1, start_new_locker/1]).
 
 -export([locate/0,
-         ensure_lock_proc/2,
-         try_lock_call/3]).
+         ensure_lock_proc/1,
+         try_lock_call/2,
+         rollback/2]).
 
 -export([create_locker_cache/0,
-         update_locker_cache/2]).
+         update_locker_cache/1]).
 
 -export([init/1,
          handle_event/3,
@@ -24,19 +25,34 @@
 
 -record(state, {term, correlation, leader, lock_state}).
 
+-define(LOCKER_TIMEOUT, 5000).
+
 -type election_states() :: leader | candidate.
--type leader_term() :: integer().
--type locker() :: {pid(), leader_term()}.
 -type state() :: #state{}.
--type lock_request() :: {lock, mnevis_lock:transaction_id() | undefined, pid(),
-                               mnevis_lock:lock_item(), mnevis_lock:lock_kind()}.
+
+-type locker_term() :: integer().
+-type locker() :: {locker_term(), pid()}.
+
+-export_type([locker_term/0, locker/0]).
 
 start(Term) ->
     error_logger:info_msg("Start mnevis locker"),
     gen_statem:start(?MODULE, Term, []).
 
+-spec start_new_locker(locker()) -> {ok, pid()}.
+start_new_locker({Term, Pid}) ->
+    case is_pid(Pid) of
+        true  -> gen_statem:cast(Pid, stop);
+        false -> ok
+    end,
+    start(Term + 1).
+
+-spec stop(pid()) -> ok.
 stop(Pid) ->
-    gen_statem:cast(Pid, stop).
+    case is_pid(Pid) of
+        true  -> gen_statem:cast(Pid, stop);
+        false -> ok
+    end.
 
 -spec create_locker_cache() -> ok.
 create_locker_cache() ->
@@ -47,9 +63,9 @@ create_locker_cache() ->
         locker_cache -> ok
     end.
 
--spec update_locker_cache(pid(), integer()) -> ok.
-update_locker_cache(Pid, Term) ->
-    true = ets:insert(locker_cache, {locker, {Pid, Term}}),
+-spec update_locker_cache(locker()) -> ok.
+update_locker_cache(Locker) ->
+    true = ets:insert(locker_cache, {locker, Locker}),
     ok.
 
 -spec locate() -> {ok, locker()} | {error, term}.
@@ -59,9 +75,8 @@ locate() ->
         []                 -> get_current_ra_locker(none)
     end.
 
--spec ensure_lock_proc(pid(), leader_term()) -> {ok, locker()} | {error, term()}.
-ensure_lock_proc(OldPid, OldTerm) ->
-    Locker = {OldPid, OldTerm},
+-spec ensure_lock_proc(locker()) -> {ok, locker()} | {error, term()}.
+ensure_lock_proc(Locker) ->
     case ets:lookup(locker_cache, locker) of
         [{locker, Locker}] ->
             %% Ets cache contains dead or unaccessible reference
@@ -81,17 +96,24 @@ get_current_ra_locker(CurrentLocker) ->
         {timeout, _}             -> {error, timeout}
     end.
 
--spec try_lock_call(pid(), leader_term(), lock_request()) ->
+-spec try_lock_call(locker(), mnevis_lock:lock_request()) ->
     mnevis_lock:lock_result() | {error, locker_not_running} | {error, is_not_leader}.
-try_lock_call(Pid, _Term, LockRequest) ->
+try_lock_call({_Term, Pid}, LockRequest) ->
     try
         %% TODO: non-infinity timeout
-        gen_statem:call(Pid, LockRequest)
-    catch exit:{noproc, {gen_statem, call, [Pid, LockRequest, infinity]}} ->
-        {error, locker_not_running}
+        gen_statem:call(Pid, LockRequest, ?LOCKER_TIMEOUT)
+    catch
+        exit:{noproc, {gen_statem, call, [Pid, LockRequest, ?LOCKER_TIMEOUT]}} ->
+            {error, locker_not_running};
+        exit:{timeout, {gen_statem, call, [Pid, LockRequest, ?LOCKER_TIMEOUT]}} ->
+            {error, locker_timeout}
     end.
 
--spec init(leader_term()) -> gen_statem:init_result(election_states()).
+-spec rollback(mnevis_lock:transaction_id(), locker()) -> ok.
+rollback(Tid, {_LockerTerm, LockerPid}) ->
+    ok = gen_statem:call(LockerPid, {rollback, Tid, self()}).
+
+-spec init(locker_term()) -> gen_statem:init_result(election_states()).
 init(Term) ->
     error_logger:info_msg("Init mnevis locker"),
     %% Delayed init
@@ -149,15 +171,15 @@ code_change(_OldVsn, OldState, OldData, _Extra) ->
 terminate(_Reason, _State, _Data) ->
     ok.
 
--spec notify_up(leader_term(), ra_server_id()) -> reference().
+-spec notify_up(locker_term(), ra_server_id()) -> reference().
 notify_up(Term, NodeId) ->
     Correlation = make_ref(),
     ok = notify_up(Term, Correlation, NodeId),
     Correlation.
 
--spec notify_up(leader_term(), reference(), ra_server_id()) -> ok.
+-spec notify_up(locker_term(), reference(), ra_server_id()) -> ok.
 notify_up(Term, Correlation, NodeId) ->
-    ra:pipeline_command(NodeId, {locker_up, self(), Term}, Correlation, normal).
+    ra:pipeline_command(NodeId, {locker_up, {Term, self()}}, Correlation, normal).
 
 -spec handle_ra_event(ra_server_proc:ra_event_body(), state()) ->
     gen_statem:event_handler_result(election_states()).

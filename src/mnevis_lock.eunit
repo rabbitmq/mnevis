@@ -27,7 +27,7 @@ transaction_mismatch_test() ->
 
     {Result, State1} = lock(undefined, Source, LockItem, LockKind, State),
 
-    {ok, Tid = 1} = Result,
+    {ok, 1} = Result,
 
 
     {{error, no_transaction_for_pid}, _} =
@@ -46,7 +46,7 @@ create_new_transaction_on_lock_test() ->
     {Result, State1} = lock(undefined, Source, LockItem, LockKind, State),
     {Result1, State2} = lock(undefined, Source, LockItem, LockKind, State1),
 
-    {ok, Tid = 1} = Result,
+    {ok, 1} = Result,
     {ok, Tid1 = 2} = Result1,
 
     #state{
@@ -310,7 +310,6 @@ monitor_down_cleanup_test() ->
 monitor_down_unknown_test() ->
     State = init(0),
     Source = self(),
-    Self = self(),
     Source1 = spawn(fun() ->
         ok
     end),

@@ -3,21 +3,23 @@
 -export([init/1, lock/5, cleanup/3, monitor_down/4]).
 
 
--record(state, {last_transaction_id,
-                transactions = #{},
-                monitors = #{},
-                read_locks = #{},
-                write_locks = #{},
-                reverse_read_locks = #{},
-                reverse_write_locks = #{},
-                transaction_locks = simple_dgraph:new()}).
+-record(state, {last_transaction_id :: transaction_id(),
+                transactions = #{} :: #{transaction_id() => pid()},
+                monitors = #{} :: #{pid() => term()},
+                read_locks = #{} :: #{lock_item() => [transaction_id()]},
+                write_locks = #{} :: #{lock_item() => transaction_id()},
+                reverse_read_locks = #{} :: #{transaction_id() => [lock_item()]},
+                reverse_write_locks = #{} :: #{transaction_id() => [lock_item()]},
+                transaction_locks = simple_dgraph:new() :: simple_dgraph:graph()}).
 
 -type state() :: #state{}.
 -type transaction_id() :: integer().
 
--type table() :: atom().
--type lock_item() :: {table(), term()} | {table, table()} | {global, term(), [node()]}.
+-type lock_item() :: {mnevis:table(), term()} | {table, mnevis:table()} | {global, term(), [node()]}.
 -type lock_kind() :: read | write.
+
+-type lock_request() :: {lock, transaction_id() | undefined, pid(),
+                               lock_item(), lock_kind()}.
 
 -type lock_result() :: {ok, transaction_id()} |
                        {error, {locked, transaction_id()}} |
@@ -25,7 +27,7 @@
                        {error, no_transaction_for_pid} |
                        {error, {wrong_transaction_id, transaction_id()}}.
 
--export_type([transaction_id/0, lock_item/0, lock_kind/0, lock_result/0]).
+-export_type([transaction_id/0, lock_item/0, lock_kind/0, lock_request/0, lock_result/0]).
 
 -ifdef (TEST).
 -include_lib("eunit/include/eunit.hrl").

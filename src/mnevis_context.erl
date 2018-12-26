@@ -1,15 +1,24 @@
 -module(mnevis_context).
 
--export([init/0, init/3,
+-export([init/0, init/1,
          add_write_set/4, add_write_bag/4, add_delete/4, add_delete_object/4,
          read_from_context/3,
          filter_read_from_context/4,
          filter_match_from_context/4,
          filter_index_from_context/5,
          filter_all_keys_from_context/3,
+
+         transaction/1,
          transaction_id/1,
-         locker_term/1,
          locker/1,
+
+         has_transaction/1,
+         assert_transaction/1,
+         assert_no_transaction/1,
+
+         set_transaction/2,
+         cleanup_changes/1,
+
          writes/1,
          deletes/1,
          deletes_object/1,
@@ -19,9 +28,7 @@
          key_deleted/3,
          delete_object_for_key/3,
          prev_cached_key/3,
-         next_cached_key/3,
-         set_retry/1,
-         is_retry/1]).
+         next_cached_key/3]).
 
 % Keeps track of deletes and writes.
 
@@ -75,43 +82,68 @@
 %         Run index filter on write_bag cache
 
 -record(context, {
-    transaction_id = undefined,
-    locker_term = undefined,
-    locker = undefined,
+    transaction = undefined :: transaction() | undefined,
     delete = #{},
     delete_object = #{},
     write_set = #{},
-    write_bag = #{},
-    retry = false}).
+    write_bag = #{}}).
 
 -type context() :: #context{}.
 -type record() :: tuple().
 -type lock_kind() :: read | write.
 -type key() :: term().
 -type table() :: atom().
--type transaction_id() :: integer().
--type locker_term() :: integer().
+
 -type delete_item() :: {table(), key(), lock_kind()}.
 -type item() :: {table(), record(), lock_kind()}.
 
--export_type([context/0]).
+-type transaction() :: {mnevis_lock:transaction_id(),
+                        mnevis_lock_proc:locker()}.
+
+-export_type([context/0, item/0, delete_item/0, transaction/0]).
 
 -spec init() -> context().
 init() -> #context{}.
 
--spec init(transaction_id(), locker_term(), pid()) -> context().
-init(Tid, LockerTerm, Locker) -> #context{transaction_id = Tid,
-                                          locker_term = LockerTerm,
-                                          locker = Locker}.
+-spec init(transaction()) -> context().
+init(Transaction) -> #context{transaction = Transaction}.
 
--spec transaction_id(context()) -> transaction_id() | undefined.
-transaction_id(#context{transaction_id = Tid}) -> Tid.
+-spec transaction(context()) -> transaction() | undefined.
+transaction(#context{transaction = Transaction}) -> Transaction.
 
--spec locker_term(context()) -> locker_term() | undefined.
-locker_term(#context{locker_term = LockerTerm}) -> LockerTerm.
+-spec transaction_id(context()) -> mnevis_lock:transaction_id().
+transaction_id(#context{transaction = {Tid, _}}) -> Tid.
 
--spec locker(context()) -> pid() | undefined.
-locker(#context{locker = Locker}) -> Locker.
+-spec locker(context()) -> mnevis_lock_proc:locker().
+locker(#context{transaction = {_, Locker}}) -> Locker.
+
+-spec has_transaction(context()) -> boolean().
+has_transaction(#context{transaction = undefined}) -> false;
+has_transaction(#context{transaction = {_, {_, _}}}) -> true.
+
+-spec assert_transaction(context()) -> ok.
+assert_transaction(Context) ->
+    case has_transaction(Context) of
+        true  -> ok;
+        false -> error({mnevis_context, no_transaction_set})
+    end.
+
+-spec assert_no_transaction(context()) -> ok.
+assert_no_transaction(Context) ->
+    case has_transaction(Context) of
+        true  -> error({mnevis_context, unexpected_transaction});
+        false -> ok
+    end.
+
+-spec set_transaction(transaction(), context()) -> context().
+set_transaction(Transaction, Context) ->
+    assert_no_transaction(Context),
+    Context#context{transaction = Transaction}.
+
+%% Remove everything except transaction.
+-spec cleanup_changes(context()) -> context().
+cleanup_changes(#context{transaction = Transaction}) ->
+    #context{transaction = Transaction}.
 
 -spec deletes(context()) -> [delete_item()].
 deletes(#context{delete = Delete}) -> maps:values(Delete).
@@ -365,12 +397,6 @@ next_cached_key(Context, Tab, Key) ->
         []   -> '$end_of_table';
         Keys -> lists:min(Keys)
     end.
-
--spec set_retry(context()) -> context().
-set_retry(Context) -> Context#context{retry = true}.
-
--spec is_retry(context()) -> boolean().
-is_retry(#context{retry = Retry}) -> Retry == true.
 
 
 

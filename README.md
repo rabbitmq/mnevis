@@ -130,6 +130,9 @@ database are commands to the Raft cluster.
 
 Locked transactions can be restarted.
 
+**Nested transactions will restart the parent. Retries number for nested transaction
+is ignored.**
+
 Commit and rollback are commands to the Raft cluster.
 
 ### Raft cluster and lock management

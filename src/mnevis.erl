@@ -53,6 +53,8 @@
 
 -export([record_key/1]).
 
+-export_type([table/0]).
+
 %% TODO: configure ra data dir for already started ra.
 start(DataDir) ->
     _ = application:load(ra),
@@ -154,6 +156,8 @@ wait_for_unlock(Tid) ->
     after 5000 -> ok
     end.
 
+%% Remove the transaction context and retry.
+%% This retry is called when the locker process is incorrect or unknown.
 retry_clean_transaction(Fun, Args, Retries, Error) ->
     NextRetries = case Retries of
         infinity -> infinity;
@@ -162,21 +166,18 @@ retry_clean_transaction(Fun, Args, Retries, Error) ->
     clean_transaction_context(),
     transaction0(Fun, Args, NextRetries, Error).
 
+%% Keep the transaction ID and locker, but remove temp data and retry.
+%% This retry is called when transaction was locked.
 retry_locked_transaction(Fun, Args, Retries) ->
     NextRetries = case Retries of
         infinity -> infinity;
         R when is_integer(R) -> R - 1
     end,
-    %% Reset transaction context
     Context = get_transaction_context(),
-    Tid = mnevis_context:transaction_id(Context),
-    LockerTerm = mnevis_context:locker_term(Context),
-    Locker = mnevis_context:locker(Context),
-    true = Tid =/= undefined,
-    true = LockerTerm =/= undefined,
-    true = Locker =/= undefined,
-    Context1 = mnevis_context:init(Tid, LockerTerm, Locker),
-    update_transaction_context(mnevis_context:set_retry(Context1)),
+    %% The context should have a transaction to be locked
+    mnevis_context:assert_transaction(Context),
+    Context1 = mnevis_context:cleanup_changes(Context),
+    update_transaction_context(Context1),
     transaction0(Fun, Args, NextRetries, locked).
 
 is_transaction() ->
@@ -187,9 +188,9 @@ is_transaction() ->
 
 commit_transaction() ->
     Context = get_transaction_context(),
-    case mnevis_context:transaction_id(Context) of
+    case mnevis_context:transaction(Context) of
         undefined -> ok;
-        Tid ->
+        Transaction ->
             Writes = mnevis_context:writes(Context),
             Deletes = mnevis_context:deletes(Context),
             DeletesObject = mnevis_context:deletes_object(Context),
@@ -199,12 +200,12 @@ commit_transaction() ->
                     ok;
                 _ ->
                     {ok, _} = execute_command_with_retry(Context, commit,
-                                                         [Writes,
+                                                         {Writes,
                                                           Deletes,
-                                                          DeletesObject]),
+                                                          DeletesObject}),
                     ok
             end,
-            cleanup_transaction(Tid, Context)
+            cleanup_transaction(Transaction)
     end,
     ok.
 
@@ -216,17 +217,14 @@ maybe_rollback_transaction() ->
 
 rollback_transaction() ->
     Context = get_transaction_context(),
-    case mnevis_context:transaction_id(Context) of
-        undefined -> ok;
-        Tid       -> cleanup_transaction(Tid, Context)
+    case mnevis_context:transaction(Context) of
+        undefined   -> ok;
+        Transaction -> cleanup_transaction(Transaction)
     end,
     ok.
 
-cleanup_transaction(Tid, Context) ->
-    Locker = mnevis_context:locker(Context),
-    true = is_pid(Locker),
-    %% TODO: error on rollback
-    ok = gen_statem:call(Locker, {rollback, Tid, self()}).
+cleanup_transaction({TransactionId, Locker}) ->
+    mnevis_lock_proc:rollback(TransactionId, Locker).
 
 update_transaction_context(Context) ->
     put(mnevis_transaction_context, Context).
@@ -286,7 +284,7 @@ read(_ActivityId, _Opaque, Tab, Key, LockKind) ->
             %% TODO: lock before read
             with_lock(Context, {Tab, Key}, LockKind, fun() ->
                 Context1 = get_transaction_context(),
-                RecList = execute_command_ok(Context1, read, [Tab, Key]),
+                RecList = execute_command_ok(Context1, read, {Tab, Key}),
                 mnevis_context:filter_read_from_context(Context1, Tab, Key, RecList)
             end)
     end.
@@ -295,7 +293,7 @@ match_object(_ActivityId, _Opaque, Tab, Pattern, LockKind) ->
     Context = get_transaction_context(),
     with_lock(Context, {table, Tab}, LockKind, fun() ->
         Context1 = get_transaction_context(),
-        RecList = execute_command_ok(Context1, match_object, [Tab, Pattern]),
+        RecList = execute_command_ok(Context1, match_object, {Tab, Pattern}),
         mnevis_context:filter_match_from_context(Context1, Tab, Pattern, RecList)
     end).
 
@@ -303,7 +301,7 @@ all_keys(ActivityId, Opaque, Tab, LockKind) ->
     Context = get_transaction_context(),
     with_lock(Context, {table, Tab}, LockKind, fun() ->
         Context1 = get_transaction_context(),
-        AllKeys = execute_command_ok(Context1, all_keys, [Tab]),
+        AllKeys = execute_command_ok(Context1, all_keys, Tab),
         case mnevis_context:deletes_object(Context1, Tab) of
             [] ->
                 mnevis_context:filter_all_keys_from_context(Context1, Tab, AllKeys);
@@ -324,7 +322,7 @@ first(ActivityId, Opaque, Tab) ->
     Context = get_transaction_context(),
     with_lock(Context, {table, Tab}, read, fun() ->
         Context1 = get_transaction_context(),
-        Key = execute_command_ok(Context1, first, [Tab]),
+        Key = execute_command_ok(Context1, first, Tab),
         check_key(ActivityId, Opaque, Tab, Key, '$end_of_table', next, Context1)
     end).
 
@@ -332,7 +330,7 @@ last(ActivityId, Opaque, Tab) ->
     Context = get_transaction_context(),
     with_lock(Context, {table, Tab}, read, fun() ->
         Context1 = get_transaction_context(),
-        Key = execute_command_ok(Context1, last, [Tab]),
+        Key = execute_command_ok(Context1, last, Tab),
         check_key(ActivityId, Opaque, Tab, Key, '$end_of_table', prev, Context1)
     end).
 
@@ -340,7 +338,7 @@ prev(ActivityId, Opaque, Tab, Key) ->
     Context = get_transaction_context(),
     with_lock(Context, {table, Tab}, read, fun() ->
         Context1 = get_transaction_context(),
-        NewKey = case execute_command(Context1, prev, [Tab, Key]) of
+        NewKey = case execute_command(Context1, prev, {Tab, Key}) of
             {ok, NKey} ->
                 NKey;
             {error, {key_not_found, ClosestKey}} ->
@@ -355,7 +353,7 @@ next(ActivityId, Opaque, Tab, Key) ->
     Context = get_transaction_context(),
     with_lock(Context, {table, Tab}, read, fun() ->
         Context1 = get_transaction_context(),
-        NewKey = case execute_command(Context1, next, [Tab, Key]) of
+        NewKey = case execute_command(Context1, next, {Tab, Key}) of
             {ok, NKey} ->
                 NKey;
             {error, {key_not_found, ClosestKey}} ->
@@ -394,7 +392,7 @@ index_match_object(_ActivityId, _Opaque, Tab, Pattern, Pos, LockKind) ->
     Context = get_transaction_context(),
     with_lock(Context, {table, Tab}, LockKind, fun() ->
         Context1 = get_transaction_context(),
-        RecList = execute_command_ok(Context1, index_match_object, [Tab, Pattern, Pos]),
+        RecList = execute_command_ok(Context1, index_match_object, {Tab, Pattern, Pos}),
         mnevis_context:filter_match_from_context(Context1, Tab, Pattern, RecList)
     end).
 
@@ -427,25 +425,23 @@ select_cont(_ActivityId, _Opaque, _Cont) ->
 do_index_read(Context, Tab, SecondaryKey, Pos, LockKind) ->
     with_lock(Context, {table, Tab}, LockKind, fun() ->
         Context1 = get_transaction_context(),
-        execute_command_ok(Context1, index_read, [Tab, SecondaryKey, Pos])
+        execute_command_ok(Context1, index_read, {Tab, SecondaryKey, Pos})
     end).
 
 %% ==========================
 
--spec execute_command_ok(context(), atom(), list()) -> term().
+-spec execute_command_ok(context(), atom(), term()) -> term().
 execute_command_ok(Context, Command, Args) ->
     case execute_command(Context, Command, Args) of
         {ok, Result}    -> Result;
         {error, Reason} -> mnesia:abort({command_error, Reason, Command, Args})
     end.
 
--spec execute_command(context(), atom(), list()) -> {ok, term()} | {error, term()}.
+-spec execute_command(context(), atom(), term()) -> {ok, term()} | {error, term()}.
 execute_command(Context, Command, Args) ->
-    Tid = mnevis_context:transaction_id(Context),
-    LockerTerm = mnevis_context:locker_term(Context),
-    true = Tid =/= undefined,
-    true = LockerTerm =/= undefined,
-    RaCommand = {Command, {LockerTerm, Tid}, Args},
+    mnevis_context:assert_transaction(Context),
+    Transaction = mnevis_context:transaction(Context),
+    RaCommand = {Command, Transaction, Args},
     run_ra_command(RaCommand).
 
 
@@ -462,11 +458,9 @@ run_ra_command(RaCommand) ->
     end.
 
 execute_command_with_retry(Context, Command, Args) ->
-    Tid = mnevis_context:transaction_id(Context),
-    LockerTerm = mnevis_context:locker_term(Context),
-    true = Tid =/= undefined,
-    true = LockerTerm =/= undefined,
-    RaCommand = {Command, {LockerTerm, Tid}, Args},
+    mnevis_context:assert_transaction(Context),
+    Transaction = mnevis_context:transaction(Context),
+    RaCommand = {Command, Transaction, Args},
     NodeId = mnevis_node:node_id(),
     Leader = retry_ra_command(NodeId, RaCommand),
     {ok, Leader}.
@@ -550,6 +544,12 @@ cleanup_all_unlock_messages() ->
         ok
     end.
 
+with_lock(Context, LockItem, LockKind, Fun) ->
+    case aquire_lock(Context, LockItem, LockKind) of
+        ok           -> Fun();
+        {error, Err} -> mnesia:abort(Err)
+    end.
+
 aquire_lock(Context, LockItem, LockKind) ->
     case do_aquire_lock(Context, LockItem, LockKind) of
         {ok, Context1} ->
@@ -562,77 +562,63 @@ aquire_lock(Context, LockItem, LockKind) ->
 
 do_aquire_lock(Context, LockItem, LockKind) ->
     %% TODO: rollback on wrong locker term
-    Tid = mnevis_context:transaction_id(Context),
-    LockerTerm = mnevis_context:locker_term(Context),
-    Locker = mnevis_context:locker(Context),
-    case {Tid, LockerTerm, Locker} of
-        {undefined, undefined, undefined} ->
-            do_aquire_lock_with_new_locker(Context, LockItem, LockKind, ?AQUIRE_LOCK_ATTEMPTS);
-        _ ->
+    case mnevis_context:has_transaction(Context) of
+        true ->
             %% TODO: handle noproc
-            do_aquire_lock_with_existing_locker(Context, LockItem, LockKind)
+            do_aquire_lock_with_existing_transaction(Context, LockItem, LockKind);
+        false ->
+            do_aquire_lock_with_new_transaction(Context, LockItem, LockKind, ?AQUIRE_LOCK_ATTEMPTS)
     end.
 
-do_aquire_lock_with_existing_locker(Context, LockItem, LockKind) ->
+do_aquire_lock_with_existing_transaction(Context, LockItem, LockKind) ->
     Tid = mnevis_context:transaction_id(Context),
-    LockerTerm = mnevis_context:locker_term(Context),
     Locker = mnevis_context:locker(Context),
     LockRequest = {lock, Tid, self(), LockItem, LockKind},
-    case mnevis_lock_proc:try_lock_call(Locker, LockerTerm, LockRequest) of
+    case mnevis_lock_proc:try_lock_call(Locker, LockRequest) of
         {ok, Tid}                     -> {ok, Context};
         {error, {locked, Tid}}        -> {error, Context, locked};
         {error, {locked_nowait, Tid}} -> {error, Context, locked_nowait};
         {error, Err}                  -> mnesia:abort(Err)
     end.
 
-do_aquire_lock_with_new_locker(_Context, _LockItem, _LockKind, 0) ->
+do_aquire_lock_with_new_transaction(_Context, _LockItem, _LockKind, 0) ->
     mnesia:abort({unable_to_aquire_lock, no_promoted_lock_processes});
-do_aquire_lock_with_new_locker(Context, LockItem, LockKind, Attempts) ->
-    ok = assert_empty_context(Context),
-    {LockerPid, LockerTerm} = case mnevis_lock_proc:locate() of
-        {ok, {Pid, Term}} -> {Pid, Term};
-        {error, Err}      -> mnesia:abort(Err)
+do_aquire_lock_with_new_transaction(Context, LockItem, LockKind, Attempts) ->
+    ok = mnevis_context:assert_no_transaction(Context),
+    Locker = case mnevis_lock_proc:locate() of
+        {ok, L}      -> L;
+        {error, Err} -> mnesia:abort(Err)
     end,
     %% TODO: include lock term into lock request.
     LockRequest = {lock, undefined, self(), LockItem, LockKind},
-    case retry_lock_call(LockerPid, LockerTerm, LockRequest) of
+    case retry_lock_call(Locker, LockRequest) of
         {ok, Tid1} ->
-            NewContext = mnevis_context:init(Tid1, LockerTerm, LockerPid),
+            NewContext = mnevis_context:set_transaction({Tid1, Locker}, Context),
             {ok, NewContext};
         {error, {locked, Tid1}} ->
-            NewContext = mnevis_context:init(Tid1, LockerTerm, LockerPid),
+            NewContext = mnevis_context:set_transaction({Tid1, Locker}, Context),
             {error, NewContext, locked};
         {error, {locked_nowait, Tid1}} ->
-            NewContext = mnevis_context:init(Tid1, LockerTerm, LockerPid),
+            NewContext = mnevis_context:set_transaction({Tid1, Locker}, Context),
             {error, NewContext, locked_nowait};
         {error, is_not_leader} ->
             %% TODO: notify when leader or timeout
-            do_aquire_lock_with_new_locker(Context, LockItem, LockKind, Attempts - 1);
+            do_aquire_lock_with_new_transaction(Context, LockItem, LockKind, Attempts - 1);
         {error, Error} ->
             mnesia:abort(Error)
     end.
 
-retry_lock_call(Pid, Term, LockRequest) ->
-    case mnevis_lock_proc:try_lock_call(Pid, Term, LockRequest) of
+retry_lock_call(Locker, LockRequest) ->
+    case mnevis_lock_proc:try_lock_call(Locker, LockRequest) of
         {error, locker_not_running} ->
             %% This function should block, so it's safe to recursively call
-            case mnevis_lock_proc:ensure_lock_proc(Pid, Term) of
-                {ok, {NewPid, NewTerm}} ->
-                    retry_lock_call(NewPid, NewTerm, LockRequest);
+            case mnevis_lock_proc:ensure_lock_proc(Locker) of
+                {ok, NewLocker} ->
+                    retry_lock_call(NewLocker, LockRequest);
                 {error, {command_error, Reason}} ->
                     mnesia:abort({lock_proc_not_found, Reason});
                 {error, Reason} ->
                     mnesia:abort(Reason)
             end;
         Other -> Other
-    end.
-
-assert_empty_context(Context) ->
-    Context = mnevis_context:init(),
-    ok.
-
-with_lock(Context, LockItem, LockKind, Fun) ->
-    case aquire_lock(Context, LockItem, LockKind) of
-        ok           -> Fun();
-        {error, Err} -> mnesia:abort(Err)
     end.

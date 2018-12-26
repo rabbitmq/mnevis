@@ -9,37 +9,46 @@
          state_enter/2,
          snapshot_module/0]).
 
--export([start_new_locker/2]).
+
+
+-record(state, {locker_status = down,
+                locker = {0, none} :: mnevis_lock_proc:locker() | {0, none}}).
+
+-type state() :: #state{}.
 
 -type config() :: map().
--type command() :: term().
 
 -type reply() :: {ok, term()} | {error, term()}.
 -type reply(T) :: {ok, T} | {error, term()}.
 -type reply(T, E) :: {ok, T} | {error, E}.
+-type apply_result(T, Err) :: {state(), reply(T, Err), ra_machine:effects()}.
 
+-type transaction() :: mnevis_context:transaction().
 
--record(state, {locker_status = down,
-                locker_pid,
-                locker_term = 0}).
+-type command() :: {commit, transaction(),
+                            {[mnevis_context:item()],
+                             [mnevis_context:delete_item()],
+                             [mnevis_context:item()]}} |
+                   {read, transaction(), {mnevis:table(), term()}} |
+                   {index_read, transaction(), {mnevis:table(), term(), integer()}} |
+                   {match_object, transaction(), {mnevis:table(), term()}} |
+                   {index_match_object, transaction(), {mnevis:table(), term(), integer()}} |
+                   {all_keys, transaction(), {mnevis:table()}} |
+                   {first, transaction(), {mnevis:table()}} |
+                   {last, transaction(), {mnevis:table()}} |
+                   {prev, transaction(), {mnevis:table(), term()}} |
+                   {next, transaction(), {mnevis:table(), term()}} |
+                   {create_table, mnevis:table(), [term()]} |
+                   {delete_table, mnevis:table()} |
+                   {down, pid(), term()} |
+                   {locker_up, mnevis_lock_proc:locker()} |
+                   {which_locker, mnevis_lock_proc:locker()}.
 
 -ifdef (TEST).
 -include_lib("eunit/include/eunit.hrl").
 -endif.
 
--type state() :: #state{}.
--type transaction_id() :: integer().
--type locker_term() :: integer().
-%% TODO: pid/term order: create a shared type
--type transaction() :: {locker_term(), transaction_id()}.
-
--type table() :: atom().
--type lock_kind() :: read | write.
--type change() :: {table(), term(), lock_kind()}.
-
--type apply_result(T, Err) :: {state(), reply(T, Err), ra_machine:effects()}.
-
--record(committed_transaction, { transaction :: {locker_term(), transaction_id()},
+-record(committed_transaction, { transaction :: mnevis_context:transaction(),
                                  value }).
 
 %% Ra machine callbacks
@@ -64,8 +73,8 @@ state_enter(State, _) ->
     [].
 
 -spec start_new_locker_effects(state()) -> ra_machine:effects().
-start_new_locker_effects(#state{locker_pid = LockerPid, locker_term = LockerTerm}) ->
-    [{mod_call, mnevis_machine, start_new_locker, [LockerPid, LockerTerm]}].
+start_new_locker_effects(#state{locker = Locker}) ->
+    [{mod_call, mnevis_lock_proc, start_new_locker, [Locker]}].
 
 -spec snapshot_module() -> module().
 snapshot_module() ->
@@ -73,7 +82,7 @@ snapshot_module() ->
 
 -spec apply(map(), command(), state()) ->
     {state(), reply(), ra_machine:effects()}.
-apply(Meta, {commit, Transaction, [Writes, Deletes, DeletesObject]}, State)  ->
+apply(Meta, {commit, Transaction, {Writes, Deletes, DeletesObject}}, State)  ->
     with_valid_locker(Transaction, State,
         fun() ->
             Result = commit(Transaction, Writes, Deletes, DeletesObject),
@@ -87,7 +96,7 @@ apply(Meta, {commit, Transaction, [Writes, Deletes, DeletesObject]}, State)  ->
                     {State, Result, []}
             end
         end);
-apply(_Meta, {read, Transaction, [Tab, Key]}, State) ->
+apply(_Meta, {read, Transaction, {Tab, Key}}, State) ->
     with_transaction(Transaction, State,
         fun() ->
             catch_abort(
@@ -95,7 +104,7 @@ apply(_Meta, {read, Transaction, [Tab, Key]}, State) ->
                     {ok, mnesia:dirty_read(Tab, Key)}
                 end)
         end);
-apply(_Meta, {index_read, Transaction, [Tab, SecondaryKey, Pos]}, State0) ->
+apply(_Meta, {index_read, Transaction, {Tab, SecondaryKey, Pos}}, State0) ->
     with_transaction(Transaction, State0,
         fun() ->
             catch_abort(
@@ -104,7 +113,7 @@ apply(_Meta, {index_read, Transaction, [Tab, SecondaryKey, Pos]}, State0) ->
                     {ok, mnesia:dirty_index_read(Tab, SecondaryKey, Pos)}
                 end)
         end);
-apply(_Meta, {match_object, Transaction, [Tab, Pattern]}, State0) ->
+apply(_Meta, {match_object, Transaction, {Tab, Pattern}}, State0) ->
     with_transaction(Transaction, State0,
         fun() ->
             catch_abort(
@@ -112,7 +121,7 @@ apply(_Meta, {match_object, Transaction, [Tab, Pattern]}, State0) ->
                     {ok, mnesia:dirty_match_object(Tab, Pattern)}
                 end)
         end);
-apply(_Meta, {index_match_object, Transaction, [Tab, Pattern, Pos]}, State0) ->
+apply(_Meta, {index_match_object, Transaction, {Tab, Pattern, Pos}}, State0) ->
     with_transaction(Transaction, State0,
         fun() ->
             catch_abort(
@@ -120,7 +129,7 @@ apply(_Meta, {index_match_object, Transaction, [Tab, Pattern, Pos]}, State0) ->
                     {ok, mnesia:dirty_index_match_object(Tab, Pattern, Pos)}
                 end)
         end);
-apply(_Meta, {all_keys, Transaction, [Tab]}, State0) ->
+apply(_Meta, {all_keys, Transaction, Tab}, State0) ->
     with_transaction(Transaction, State0,
         fun() ->
             catch_abort(
@@ -128,7 +137,7 @@ apply(_Meta, {all_keys, Transaction, [Tab]}, State0) ->
                     {ok, mnesia:dirty_all_keys(Tab)}
                 end)
         end);
-apply(_Meta, {first, Transaction, [Tab]}, State0) ->
+apply(_Meta, {first, Transaction, Tab}, State0) ->
     with_transaction(Transaction, State0,
         fun() ->
             catch_abort(
@@ -136,7 +145,7 @@ apply(_Meta, {first, Transaction, [Tab]}, State0) ->
                     {ok, mnesia:dirty_first(Tab)}
                 end)
         end);
-apply(_Meta, {last, Transaction, [Tab]}, State0) ->
+apply(_Meta, {last, Transaction, Tab}, State0) ->
     with_transaction(Transaction, State0,
         fun() ->
             catch_abort(
@@ -144,7 +153,7 @@ apply(_Meta, {last, Transaction, [Tab]}, State0) ->
                     {ok, mnesia:dirty_last(Tab)}
                 end)
         end);
-apply(_Meta, {prev, Transaction, [Tab, Key]}, State0) ->
+apply(_Meta, {prev, Transaction, {Tab, Key}}, State0) ->
     with_transaction(Transaction, State0,
         fun() ->
             catch_abort(
@@ -165,7 +174,7 @@ apply(_Meta, {prev, Transaction, [Tab, Key]}, State0) ->
                     end
                 end)
         end);
-apply(_Meta, {next, Transaction, [Tab, Key]}, State0) ->
+apply(_Meta, {next, Transaction, {Tab, Key}}, State0) ->
     with_transaction(Transaction, State0,
         fun() ->
             catch_abort(
@@ -191,22 +200,21 @@ apply(_Meta, {create_table, Tab, Opts}, State) ->
     {State, {ok, mnesia:create_table(Tab, Opts)}, []};
 apply(_Meta, {delete_table, Tab}, State) ->
     {State, {ok, mnesia:delete_table(Tab)}, []};
-apply(_Meta, {down, Pid, _Reason}, State = #state{locker_status = LockerStatus,
-                                                          locker_pid = LockerPid}) ->
-    case {Pid, LockerStatus} of
-        {LockerPid, up} ->
+apply(_Meta, {down, Pid, _Reason}, State = #state{locker = {_Term, LockerPid}}) ->
+    case Pid of
+        LockerPid ->
             {State#state{locker_status = down}, ok, start_new_locker_effects(State)};
-        _ -> {State, ok, []}
+        _ ->
+            {State, ok, []}
     end;
-apply(_Meta, {locker_up, Pid, Term},
-              State = #state{locker_term = CurrentLockerTerm}) ->
+apply(_Meta, {locker_up, {Term, Pid} = Locker},
+              State = #state{locker = {CurrentLockerTerm, _CurrentLockerPid}}) ->
     case Term >= CurrentLockerTerm of
         true ->
             %% TODO: change locker status to something more sensible
-            ok = mnevis_lock_proc:update_locker_cache(Pid, Term),
+            ok = mnevis_lock_proc:update_locker_cache(Locker),
             {State#state{locker_status = up,
-                         locker_pid = Pid,
-                         locker_term = Term},
+                         locker = Locker},
              confirm,
              [{monitor, process, Pid}]};
         false ->
@@ -214,18 +222,17 @@ apply(_Meta, {locker_up, Pid, Term},
     end;
 apply(_Meta, {which_locker, OldLocker},
               State = #state{locker_status = up,
-                             locker_pid = LockerPid,
-                             locker_term = LockerTerm}) when is_pid(LockerPid) ->
+                             locker = {LockerTerm, _} = CurrentLocker}) ->
     case OldLocker of
         none ->
-            {State, {ok, {LockerPid, LockerTerm}}, []};
-        {_, OldTerm} when OldTerm < LockerTerm ->
-            {State, {ok, {LockerPid, LockerTerm}}, []};
-        {LockerPid, LockerTerm} ->
+            {State, {ok, CurrentLocker}, []};
+        CurrentLocker ->
             {State, {error, locker_up_to_date}, start_new_locker_effects(State)};
+        {OldTerm, _} when OldTerm < LockerTerm ->
+            {State, {ok, CurrentLocker}, []};
         _ ->
             %% TODO: what to do?
-            {State, {error, {invalid_locker, OldLocker, {LockerPid, LockerTerm}}}, []}
+            {State, {error, {invalid_locker, OldLocker, CurrentLocker}}, []}
     end;
 apply(_Meta, {which_locker, _OldLocker}, State = #state{locker_status = down}) ->
     {State, {error, locker_down}, []};
@@ -245,7 +252,10 @@ create_committed_transaction_table() ->
          {record_name, committed_transaction},
          {type, ordered_set}]).
 
--spec commit(transaction(), [change()], [change()], [change()]) -> reply(ok).
+-spec commit(transaction(), [mnevis_context:item()],
+                            [mnevis_context:delete_item()],
+                            [mnevis_context:item()]) ->
+    {ok, committed} | {ok, skipped} | {error, {aborted, term()}}.
 commit(Transaction, Writes, Deletes, DeletesObject) ->
     Res = mnesia:transaction(fun() ->
         case mnesia:read(committed_transaction, Transaction) of
@@ -276,27 +286,27 @@ snapshot_effects(#{index := RaftIdx}, State) ->
 
 %% Mnesia operations
 
--spec apply_deletes([change()]) -> [ok].
+-spec apply_deletes([mnevis_context:delete_item()]) -> [ok].
 apply_deletes(Deletes) ->
     [ok = mnesia:delete(Tab, Key, LockKind)
      || {Tab, Key, LockKind} <- Deletes].
 
--spec apply_deletes_object([change()]) -> [ok].
+-spec apply_deletes_object([mnevis_context:item()]) -> [ok].
 apply_deletes_object(DeletesObject) ->
     [ok = mnesia:delete_object(Tab, Rec, LockKind)
      || {Tab, Rec, LockKind} <- DeletesObject].
 
--spec apply_writes([change()]) -> [ok].
+-spec apply_writes([mnevis_context:item()]) -> [ok].
 apply_writes(Writes) ->
     [ok = mnesia:write(Tab, Rec, LockKind)
      || {Tab, Rec, LockKind} <- Writes].
 
--spec closest_next(table(), Key) -> Key.
+-spec closest_next(mnevis:table(), Key) -> Key.
 closest_next(Tab, Key) ->
     First = mnesia:dirty_first(Tab),
     closest_next(Tab, Key, First).
 
--spec closest_next(table(), Key, Key) -> Key.
+-spec closest_next(mnevis:table(), Key, Key) -> Key.
 closest_next(_Tab, _Key, '$end_of_table') ->
     '$end_of_table';
 closest_next(Tab, Key, CurrentKey) ->
@@ -305,12 +315,12 @@ closest_next(Tab, Key, CurrentKey) ->
         false -> closest_next(Tab, Key, mnesia:dirty_next(Tab, CurrentKey))
     end.
 
--spec closest_prev(table(), Key) -> Key.
+-spec closest_prev(mnevis:table(), Key) -> Key.
 closest_prev(Tab, Key) ->
     First = mnesia:dirty_last(Tab),
     closest_prev(Tab, Key, First).
 
--spec closest_prev(table(), Key, Key) -> Key.
+-spec closest_prev(mnevis:table(), Key, Key) -> Key.
 closest_prev(_Tab, _Key, '$end_of_table') ->
     '$end_of_table';
 closest_prev(Tab, Key, CurrentKey) ->
@@ -341,7 +351,8 @@ transaction_recorded_as_committed(Transaction) ->
 
 -spec with_valid_locker(transaction(), state(),
                        fun(() -> apply_result(T, E))) -> apply_result(T, E).
-with_valid_locker({LockerTerm, _}, State = #state{locker_term = CurrentLockerTerm}, Fun) ->
+with_valid_locker({_Tid, {LockerTerm, _LockerPid}},
+                  State = #state{locker = {CurrentLockerTerm, _}}, Fun) ->
     case LockerTerm of
         CurrentLockerTerm -> Fun();
         _ -> {State, {error, {aborted, wrong_locker_term}}, []}
@@ -369,15 +380,6 @@ with_transaction(Transaction, State, Fun) ->
         end).
 
 %% ==============================
-
--spec start_new_locker(pid(), locker_term()) -> ok.
-start_new_locker(OldLockerPid, OldTerm) ->
-    case is_pid(OldLockerPid) of
-        true  -> mnevis_lock_proc:stop(OldLockerPid);
-        false -> ok
-    end,
-    {ok, _} = mnevis_lock_proc:start(OldTerm + 1),
-    ok.
 
 -ifdef(TEST).
 -include("mnevis_machine.eunit").
