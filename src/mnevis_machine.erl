@@ -226,6 +226,7 @@ apply(_Meta, {which_locker, OldLocker},
         none ->
             {State, {ok, CurrentLocker}, []};
         CurrentLocker ->
+            %% TODO: monitor that
             {State, {error, locker_up_to_date}, start_new_locker_effects(State)};
         {OldTerm, _} when OldTerm < LockerTerm ->
             {State, {ok, CurrentLocker}, []};

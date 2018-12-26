@@ -13,8 +13,7 @@ by the RabbitMQ.
 You need to start a mnevis ra node and trigger election:
 
 ```
-mnevis:start("my/ra/directory"),
-mnevis_node:trigger_election().
+mnevis:start("my/ra/directory").
 ```
 
 This will start a single node cluster. Not so useful.
@@ -43,8 +42,8 @@ provide a ra directory, because it's used by ra on application start,
 
 In this case you can run
 ```
-mnevis_node:start(),
-mnevis_node:trigger_election().
+application:ensure_all_started(mnevis),
+mnevis_node:start().
 ```
 
 To start a node.
@@ -85,7 +84,7 @@ For example, to run a transaction:
     ok = mnesia:write({foo, bar, bazz})
 end).
 
-%% Ranesia transaction
+%% Mnevis transaction
 {atomic, ok} = mnevis:transaction(fun() ->
     ok = mnesia:write({foo, bar, baz}),
     [{foo, bar, baz}] = mnesia:read(foo, bar),
@@ -94,13 +93,14 @@ end).
 ```
 
 Note that the transaction function code is exactly identical.
-Ramnesia is designed to support (most of) mnesia transaction functions as is.
+Mnevis is designed to support (most of) mnesia transaction functions as is.
 
 #### Key facts
 
-- For writes, locks are coordinated wit Raft during a transaction
-- Reads are always performed in a Raft cluster (with some optimisations) on a leader node.
+- Locks are coordinated using a lock process during a transaction
+- Reads are always performed in the Raft cluster (with some optimisations).
 - Writes are preformed on mnesia DB on commit.
+- Commits are coordinated with the Raft cluster
 - Commit runs a mnesia transaction, which can abort and it aborts a mnevis transaction.
 
 ### Transactoins on the caller side
@@ -122,8 +122,9 @@ There is more on operation convergence in the [`mnevis_context.erl`](./src/mnevi
 For this purpose (similarly to mnesia transactions) there is an internal context
 storage, which stores all the write operations until transaction is committed
 or rolled back.
-Each write operation have to aquire a lock, which is done by a command
-to the Raft cluster.
+
+Each operation have to aquire a lock, which is done by calling the special lock
+process. More on locks [here](./LOCK_PROCESS.md)
 
 Reads get data from both context and the mnesia database. All reads from mnesia
 database are commands to the Raft cluster.
@@ -133,49 +134,49 @@ Locked transactions can be restarted.
 **Nested transactions will restart the parent. Retries number for nested transaction
 is ignored.**
 
-Commit and rollback are commands to the Raft cluster.
+Commit is a comand to the Raft cluster.
 
-### Raft cluster and lock management
+### State machine
 
-Ramnesia uses a single Ra node per erlang node with a constant nodeID:
+Mnevis uses a single Ra node per erlang node with a constant nodeID:
 `mnevis_node:node_id()`
 
-The statemachine in the cluster mostly does lock management. Read and commit
-operations also access mnesia database.
+The statemachine in the cluster does read and commit operations,
+which access the mnesia database.
 
-Most of commands return a result and are called with `ra:send_and_await_consensus`
-
-The first command in a transaction is `start_transaction`, which will return a
-transaction ID.
-
-Each transaction command is addressed with a transaction ID and the current
-process Pid. Processes runing a transaction are monitored and transaction will
-be cancelled if its process stops.
-
-Most of transaction commands, except commit and rollback, check and aquire locks
-on some resources. Locks work mostly the same way as [in mnesia](http://erlang.org/doc/man/mnesia.html#lock-2)
-
-If a transaction is locked, the locking transactions will be recorded in a machine
-state and raft cluster will send a message once the locked transaction is unlocked
-(when locking transactions commit or rollback). To avoid deadlocks only transactions
-with a higher transaction ID are recorded as locking.
-
-When transaction get a response from the machine that it's locked - it will wait
-to be unlocked if there are locking transactions recorded, or restart instantly if
-there are no locking trasactions (with higher transaction ID).
-
-When a transaction is restarted, its context store is reset but its transaction ID
-kept the same (no start_transaction command). This allows better lock management.
-
-Commit and rollback commands can be repeated multiple times until the transaction
-process receives reply from the raft machine. Machine state keeps track of committed
-transactions to not apply the changes multiple times.
+Also statemachine keeps track of the current lock process, which is used to
+coordinate transaction locks to avoid conflicts.
 
 See more in [STATEMACHINE.md](./STATEMACHINE.md)
 
+### Locks
+
+Locks are coordinated with a lock process. There should be only one active lock
+process per mnevis cluster. This is achieved using coordination with raft. Only
+transactions using the current lock process can be committed.
+
+Transactions locate the current lock process by reading the lock_cache ETS table or
+asking the raft cluster.
+
+Transactions can attempt to lock a lock_item with a lock_kind. Each lock request
+should contain the transaction ID or `undefined`.
+If transaction ID is `undefined` - a new transaction will be created
+and all locks for the old transaction associated with the transaction process
+will be cleared, if there were any.
+
+Locks work mostly the same way as [in mnesia](http://erlang.org/doc/man/mnesia.html#lock-2)
+
+If a transaction is blocked by another transaction it should be restarted.
+To avoid livelocks transactions wait for locking transactions with lower ID to
+finish first and then restart. If there are no such transactions - it's restarted
+instantly.
+
+When transaction is restarted - all its locks and transaction context is cleared
+but transaction ID stays registered with the lock process.
+
 ### Snapshotting and log replay
 
-When a transaction is committed, the changes are saved on disk to mnesia DB.
+When a transaction is committed, the changes are saved to mnesia DB.
 When log is replayed after a snapshot it will re-run some commits, which might
 have already succeed. To avoid that the committed transactions IDs are saved
 in a mnesia table and all operations for this transaction will be skipped and
