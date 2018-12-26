@@ -88,9 +88,10 @@ ensure_lock_proc(Locker) ->
 
 -spec get_current_ra_locker(locker() | none) -> {ok, locker()} | {error, term()}.
 get_current_ra_locker(CurrentLocker) ->
-    %% TODO: update locker cache
     case ra:process_command(mnevis_node:node_id(), {which_locker, CurrentLocker}) of
-        {ok, {ok, Locker}, _}    -> {ok, Locker};
+        {ok, {ok, Locker}, _}    ->
+            update_locker_cache(Locker),
+            {ok, Locker};
         {ok, {error, Reason}, _} -> {error, {command_error, Reason}};
         {error, Reason}          -> {error, Reason};
         {timeout, _}             -> {error, timeout}
@@ -100,7 +101,6 @@ get_current_ra_locker(CurrentLocker) ->
     mnevis_lock:lock_result() | {error, locker_not_running} | {error, is_not_leader}.
 try_lock_call({_Term, Pid}, LockRequest) ->
     try
-        %% TODO: non-infinity timeout
         gen_statem:call(Pid, LockRequest, ?LOCKER_TIMEOUT)
     catch
         exit:{noproc, {gen_statem, call, [Pid, LockRequest, ?LOCKER_TIMEOUT]}} ->

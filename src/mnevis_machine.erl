@@ -109,7 +109,6 @@ apply(_Meta, {index_read, Transaction, {Tab, SecondaryKey, Pos}}, State0) ->
         fun() ->
             catch_abort(
                 fun() ->
-                    %% TODO: catch_abort
                     {ok, mnesia:dirty_index_read(Tab, SecondaryKey, Pos)}
                 end)
         end);
@@ -274,7 +273,6 @@ commit(Transaction, Writes, Deletes, DeletesObject) ->
         {atomic, Result} ->
             {ok, Result};
         {aborted, Reason} ->
-            %% TODO: maybe clean transaction here
             {error, {aborted, Reason}}
     end.
 

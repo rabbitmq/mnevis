@@ -162,8 +162,6 @@ begin_accept(Dir, Meta) ->
             Err
     end.
 
-%% TODO: return error on invalid function clause
-
 %% accept a chunk of data
 -spec accept_chunk(Chunk :: term(), AcceptState :: term()) ->
     {ok, AcceptState :: term()} | {error, term()}.

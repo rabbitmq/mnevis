@@ -561,10 +561,8 @@ aquire_lock(Context, LockItem, LockKind) ->
     end.
 
 do_aquire_lock(Context, LockItem, LockKind) ->
-    %% TODO: rollback on wrong locker term
     case mnevis_context:has_transaction(Context) of
         true ->
-            %% TODO: handle noproc
             do_aquire_lock_with_existing_transaction(Context, LockItem, LockKind);
         false ->
             do_aquire_lock_with_new_transaction(Context, LockItem, LockKind, ?AQUIRE_LOCK_ATTEMPTS)
