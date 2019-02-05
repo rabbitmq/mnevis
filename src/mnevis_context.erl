@@ -1,7 +1,13 @@
 -module(mnevis_context).
 
 -export([init/0, init/1,
-         add_write_set/4, add_write_bag/4, add_delete/4, add_delete_object/4,
+         add_write_set/4,
+         add_write_bag/4,
+         add_delete/4,
+         add_delete_object/4,
+         add_read/4,
+         get_read/2,
+
          read_from_context/3,
          filter_read_from_context/4,
          filter_match_from_context/4,
@@ -25,6 +31,9 @@
          writes/2,
          deletes/2,
          deletes_object/2,
+
+         read_versions/1,
+
          key_deleted/3,
          delete_object_for_key/3,
          prev_cached_key/3,
@@ -81,18 +90,20 @@
 %         Run index filter on write_set cache
 %         Run index filter on write_bag cache
 
--record(context, {
-    transaction = undefined :: transaction() | undefined,
-    delete = #{},
-    delete_object = #{},
-    write_set = #{},
-    write_bag = #{}}).
+-type read_op() :: dirty_all_keys | dirty_first | dirty_last |
+                   dirty_index_match_object | dirty_index_read  |
+                   dirty_match_object | dirty_read.
 
--type context() :: #context{}.
+-type read_spec() :: {read_op(), [table() | key()]}.
+-type version() :: non_neg_integer().
+-type read_version() :: {table(), version()}.
+
 -type record() :: tuple().
 -type lock_kind() :: read | write.
 -type key() :: term().
 -type table() :: atom().
+
+-type tabkey() :: {table(), key()}.
 
 -type delete_item() :: {table(), key(), lock_kind()}.
 -type item() :: {table(), record(), lock_kind()}.
@@ -100,7 +111,25 @@
 -type transaction() :: {mnevis_lock:transaction_id(),
                         mnevis_lock_proc:locker()}.
 
--export_type([context/0, item/0, delete_item/0, transaction/0]).
+-record(context, {
+    transaction = undefined :: transaction() | undefined,
+    delete = #{} :: #{tabkey() => delete_item()},
+    delete_object = #{} :: #{tabkey() => item()},
+    write_set = #{} :: #{tabkey() => item()},
+    write_bag = #{} :: #{tabkey() => [item()]},
+    read = #{} :: #{read_spec() => [record()]},
+    read_versions = #{} :: #{table() => version()}}).
+
+-type context() :: #context{}.
+
+-export_type([context/0,
+              item/0,
+              delete_item/0,
+              transaction/0,
+              read_spec/0,
+              record/0,
+              version/0,
+              read_version/0]).
 
 -spec init() -> context().
 init() -> #context{}.
@@ -145,6 +174,10 @@ set_transaction(Transaction, Context) ->
 cleanup_changes(#context{transaction = Transaction}) ->
     #context{transaction = Transaction}.
 
+-spec read_versions(context()) -> [{table(), version()}].
+read_versions(#context{read_versions = ReadVersions}) ->
+    maps:to_list(ReadVersions).
+
 -spec deletes(context()) -> [delete_item()].
 deletes(#context{delete = Delete}) -> maps:values(Delete).
 
@@ -186,6 +219,27 @@ key_deleted(#context{delete = Delete}, Tab, Key) ->
 -spec delete_object_for_key(context(), table(), key()) -> [item()].
 delete_object_for_key(#context{delete_object = DeleteObject}, Tab, Key) ->
     maps:get({Tab, Key}, DeleteObject, []).
+
+-spec add_read(context(), read_spec(), [record()], version()) -> context().
+add_read(#context{read = Read0, read_versions = ReadVersions0} = Context,
+         {_, [Tab|_]} = ReadSpec, RecList, Version) ->
+
+    %% Assertion: version should not be different
+    Version = maps:get(Tab, ReadVersions0, Version),
+
+    Read1 = maps:put(ReadSpec, RecList, Read0),
+    ReadVersions1 = maps:put(Tab, Version, ReadVersions0),
+
+    Context#context{read = Read1, read_versions = ReadVersions1}.
+
+-spec get_read(context(), read_spec()) -> {ok, record()} | {error, not_found}.
+get_read(#context{read = Read}, ReadSpec) ->
+    case maps:get(ReadSpec, Read, not_found) of
+        not_found ->
+            {error, not_found};
+        RecList ->
+            {ok, RecList}
+    end.
 
 -spec add_write_set(context(), table(), record(), lock_kind()) -> context().
 add_write_set(#context{write_set = WriteSet,

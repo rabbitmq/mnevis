@@ -81,8 +81,8 @@ contains_underscore(_) -> false.
 
 transaction_equal(Actions0) ->
     Actions = lists:flatten(Actions0),
-    mnesia:delete_table(mnesia_table),
-    mnesia:create_table(mnesia_table, []),
+    mnevis:delete_table(mnesia_table),
+    mnevis:create_table(mnesia_table, []),
     % mnesia:create_table(mnevis_table, []),
 
     MnesiaRes = mnesia:transaction(fun() ->
@@ -91,8 +91,8 @@ transaction_equal(Actions0) ->
 
     MnesiaDB = lists:usort(ets:tab2list(mnesia_table)),
 
-    mnesia:delete_table(mnesia_table),
-    mnesia:create_table(mnesia_table, []),
+    mnevis:delete_table(mnesia_table),
+    mnevis:create_table(mnesia_table, []),
 
     RamnesiaRes = mnevis:transaction(fun() ->
         [run_op(mnesia_table, Action) || Action <- Actions]

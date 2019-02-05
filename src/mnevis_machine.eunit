@@ -6,7 +6,9 @@ init_mnesia_table() ->
     mnesia:delete_schema([node()]),
     ok = mnesia:start(),
     mnesia:create_table(committed_transaction, []),
-    mnesia:clear_table(committed_transaction).
+    mnesia:clear_table(committed_transaction),
+    mnesia:create_table(versions, []),
+    mnesia:clear_table(versions).
 
 % commit:
 %     fail if locker is not in the current term
@@ -25,18 +27,19 @@ commit_valid_locker_test() ->
     InitState = init_state(),
     Transaction = valid_transaction(InitState),
     {InitState, {ok, ok}, [{release_cursor, 1, InitState}]} =
-        mnevis_machine:apply(#{index => 1}, {commit, Transaction, {[], [], []}}, InitState),
+        mnevis_machine:apply(#{index => 1}, {commit, Transaction, {[], [], [], []}}, InitState),
     %% Transaction is already committed
     {InitState, {ok, ok}, []} =
-        mnevis_machine:apply(#{index => 1}, {commit, Transaction, {[], [], []}}, InitState),
+        mnevis_machine:apply(#{index => 1}, {commit, Transaction, {[], [], [], []}}, InitState),
     %% Locker term is different.
     InvalidTransaction = invalid_transaction(InitState),
     {InitState, {error, {aborted, wrong_locker_term}}, []} =
-        mnevis_machine:apply(#{index => 1}, {commit, InvalidTransaction, {[], [], []}}, InitState).
+        mnevis_machine:apply(#{index => 1}, {commit, InvalidTransaction, {[], [], [], []}}, InitState).
 
 commit_write_test() ->
     init_mnesia_table(),
     mnesia:create_table(foo, []),
+    mnesia:dirty_write({versions, foo, 0}),
     %% To delete
     mnesia:dirty_write({foo, to_delete, val}),
     %% To delete during delete_object
@@ -61,7 +64,7 @@ commit_write_test() ->
                             {foo, to_write, val},
                             {foo, to_not_delete_object, not_val}]),
     {InitState, {ok, ok}, _} =
-        mnevis_machine:apply(#{index => 1}, {commit, Transaction, {Writes, Deletes, DeletesObject}}, InitState),
+        mnevis_machine:apply(#{index => 1}, {commit, Transaction, {Writes, Deletes, DeletesObject, []}}, InitState),
     Table = lists:usort(ets:tab2list(foo)),
     Expected = Table.
 
@@ -70,80 +73,6 @@ commit_write_test() ->
 %     skip if transaction is committed
 %     return read data
 
-read_wrong_locker_transaction_error_test() ->
-    wrong_locker_transaction_error(read, {table, foo}).
-
-read_aborted_transaction_error_test() ->
-    aborted_transaction_error(read, {unknown_table, foo}, {no_exists,[unknown_table, foo]}).
-
-read_committed_transaction_error_test() ->
-    committed_transaction_error(read, {table, foo}).
-
-%% Index read
-
-index_read_wrong_locker_transaction_error_test() ->
-    wrong_locker_transaction_error(index_read, {table, foo, 3}).
-
-index_read_aborted_transaction_error_test() ->
-    aborted_transaction_error(index_read, {unknown_table, foo, 3}, {no_exists,[unknown_table, foo, 3]}).
-
-index_read_committed_transaction_error_test() ->
-    committed_transaction_error(index_read, {table, foo, 3}).
-
-%% Match object
-
-match_object_wrong_locker_transaction_error_test() ->
-    wrong_locker_transaction_error(match_object, {table, foo}).
-
-match_object_aborted_transaction_error_test() ->
-    aborted_transaction_error(match_object, {unknown_table, foo}, {bad_type,unknown_table,foo}).
-
-match_object_committed_transaction_error_test() ->
-    committed_transaction_error(match_object, {table, foo}).
-
-%% Index match object
-
-index_match_object_wrong_locker_transaction_error_test() ->
-    wrong_locker_transaction_error(index_match_object, {table, foo, 3}).
-
-index_match_object_aborted_transaction_error_test() ->
-    aborted_transaction_error(index_match_object, {unknown_table, foo, 3}, {bad_type,unknown_table,foo}).
-
-index_match_object_committed_transaction_error_test() ->
-    committed_transaction_error(index_match_object, {table, foo, 3}).
-
-%% All keys
-
-all_keys_wrong_locker_transaction_error_test() ->
-    wrong_locker_transaction_error(all_keys, table).
-
-all_keys_aborted_transaction_error_test() ->
-    aborted_transaction_error(all_keys, unknown_table, {no_exists,unknown_table}).
-
-all_keys_committed_transaction_error_test() ->
-    committed_transaction_error(all_keys, table).
-
-%% First
-
-first_wrong_locker_transaction_error_test() ->
-    wrong_locker_transaction_error(first, table).
-
-first_aborted_transaction_error_test() ->
-    aborted_transaction_error(first, unknown_table, {no_exists,[unknown_table]}).
-
-first_committed_transaction_error_test() ->
-    committed_transaction_error(first, table).
-
-%% Last
-
-last_wrong_locker_transaction_error_test() ->
-    wrong_locker_transaction_error(last, table).
-
-last_aborted_transaction_error_test() ->
-    aborted_transaction_error(last, unknown_table, {no_exists,[unknown_table]}).
-
-last_committed_transaction_error_test() ->
-    committed_transaction_error(last, table).
 
 %% Prev
 
@@ -187,7 +116,7 @@ committed_transaction_error(Command, Args) ->
     InitState = init_state(),
     Transaction = valid_transaction(InitState),
     {InitState, {ok, _}, _} =
-        mnevis_machine:apply(#{index => 1}, {commit, Transaction, {[], [], []}}, InitState),
+        mnevis_machine:apply(#{index => 1}, {commit, Transaction, {[], [], [], []}}, InitState),
 
     {InitState, {error, {transaction_committed, Transaction}}, []} =
         mnevis_machine:apply(none, {Command, Transaction, Args}, InitState).

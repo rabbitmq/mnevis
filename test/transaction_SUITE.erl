@@ -135,15 +135,15 @@ end_per_testcase(_Test, Config) ->
     Config.
 
 create_sample_tables() ->
-    {atomic, ok} = mnesia:create_table(sample, [{type, set}, {index, [3]}]),
-    {atomic, ok} = mnesia:create_table(sample_bag, [{type, bag}, {index, [3]}]),
-    {atomic, ok} = mnesia:create_table(sample_ordered_set, [{type, ordered_set}, {index, [3]}]),
+    {atomic, ok} = mnevis:create_table(sample, [{type, set}, {index, [3]}]),
+    {atomic, ok} = mnevis:create_table(sample_bag, [{type, bag}, {index, [3]}]),
+    {atomic, ok} = mnevis:create_table(sample_ordered_set, [{type, ordered_set}, {index, [3]}]),
     ok.
 
 delete_sample_tables() ->
-    {atomic, ok} = mnesia:delete_table(sample),
-    {atomic, ok} = mnesia:delete_table(sample_bag),
-    {atomic, ok} = mnesia:delete_table(sample_ordered_set),
+    {atomic, ok} = mnevis:delete_table(sample),
+    {atomic, ok} = mnevis:delete_table(sample_bag),
+    {atomic, ok} = mnevis:delete_table(sample_ordered_set),
     ok.
 
 add_sample({Tab, Key, Val}) ->

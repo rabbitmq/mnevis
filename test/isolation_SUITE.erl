@@ -44,11 +44,11 @@ end_per_testcase(_Test, Config) ->
 
 create_sample_table() ->
     delete_sample_table(),
-    mnesia:create_table(sample, []),
+    mnevis:create_table(sample, []),
     ok.
 
 delete_sample_table() ->
-    mnesia:delete_table(sample),
+    mnevis:delete_table(sample),
     ok.
 
 add_sample(Key, Val) ->

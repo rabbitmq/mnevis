@@ -9,7 +9,7 @@
          state_enter/2,
          snapshot_module/0]).
 
-
+-export([read_query/3]).
 
 -record(state, {locker_status = down,
                 locker = {0, none} :: mnevis_lock_proc:locker() | {0, none}}).
@@ -19,7 +19,6 @@
 -type config() :: map().
 
 -type reply() :: {ok, term()} | {error, term()}.
--type reply(T) :: {ok, T} | {error, term()}.
 -type reply(T, E) :: {ok, T} | {error, E}.
 -type apply_result(T, Err) :: {state(), reply(T, Err), ra_machine:effects()}.
 
@@ -28,14 +27,8 @@
 -type command() :: {commit, transaction(),
                             {[mnevis_context:item()],
                              [mnevis_context:delete_item()],
-                             [mnevis_context:item()]}} |
-                   {read, transaction(), {mnevis:table(), term()}} |
-                   {index_read, transaction(), {mnevis:table(), term(), integer()}} |
-                   {match_object, transaction(), {mnevis:table(), term()}} |
-                   {index_match_object, transaction(), {mnevis:table(), term(), integer()}} |
-                   {all_keys, transaction(), {mnevis:table()}} |
-                   {first, transaction(), {mnevis:table()}} |
-                   {last, transaction(), {mnevis:table()}} |
+                             [mnevis_context:item()],
+                             [mnevis_context:read_version()]}} |
                    {prev, transaction(), {mnevis:table(), term()}} |
                    {next, transaction(), {mnevis:table(), term()}} |
                    {create_table, mnevis:table(), [term()]} |
@@ -57,11 +50,9 @@
 init(_Conf) ->
     %% TODO move committed transaction creation to the create_cluster function
     %% separate start and recovery
-    case create_committed_transaction_table() of
-        {atomic, ok} -> ok;
-        {aborted,{already_exists,committed_transaction}} -> ok;
-        Other -> error({cannot_create_committed_transaction_table, Other})
-    end,
+    create_committed_transaction_table(),
+
+    mnevis_read:create_versions_table(),
     ok = mnevis_lock_proc:create_locker_cache(),
     #state{}.
 
@@ -82,10 +73,10 @@ snapshot_module() ->
 
 -spec apply(map(), command(), state()) ->
     {state(), reply(), ra_machine:effects()}.
-apply(Meta, {commit, Transaction, {Writes, Deletes, DeletesObject}}, State)  ->
+apply(Meta, {commit, Transaction, {Writes, Deletes, DeletesObject, ReadVersions}}, State)  ->
     with_valid_locker(Transaction, State,
         fun() ->
-            Result = commit(Transaction, Writes, Deletes, DeletesObject),
+            Result = commit(Transaction, Writes, Deletes, DeletesObject, ReadVersions),
             %% TODO: return committed/skipped
             case Result of
                 {ok, committed} ->
@@ -95,62 +86,6 @@ apply(Meta, {commit, Transaction, {Writes, Deletes, DeletesObject}}, State)  ->
                 _ ->
                     {State, Result, []}
             end
-        end);
-apply(_Meta, {read, Transaction, {Tab, Key}}, State) ->
-    with_transaction(Transaction, State,
-        fun() ->
-            catch_abort(
-                fun() ->
-                    {ok, mnesia:dirty_read(Tab, Key)}
-                end)
-        end);
-apply(_Meta, {index_read, Transaction, {Tab, SecondaryKey, Pos}}, State0) ->
-    with_transaction(Transaction, State0,
-        fun() ->
-            catch_abort(
-                fun() ->
-                    {ok, mnesia:dirty_index_read(Tab, SecondaryKey, Pos)}
-                end)
-        end);
-apply(_Meta, {match_object, Transaction, {Tab, Pattern}}, State0) ->
-    with_transaction(Transaction, State0,
-        fun() ->
-            catch_abort(
-                fun() ->
-                    {ok, mnesia:dirty_match_object(Tab, Pattern)}
-                end)
-        end);
-apply(_Meta, {index_match_object, Transaction, {Tab, Pattern, Pos}}, State0) ->
-    with_transaction(Transaction, State0,
-        fun() ->
-            catch_abort(
-                fun() ->
-                    {ok, mnesia:dirty_index_match_object(Tab, Pattern, Pos)}
-                end)
-        end);
-apply(_Meta, {all_keys, Transaction, Tab}, State0) ->
-    with_transaction(Transaction, State0,
-        fun() ->
-            catch_abort(
-                fun() ->
-                    {ok, mnesia:dirty_all_keys(Tab)}
-                end)
-        end);
-apply(_Meta, {first, Transaction, Tab}, State0) ->
-    with_transaction(Transaction, State0,
-        fun() ->
-            catch_abort(
-                fun() ->
-                    {ok, mnesia:dirty_first(Tab)}
-                end)
-        end);
-apply(_Meta, {last, Transaction, Tab}, State0) ->
-    with_transaction(Transaction, State0,
-        fun() ->
-            catch_abort(
-                fun() ->
-                    {ok, mnesia:dirty_last(Tab)}
-                end)
         end);
 apply(_Meta, {prev, Transaction, {Tab, Key}}, State0) ->
     with_transaction(Transaction, State0,
@@ -196,9 +131,17 @@ apply(_Meta, {next, Transaction, {Tab, Key}}, State0) ->
         end);
 %% TODO: return type for create_table
 apply(_Meta, {create_table, Tab, Opts}, State) ->
-    {State, {ok, mnesia:create_table(Tab, Opts)}, []};
+    Result = case mnesia:create_table(Tab, Opts) of
+        {atomic, ok} ->
+            mnevis_read:init_version(Tab),
+            {atomic, ok};
+        Res ->
+            Res
+    end,
+    {State, {ok, Result}, []};
 apply(_Meta, {delete_table, Tab}, State) ->
-    {State, {ok, mnesia:delete_table(Tab)}, []};
+    Result = mnesia:delete_table(Tab),
+    {State, {ok, Result}, []};
 apply(_Meta, {down, Pid, _Reason}, State = #state{locker = {_Term, LockerPid}}) ->
     case Pid of
         LockerPid ->
@@ -247,35 +190,60 @@ apply(_Meta, Unknown, State) ->
 %% Top level helpers
 
 create_committed_transaction_table() ->
-    mnesia:create_table(committed_transaction,
-        [{attributes, record_info(fields, committed_transaction)},
-         {record_name, committed_transaction},
-         {type, ordered_set}]).
+    CreateResult = mnesia:create_table(committed_transaction,
+                                       [{attributes, record_info(fields, committed_transaction)},
+                                        {record_name, committed_transaction},
+                                        {type, ordered_set}]),
+    case CreateResult of
+        {atomic, ok} -> ok;
+        {aborted,{already_exists,committed_transaction}} -> ok;
+        Other -> error({cannot_create_committed_transaction_table, Other})
+    end.
 
 -spec commit(transaction(), [mnevis_context:item()],
                             [mnevis_context:delete_item()],
-                            [mnevis_context:item()]) ->
+                            [mnevis_context:item()],
+                            [mnevis_context:read_version()]) ->
     {ok, committed} | {ok, skipped} | {error, {aborted, term()}}.
-commit(Transaction, Writes, Deletes, DeletesObject) ->
+commit(Transaction, Writes, Deletes, DeletesObject, ReadVersions) ->
     Res = mnesia:transaction(fun() ->
         case mnesia:read(committed_transaction, Transaction) of
             [] ->
-                ok = save_committed_transaction(Transaction),
-                _ = apply_deletes(Deletes),
-                _ = apply_writes(Writes),
-                _ = apply_deletes_object(DeletesObject),
-                committed;
+                case mnevis_read:compare_versions(ReadVersions) of
+                    ok ->
+                        ok = save_committed_transaction(Transaction),
+                        ok = update_table_versions(Writes, Deletes, DeletesObject),
+                        _ = apply_deletes(Deletes),
+                        _ = apply_writes(Writes),
+                        _ = apply_deletes_object(DeletesObject),
+                        committed;
+                    {version_mismatch, MismatchVersions} ->
+                        {version_mismatch, MismatchVersions}
+                end;
             %% Transaction is already committed.
             [{committed_transaction, Transaction, committed}] ->
                 skipped
         end
     end),
     case Res of
+        {atomic, {version_mismatch, MismatchVersions}} ->
+            {error, {aborted, {version_mismatch, MismatchVersions}}};
         {atomic, Result} ->
             {ok, Result};
         {aborted, Reason} ->
             {error, {aborted, Reason}}
     end.
+
+update_table_versions(Writes, Deletes, DeletesObject) ->
+    Tabs = lists:usort([Tab || {Tab, _, _} <- Writes ++ Deletes ++ DeletesObject]),
+    lists:foreach(
+        fun(Tab) ->
+            %% This function may crash
+            %% Version should be in the database at this point
+            ok = mnevis_read:update_version(Tab)
+        end,
+        Tabs).
+
 
 -spec snapshot_effects(map(), state()) -> ra_machine:effects().
 snapshot_effects(#{index := RaftIdx}, State) ->
@@ -342,6 +310,31 @@ transaction_recorded_as_committed(Transaction) ->
             false;
         [{committed_transaction, Transaction, committed}] ->
             true
+    end.
+
+-spec read_query(mnevis_context:read_spec(), mnevis_lock_proc:locker(), state()) ->
+    {ok, [mnevis_context:record()], mnevis_context:version()} |
+    {error, {aborted, term()}} |
+    {error, invalid_locker}.
+read_query(ReadSpec, Locker, State) ->
+    case State of
+        #state{locker = Locker} ->
+            try
+                case mnevis_read:local_read_query(ReadSpec) of
+                    {ok, Res} ->
+                        {ok, Res};
+                    {error, Error} ->
+                        {error, {aborted, Error}}
+                end
+            catch
+                exit:{aborted, Abort} ->
+                    {error, {aborted, Abort}};
+                _:Err ->
+                    {error, {aborted, Err}}
+            end;
+        _ ->
+            %% TODO: return valid locker
+            {error, invalid_locker}
     end.
 
 %% ==========================
