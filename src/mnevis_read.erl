@@ -111,10 +111,10 @@ init_version(Tab) ->
 -spec wait_for_versions([mnevis_context:read_version()]) -> ok.
 wait_for_versions(TargetVersions) ->
     {ok, _} = mnesia:subscribe({table, versions, simple}),
-    case compare_versions(TargetVersions) of
-        ok -> ok;
+    VersionsToWait = case compare_versions(TargetVersions) of
+        ok -> [];
         {version_mismatch, CurrentVersions} ->
-            WaitForVersions = lists:filtermap(
+            lists:filtermap(
                 fun({Tab, CurrentVersion}) ->
                     %% Assertion: The version should be in the matched versions
                     {Tab, TargetVersion} = lists:keyfind(Tab, 1, TargetVersions),
@@ -123,14 +123,9 @@ wait_for_versions(TargetVersions) ->
                         false -> false
                     end
                 end,
-                CurrentVersions),
-
-            case WaitForVersions of
-                [] -> ok;
-                _  ->
-                    wait_for_mnesia_updates(WaitForVersions)
-            end
-    end.
+                CurrentVersions)
+    end,
+    wait_for_mnesia_updates(VersionsToWait).
 
 -spec wait_for_mnesia_updates([mnevis_context:read_version()]) -> ok.
 wait_for_mnesia_updates([]) ->
