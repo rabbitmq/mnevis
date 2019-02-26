@@ -98,7 +98,10 @@ get_current_ra_locker(CurrentLocker) ->
     end.
 
 -spec try_lock_call(locker(), mnevis_lock:lock_request()) ->
-    mnevis_lock:lock_result() | {error, locker_not_running} | {error, is_not_leader}.
+    mnevis_lock:lock_result() |
+    {ok, mnevis_lock:transaction_id(), term()} |
+    {error, locker_not_running} |
+    {error, is_not_leader}.
 try_lock_call({_Term, Pid}, LockRequest) ->
     try
         gen_statem:call(Pid, LockRequest, ?LOCKER_TIMEOUT)
@@ -145,9 +148,27 @@ candidate(info, _Info, State) ->
 
 -spec leader(gen_statem:event_type(), term(), state()) ->
     gen_statem:event_handler_result(election_states()).
-leader({call, From}, {lock, TransationId, Source, LockItem, LockKind}, State) ->
-    {LockResult, State1} = lock(TransationId, Source, LockItem, LockKind, State),
-    {keep_state, State1, [{reply, From, LockResult}]};
+leader({call, From},
+       {lock, TransationId, Source, LockItem, LockKind},
+       State = #state{lock_state = LockState}) ->
+    {LockResult, LockState1} = mnevis_lock:lock(TransationId, Source, LockItem, LockKind, LockState),
+    {keep_state, State#state{lock_state = LockState1}, [{reply, From, LockResult}]};
+leader({call, From},
+       {lock_version, TransationId, Source, LockItem, LockKind},
+       State = #state{lock_state = LockState}) ->
+    {LockResult, LockState1} = mnevis_lock:lock(TransationId, Source, LockItem, LockKind, LockState),
+
+    LockVersionResult = case LockResult of
+        {ok, Tid} ->
+            Table = table(LockItem),
+            case mnevis_read:get_version(table(LockItem)) of
+                {ok, Version}      -> {ok, Tid, {Table, Version}};
+                {error, no_exists} -> {ok, Tid, no_exists}
+            end;
+        Other -> Other
+    end,
+
+    {keep_state, State#state{lock_state = LockState1}, [{reply, From, LockVersionResult}]};
 leader({call, From}, {rollback, TransationId, Source}, State) ->
     LockState = mnevis_lock:cleanup(TransationId, Source, State#state.lock_state),
     {keep_state, State#state{lock_state = LockState}, [{reply, From, ok}]};
@@ -211,13 +232,8 @@ reject(State) ->
 confirm(State) ->
     {next_state, leader, State}.
 
-
-lock(TransationId, Source, LockItem, LockKind, State = #state{lock_state = LockState}) ->
-    {LockResult, LockState1} = mnevis_lock:lock(TransationId, Source, LockItem, LockKind, LockState),
-    {LockResult, State#state{lock_state = LockState1}}.
-
-
-
-
-
+-spec table(mnevis_lock:lock_item()) -> mnevis:table().
+table({table, Table}) -> Table;
+table({Table, _Item}) -> Table;
+table({global, _, _} = LockItem) -> error({table_undefined, LockItem}).
 

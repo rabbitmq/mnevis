@@ -202,33 +202,19 @@ commit_transaction() ->
             Writes = mnevis_context:writes(Context),
             Deletes = mnevis_context:deletes(Context),
             DeletesObject = mnevis_context:deletes_object(Context),
-            ReadVersions = mnevis_context:read_versions(Context),
-            %% TODO: handle this without exceptions
-            check_read_versions_still_valid(ReadVersions),
-            case {Writes, Deletes, DeletesObject, ReadVersions} of
-                {[], [], [], []} ->
-                    %% No changes. No need to send a ra command
-                    ok;
+            case mnevis_context:is_empty(Context) of
+                true -> ok;
                 %% TODO: read-only commits
                 _ ->
                     {ok, _} = execute_command_with_retry(Context, commit,
                                                          {Writes,
                                                           Deletes,
-                                                          DeletesObject,
-                                                          ReadVersions}),
+                                                          DeletesObject}),
                     ok
             end,
             cleanup_transaction(Transaction)
     end,
     ok.
-
-check_read_versions_still_valid(Versions) ->
-    case mnevis_read:compare_versions(Versions) of
-        ok ->
-            ok;
-        {version_mismatch, Mismatch} ->
-            mnesia:abort({version_mismatch, Mismatch})
-    end.
 
 maybe_rollback_transaction() ->
     case is_transaction() of
@@ -302,41 +288,25 @@ read(_ActivityId, _Opaque, Tab, Key, LockKind) ->
         deleted -> [];
         {deleted_and_written, bag, Recs} -> Recs;
         _ ->
-            with_lock(Context0, {Tab, Key}, LockKind, fun() ->
+            ReadQuery = {dirty_read, [Tab, Key]},
+            with_lock_and_version(Context0, {Tab, Key}, LockKind, fun() ->
                 Context1 = get_transaction_context(),
                 %% We read here separately, because lock kind may be different from the
                 %% previous.
                 %% We use dirty operations here because we want to call them
                 %% directly via erlang:apply/3
-                {RecList, Context2} = execute_read_query({dirty_read, [Tab, Key]}, Context1),
+                {RecList, Context2} = execute_local_read_query(ReadQuery, Context1),
                 mnevis_context:filter_read_from_context(Context2, Tab, Key, RecList)
             end)
     end.
 
-execute_read_query(ReadSpec, Context) ->
+execute_local_read_query({Op, Args} = ReadSpec, Context) ->
     case mnevis_context:get_read(Context, ReadSpec) of
         {ok, CachedRecList} ->
             {CachedRecList, Context};
         {error, not_found} ->
-            Locker = mnevis_context:locker(Context),
-            ReadVersions = mnevis_context:read_versions(Context),
-            {RecList, Version} =
-                case mnevis_read:local_read_query(ReadSpec, ReadVersions) of
-                    {ok, {LocalRecList, LocalVersion}} ->
-                        {LocalRecList, LocalVersion};
-                    {error, {no_exists, _}} ->
-                        case ra_leader_query(ReadSpec, Locker) of
-                            {ok, {LeaderRecList, LeaderVersion}} ->
-                                {LeaderRecList, LeaderVersion};
-                            {error, {aborted, Err}} ->
-                                mnesia:abort(Err);
-                            {error, invalid_locker} ->
-                                mnesia:abort(wrong_locker_term)
-                        end;
-                    {error, {version_mismatch, Versions}} ->
-                        mnesia:abort({version_mismatch, Versions})
-                end,
-            NewContext = mnevis_context:add_read(Context, ReadSpec, RecList, Version),
+            RecList = erlang:apply(mnesia, Op, Args),
+            NewContext = mnevis_context:add_read(Context, ReadSpec, RecList),
             update_transaction_context(NewContext),
             {RecList, NewContext}
     end.
@@ -344,17 +314,17 @@ execute_read_query(ReadSpec, Context) ->
 
 match_object(_ActivityId, _Opaque, Tab, Pattern, LockKind) ->
     Context0 = get_transaction_context(),
-    with_lock(Context0, {table, Tab}, LockKind, fun() ->
+    with_lock_and_version(Context0, {table, Tab}, LockKind, fun() ->
         Context1 = get_transaction_context(),
-        {RecList, Context2} = execute_read_query({dirty_match_object, [Tab, Pattern]}, Context1),
+        {RecList, Context2} = execute_local_read_query({dirty_match_object, [Tab, Pattern]}, Context1),
         mnevis_context:filter_match_from_context(Context2, Tab, Pattern, RecList)
     end).
 
 all_keys(ActivityId, Opaque, Tab, LockKind) ->
     Context = get_transaction_context(),
-    with_lock(Context, {table, Tab}, LockKind, fun() ->
+    with_lock_and_version(Context, {table, Tab}, LockKind, fun() ->
         Context1 = get_transaction_context(),
-        {AllKeys, Context2} = execute_read_query({dirty_all_keys, [Tab]}, Context1),
+        {AllKeys, Context2} = execute_local_read_query({dirty_all_keys, [Tab]}, Context1),
 
         case mnevis_context:deletes_object(Context2, Tab) of
             [] ->
@@ -374,17 +344,17 @@ all_keys(ActivityId, Opaque, Tab, LockKind) ->
 
 first(ActivityId, Opaque, Tab) ->
     Context = get_transaction_context(),
-    with_lock(Context, {table, Tab}, read, fun() ->
+    with_lock_and_version(Context, {table, Tab}, read, fun() ->
         Context1 = get_transaction_context(),
-        {Key, Context2} = execute_read_query({dirty_first, [Tab]}, Context1),
+        {Key, Context2} = execute_local_read_query({dirty_first, [Tab]}, Context1),
         check_key(ActivityId, Opaque, Tab, Key, '$end_of_table', next, Context2)
     end).
 
 last(ActivityId, Opaque, Tab) ->
     Context = get_transaction_context(),
-    with_lock(Context, {table, Tab}, read, fun() ->
+    with_lock_and_version(Context, {table, Tab}, read, fun() ->
         Context1 = get_transaction_context(),
-        {Key, Context2} = execute_read_query({dirty_last, [Tab]}, Context1),
+        {Key, Context2} = execute_local_read_query({dirty_last, [Tab]}, Context1),
         check_key(ActivityId, Opaque, Tab, Key, '$end_of_table', prev, Context2)
     end).
 
@@ -444,17 +414,17 @@ do_foldr(ActivityId, Opaque, Fun, Acc, Tab, LockKind, Key) ->
 
 index_match_object(_ActivityId, _Opaque, Tab, Pattern, Pos, LockKind) ->
     Context = get_transaction_context(),
-    with_lock(Context, {table, Tab}, LockKind, fun() ->
+    with_lock_and_version(Context, {table, Tab}, LockKind, fun() ->
         Context1 = get_transaction_context(),
-        {RecList, Context2} = execute_read_query({dirty_index_match_object, [Tab, Pattern, Pos]}, Context1),
+        {RecList, Context2} = execute_local_read_query({dirty_index_match_object, [Tab, Pattern, Pos]}, Context1),
         mnevis_context:filter_match_from_context(Context2, Tab, Pattern, RecList)
     end).
 
 index_read(_ActivityId, _Opaque, Tab, SecondaryKey, Pos, LockKind) ->
     Context = get_transaction_context(),
-    with_lock(Context, {table, Tab}, LockKind, fun() ->
+    with_lock_and_version(Context, {table, Tab}, LockKind, fun() ->
         Context1 = get_transaction_context(),
-        {RecList, Context2} = execute_read_query({dirty_index_read, [Tab, SecondaryKey, Pos]}, Context1),
+        {RecList, Context2} = execute_local_read_query({dirty_index_read, [Tab, SecondaryKey, Pos]}, Context1),
         mnevis_context:filter_index_from_context(Context2, Tab, SecondaryKey, Pos, RecList)
     end).
 
@@ -475,16 +445,6 @@ select(_ActivityId, _Opaque, _Tab, _MatchSpec, _Limit, _LockKind) ->
 
 select_cont(_ActivityId, _Opaque, _Cont) ->
     mnesia:abort(not_implemented).
-
-
-%% ==========================
-
-
-ra_leader_query(Request, Locker) ->
-    NodeId = mnevis_node:node_id(),
-    %% TODO: handle errors.
-    {ok, {_, Data}, _} = ra:leader_query(NodeId, {mnevis_machine, read_query, [Request, Locker]}),
-    Data.
 
 
 %% ==========================
@@ -597,63 +557,78 @@ cleanup_all_unlock_messages() ->
     end.
 
 with_lock(Context, LockItem, LockKind, Fun) ->
-    case aquire_lock(Context, LockItem, LockKind) of
-        ok           -> Fun();
+    case aquire_lock(Context, LockItem, LockKind, lock) of
+        {ok, _}      -> Fun();
         {error, Err} -> mnesia:abort(Err)
     end.
 
-aquire_lock(Context, LockItem, LockKind) ->
-    case do_aquire_lock(Context, LockItem, LockKind) of
-        {ok, Context1} ->
+with_lock_and_version(Context, LockItem, LockKind, Fun) ->
+    case aquire_lock(Context, LockItem, LockKind, lock_version) of
+        {ok, no_exists} ->
+            Fun();
+        {ok, TableVersion} ->
+            mnevis_read:wait_for_versions([TableVersion]),
+            Fun();
+        {error, Err} ->
+            mnesia:abort(Err)
+    end.
+
+aquire_lock(Context, LockItem, LockKind, Method) ->
+    case do_aquire_lock(Context, LockItem, LockKind, Method) of
+        {ok, Response, Context1} ->
             update_transaction_context(Context1),
-            ok;
-        {error, Context1, Err} ->
+            {ok, Response};
+        {error, Err, Context1} ->
             update_transaction_context(Context1),
             {error, Err}
     end.
 
-do_aquire_lock(Context, LockItem, LockKind) ->
+do_aquire_lock(Context, LockItem, LockKind, Method) ->
     case mnevis_context:has_transaction(Context) of
         true ->
-            do_aquire_lock_with_existing_transaction(Context, LockItem, LockKind);
+            do_aquire_lock_with_existing_transaction(Context, LockItem, LockKind, Method);
         false ->
-            do_aquire_lock_with_new_transaction(Context, LockItem, LockKind, ?AQUIRE_LOCK_ATTEMPTS)
+            do_aquire_lock_with_new_transaction(Context, LockItem, LockKind, Method, ?AQUIRE_LOCK_ATTEMPTS)
     end.
 
-do_aquire_lock_with_existing_transaction(Context, LockItem, LockKind) ->
+do_aquire_lock_with_existing_transaction(Context, LockItem, LockKind, Method) ->
     Tid = mnevis_context:transaction_id(Context),
     Locker = mnevis_context:locker(Context),
-    LockRequest = {lock, Tid, self(), LockItem, LockKind},
+    LockRequest = {Method, Tid, self(), LockItem, LockKind},
     case mnevis_lock_proc:try_lock_call(Locker, LockRequest) of
-        {ok, Tid}                     -> {ok, Context};
-        {error, {locked, Tid}}        -> {error, Context, locked};
-        {error, {locked_nowait, Tid}} -> {error, Context, locked_nowait};
+        {ok, Tid, Response}           -> {ok, Response, Context};
+        {ok, Tid}                     -> {ok, ok, Context};
+        {error, {locked, Tid}}        -> {error, locked, Context};
+        {error, {locked_nowait, Tid}} -> {error, locked_nowait, Context};
         {error, Err}                  -> mnesia:abort(Err)
     end.
 
-do_aquire_lock_with_new_transaction(_Context, _LockItem, _LockKind, 0) ->
+do_aquire_lock_with_new_transaction(_Context, _LockItem, _LockKind, _Method, 0) ->
     mnesia:abort({unable_to_aquire_lock, no_promoted_lock_processes});
-do_aquire_lock_with_new_transaction(Context, LockItem, LockKind, Attempts) ->
+do_aquire_lock_with_new_transaction(Context, LockItem, LockKind, Method, Attempts) ->
     ok = mnevis_context:assert_no_transaction(Context),
     Locker = case mnevis_lock_proc:locate() of
         {ok, L}      -> L;
         {error, Err} -> mnesia:abort(Err)
     end,
     %% TODO: include lock term into lock request.
-    LockRequest = {lock, undefined, self(), LockItem, LockKind},
+    LockRequest = {Method, undefined, self(), LockItem, LockKind},
     case retry_lock_call(Locker, LockRequest) of
         {ok, Tid1} ->
             NewContext = mnevis_context:set_transaction({Tid1, Locker}, Context),
-            {ok, NewContext};
+            {ok, ok, NewContext};
+        {ok, Tid1, Response} ->
+            NewContext = mnevis_context:set_transaction({Tid1, Locker}, Context),
+            {ok, Response, NewContext};
         {error, {locked, Tid1}} ->
             NewContext = mnevis_context:set_transaction({Tid1, Locker}, Context),
-            {error, NewContext, locked};
+            {error, locked, NewContext};
         {error, {locked_nowait, Tid1}} ->
             NewContext = mnevis_context:set_transaction({Tid1, Locker}, Context),
-            {error, NewContext, locked_nowait};
+            {error, locked_nowait, NewContext};
         {error, is_not_leader} ->
             %% TODO: notify when leader or timeout
-            do_aquire_lock_with_new_transaction(Context, LockItem, LockKind, Attempts - 1);
+            do_aquire_lock_with_new_transaction(Context, LockItem, LockKind, Method, Attempts - 1);
         {error, Error} ->
             mnesia:abort(Error)
     end.

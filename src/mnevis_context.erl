@@ -1,11 +1,12 @@
 -module(mnevis_context).
 
 -export([init/0, init/1,
+         is_empty/1,
          add_write_set/4,
          add_write_bag/4,
          add_delete/4,
          add_delete_object/4,
-         add_read/4,
+         add_read/3,
          get_read/2,
 
          read_from_context/3,
@@ -31,8 +32,6 @@
          writes/2,
          deletes/2,
          deletes_object/2,
-
-         read_versions/1,
 
          key_deleted/3,
          delete_object_for_key/3,
@@ -117,8 +116,7 @@
     delete_object = #{} :: #{tabkey() => item()},
     write_set = #{} :: #{tabkey() => item()},
     write_bag = #{} :: #{tabkey() => [item()]},
-    read = #{} :: #{read_spec() => [record()]},
-    read_versions = #{} :: #{table() => version()}}).
+    read = #{} :: #{read_spec() => [record()]}}).
 
 -type context() :: #context{}.
 
@@ -150,6 +148,15 @@ locker(#context{transaction = {_, Locker}}) -> Locker.
 has_transaction(#context{transaction = undefined}) -> false;
 has_transaction(#context{transaction = {_, {_, _}}}) -> true.
 
+-spec is_empty(context()) -> boolean().
+is_empty(#context{delete = Delete, delete_object = DeleteObject,
+                  write_set = WriteSet, write_bag = WriteBag, read = Read}) ->
+    0 == maps:size(Delete) andalso
+    0 == maps:size(DeleteObject) andalso
+    0 == maps:size(WriteSet) andalso
+    0 == maps:size(WriteBag) andalso
+    0 == maps:size(Read).
+
 -spec assert_transaction(context()) -> ok.
 assert_transaction(Context) ->
     case has_transaction(Context) of
@@ -173,10 +180,6 @@ set_transaction(Transaction, Context) ->
 -spec cleanup_changes(context()) -> context().
 cleanup_changes(#context{transaction = Transaction}) ->
     #context{transaction = Transaction}.
-
--spec read_versions(context()) -> [{table(), version()}].
-read_versions(#context{read_versions = ReadVersions}) ->
-    maps:to_list(ReadVersions).
 
 -spec deletes(context()) -> [delete_item()].
 deletes(#context{delete = Delete}) -> maps:values(Delete).
@@ -220,17 +223,10 @@ key_deleted(#context{delete = Delete}, Tab, Key) ->
 delete_object_for_key(#context{delete_object = DeleteObject}, Tab, Key) ->
     maps:get({Tab, Key}, DeleteObject, []).
 
--spec add_read(context(), read_spec(), [record()], version()) -> context().
-add_read(#context{read = Read0, read_versions = ReadVersions0} = Context,
-         {_, [Tab|_]} = ReadSpec, RecList, Version) ->
-
-    %% Assertion: version should not be different
-    Version = maps:get(Tab, ReadVersions0, Version),
-
+-spec add_read(context(), read_spec(), [record()]) -> context().
+add_read(#context{read = Read0} = Context, ReadSpec, RecList) ->
     Read1 = maps:put(ReadSpec, RecList, Read0),
-    ReadVersions1 = maps:put(Tab, Version, ReadVersions0),
-
-    Context#context{read = Read1, read_versions = ReadVersions1}.
+    Context#context{read = Read1}.
 
 -spec get_read(context(), read_spec()) -> {ok, record()} | {error, not_found}.
 get_read(#context{read = Read}, ReadSpec) ->

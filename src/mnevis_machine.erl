@@ -9,8 +9,6 @@
          state_enter/2,
          snapshot_module/0]).
 
--export([read_query/3]).
-
 -record(state, {locker_status = down,
                 locker = {0, none} :: mnevis_lock_proc:locker() | {0, none}}).
 
@@ -27,8 +25,7 @@
 -type command() :: {commit, transaction(),
                             {[mnevis_context:item()],
                              [mnevis_context:delete_item()],
-                             [mnevis_context:item()],
-                             [mnevis_context:read_version()]}} |
+                             [mnevis_context:item()]}} |
                    {prev, transaction(), {mnevis:table(), term()}} |
                    {next, transaction(), {mnevis:table(), term()}} |
                    {create_table, mnevis:table(), [term()]} |
@@ -73,10 +70,10 @@ snapshot_module() ->
 
 -spec apply(map(), command(), state()) ->
     {state(), reply(), ra_machine:effects()}.
-apply(Meta, {commit, Transaction, {Writes, Deletes, DeletesObject, ReadVersions}}, State)  ->
+apply(Meta, {commit, Transaction, {Writes, Deletes, DeletesObject}}, State)  ->
     with_valid_locker(Transaction, State,
         fun() ->
-            Result = commit(Transaction, Writes, Deletes, DeletesObject, ReadVersions),
+            Result = commit(Transaction, Writes, Deletes, DeletesObject),
             %% TODO: return committed/skipped
             case Result of
                 {ok, committed} ->
@@ -202,32 +199,24 @@ create_committed_transaction_table() ->
 
 -spec commit(transaction(), [mnevis_context:item()],
                             [mnevis_context:delete_item()],
-                            [mnevis_context:item()],
-                            [mnevis_context:read_version()]) ->
+                            [mnevis_context:item()]) ->
     {ok, committed} | {ok, skipped} | {error, {aborted, term()}}.
-commit(Transaction, Writes, Deletes, DeletesObject, ReadVersions) ->
+commit(Transaction, Writes, Deletes, DeletesObject) ->
     Res = mnesia:transaction(fun() ->
         case mnesia:read(committed_transaction, Transaction) of
             [] ->
-                case mnevis_read:compare_versions(ReadVersions) of
-                    ok ->
-                        ok = save_committed_transaction(Transaction),
-                        ok = update_table_versions(Writes, Deletes, DeletesObject),
-                        _ = apply_deletes(Deletes),
-                        _ = apply_writes(Writes),
-                        _ = apply_deletes_object(DeletesObject),
-                        committed;
-                    {version_mismatch, MismatchVersions} ->
-                        {version_mismatch, MismatchVersions}
-                end;
+                ok = save_committed_transaction(Transaction),
+                ok = update_table_versions(Writes, Deletes, DeletesObject),
+                _ = apply_deletes(Deletes),
+                _ = apply_writes(Writes),
+                _ = apply_deletes_object(DeletesObject),
+                committed;
             %% Transaction is already committed.
             [{committed_transaction, Transaction, committed}] ->
                 skipped
         end
     end),
     case Res of
-        {atomic, {version_mismatch, MismatchVersions}} ->
-            {error, {aborted, {version_mismatch, MismatchVersions}}};
         {atomic, Result} ->
             {ok, Result};
         {aborted, Reason} ->
@@ -310,31 +299,6 @@ transaction_recorded_as_committed(Transaction) ->
             false;
         [{committed_transaction, Transaction, committed}] ->
             true
-    end.
-
--spec read_query(mnevis_context:read_spec(), mnevis_lock_proc:locker(), state()) ->
-    {ok, [mnevis_context:record()], mnevis_context:version()} |
-    {error, {aborted, term()}} |
-    {error, invalid_locker}.
-read_query(ReadSpec, Locker, State) ->
-    case State of
-        #state{locker = Locker} ->
-            try
-                case mnevis_read:local_read_query(ReadSpec) of
-                    {ok, Res} ->
-                        {ok, Res};
-                    {error, Error} ->
-                        {error, {aborted, Error}}
-                end
-            catch
-                exit:{aborted, Abort} ->
-                    {error, {aborted, Abort}};
-                _:Err ->
-                    {error, {aborted, Err}}
-            end;
-        _ ->
-            %% TODO: return valid locker
-            {error, invalid_locker}
     end.
 
 %% ==========================
