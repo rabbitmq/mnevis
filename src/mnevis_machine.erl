@@ -202,26 +202,24 @@ create_committed_transaction_table() ->
                             [mnevis_context:item()]) ->
     {ok, committed} | {ok, skipped} | {error, {aborted, term()}}.
 commit(Transaction, Writes, Deletes, DeletesObject) ->
-    Res = mnesia:transaction(fun() ->
+    %% TODO: Dirty transaction may create inconsistent data.
+    %% to avoid that, wvenry time a follower recovers, it should re-create
+    %% the database from the snapshot.
+    Res = mnesia:async_dirty(fun() ->
         case mnesia:read(committed_transaction, Transaction) of
             [] ->
-                ok = save_committed_transaction(Transaction),
-                ok = update_table_versions(Writes, Deletes, DeletesObject),
                 _ = apply_deletes(Deletes),
                 _ = apply_writes(Writes),
                 _ = apply_deletes_object(DeletesObject),
+                ok = save_committed_transaction(Transaction),
+                ok = update_table_versions(Writes, Deletes, DeletesObject),
                 committed;
             %% Transaction is already committed.
             [{committed_transaction, Transaction, committed}] ->
                 skipped
         end
     end),
-    case Res of
-        {atomic, Result} ->
-            {ok, Result};
-        {aborted, Reason} ->
-            {error, {aborted, Reason}}
-    end.
+    {ok, Res}.
 
 update_table_versions(Writes, Deletes, DeletesObject) ->
     Tabs = lists:usort([Tab || {Tab, _, _} <- Writes ++ Deletes ++ DeletesObject]),
