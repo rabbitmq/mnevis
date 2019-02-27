@@ -110,8 +110,42 @@ init_version(Tab) ->
 
 -spec wait_for_versions([mnevis_context:read_version()]) -> ok.
 wait_for_versions(TargetVersions) ->
-    {ok, _} = mnesia:subscribe({table, versions, simple}),
-    VersionsToWait = case compare_versions(TargetVersions) of
+    VersionsToWait = filter_versions_to_wait(TargetVersions),
+    case VersionsToWait of
+        [] ->
+            ok;
+        _ ->
+            {ok, _} = mnesia:subscribe({table, versions, simple}),
+            wait_for_mnesia_updates(VersionsToWait)
+    end.
+
+-spec wait_for_mnesia_updates([mnevis_context:read_version()]) -> ok.
+wait_for_mnesia_updates([]) ->
+    {ok, _} = mnesia:unsubscribe({table, versions, simple}),
+    flush_table_events(),
+    ok;
+wait_for_mnesia_updates(WaitForVersions) ->
+    %% TODO: should we wait forever for a follower to catch up with the cluster?
+    receive {mnesia_table_event, {write, {versions, Tab, Version}, _}} ->
+        case proplists:get_value(Tab, WaitForVersions) of
+            undefined ->
+                wait_for_mnesia_updates(WaitForVersions);
+            WaitingFor ->
+                case WaitingFor =< Version of
+                    true ->
+                        wait_for_mnesia_updates(lists:keydelete(Tab, 1, WaitForVersions));
+                    false ->
+                        wait_for_mnesia_updates(WaitForVersions)
+                end
+        end
+    %% TODO: better timeout value?
+    after 100 ->
+        rabbit_log:error("Timeout waiting for events"),
+        wait_for_mnesia_updates(filter_versions_to_wait(WaitForVersions))
+    end.
+
+filter_versions_to_wait(TargetVersions) ->
+    case compare_versions(TargetVersions) of
         ok -> [];
         {version_mismatch, CurrentVersions} ->
             lists:filtermap(
@@ -124,28 +158,6 @@ wait_for_versions(TargetVersions) ->
                     end
                 end,
                 CurrentVersions)
-    end,
-    wait_for_mnesia_updates(VersionsToWait).
-
--spec wait_for_mnesia_updates([mnevis_context:read_version()]) -> ok.
-wait_for_mnesia_updates([]) ->
-    {ok, _} = mnesia:unsubscribe({table, versions, simple}),
-    flush_table_events(),
-    ok;
-wait_for_mnesia_updates(WaitForVersions) ->
-    receive {mnesia_table_event, {write, Tab, Version}, _} ->
-        case proplists:get_value(Tab, WaitForVersions) of
-            undefined ->
-                wait_for_mnesia_updates(WaitForVersions);
-            WaitingFor ->
-                case WaitingFor =< Version of
-                    true ->
-                        wait_for_mnesia_updates(lists:keydelete(Tab, 1, WaitForVersions));
-                    false ->
-                        wait_for_mnesia_updates(WaitForVersions)
-                end
-        end
-    %% TODO: should we wait forever for a follower to catch up with the cluster?
     end.
 
 flush_table_events() ->
