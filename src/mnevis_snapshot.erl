@@ -265,7 +265,7 @@ restore_mnesia_backup(BackupFile) ->
 rename_backup_node(From, To, Source, Target) ->
     Switch =
         fun(Node) when Node == From -> To;
-           (Node) when Node == To -> throw({error, already_exists});
+           (Node) when Node == To -> error({error, already_exists});
            (Node) -> Node
         end,
     mnesia:traverse_backup(Source, Target, fun convert_traverse_node/2, Switch).

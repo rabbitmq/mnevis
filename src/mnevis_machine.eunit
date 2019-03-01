@@ -5,10 +5,12 @@
 init_mnesia_table() ->
     mnesia:delete_schema([node()]),
     ok = mnesia:start(),
+    mnesia:create_table(sample, []),
     mnesia:create_table(committed_transaction, []),
     mnesia:clear_table(committed_transaction),
     mnesia:create_table(versions, []),
-    mnesia:clear_table(versions).
+    mnesia:clear_table(versions),
+    mnesia:dirty_write({versions, sample, 0}).
 
 % commit:
 %     fail if locker is not in the current term
@@ -27,14 +29,14 @@ commit_valid_locker_test() ->
     InitState = init_state(),
     Transaction = valid_transaction(InitState),
     {InitState, {ok, ok}, [{release_cursor, 1, InitState}]} =
-        mnevis_machine:apply(#{index => 1}, {commit, Transaction, {[], [], [], []}}, InitState),
+        mnevis_machine:apply(#{index => 1}, {commit, Transaction, {[{sample, {sample, foo, bar}, write}], [], []}}, InitState),
     %% Transaction is already committed
     {InitState, {ok, ok}, []} =
-        mnevis_machine:apply(#{index => 1}, {commit, Transaction, {[], [], [], []}}, InitState),
+        mnevis_machine:apply(#{index => 1}, {commit, Transaction, {[], [], []}}, InitState),
     %% Locker term is different.
     InvalidTransaction = invalid_transaction(InitState),
     {InitState, {error, {aborted, wrong_locker_term}}, []} =
-        mnevis_machine:apply(#{index => 1}, {commit, InvalidTransaction, {[], [], [], []}}, InitState).
+        mnevis_machine:apply(#{index => 1}, {commit, InvalidTransaction, {[], [], []}}, InitState).
 
 commit_write_test() ->
     init_mnesia_table(),
@@ -64,7 +66,7 @@ commit_write_test() ->
                             {foo, to_write, val},
                             {foo, to_not_delete_object, not_val}]),
     {InitState, {ok, ok}, _} =
-        mnevis_machine:apply(#{index => 1}, {commit, Transaction, {Writes, Deletes, DeletesObject, []}}, InitState),
+        mnevis_machine:apply(#{index => 1}, {commit, Transaction, {Writes, Deletes, DeletesObject}}, InitState),
     Table = lists:usort(ets:tab2list(foo)),
     Expected = Table.
 
@@ -116,7 +118,7 @@ committed_transaction_error(Command, Args) ->
     InitState = init_state(),
     Transaction = valid_transaction(InitState),
     {InitState, {ok, _}, _} =
-        mnevis_machine:apply(#{index => 1}, {commit, Transaction, {[], [], [], []}}, InitState),
+        mnevis_machine:apply(#{index => 1}, {commit, Transaction, {[{sample, {sample, foo, bar}, write}], [], []}}, InitState),
 
     {InitState, {error, {transaction_committed, Transaction}}, []} =
         mnevis_machine:apply(none, {Command, Transaction, Args}, InitState).

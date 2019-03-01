@@ -6,10 +6,10 @@
 -record(state, {last_transaction_id :: transaction_id(),
                 transactions = #{} :: #{transaction_id() => pid()},
                 monitors = #{} :: #{pid() => term()},
-                read_locks = #{} :: #{lock_item() => [transaction_id()]},
+                read_locks = #{} :: #{lock_item() => map_sets:set(transaction_id())},
                 write_locks = #{} :: #{lock_item() => transaction_id()},
-                reverse_read_locks = #{} :: #{transaction_id() => [lock_item()]},
-                reverse_write_locks = #{} :: #{transaction_id() => [lock_item()]},
+                reverse_read_locks = #{} :: #{transaction_id() => map_sets:set(lock_item())},
+                reverse_write_locks = #{} :: #{transaction_id() => map_sets:set(lock_item())},
                 transaction_locks = simple_dgraph:new() :: simple_dgraph:graph()}).
 
 -type state() :: #state{}.
@@ -131,16 +131,17 @@ lock_internal(Tid, Source, LockItem, LockKind, State0) ->
 
 -spec apply_lock(lock_item(), lock_kind(), transaction_id(), state()) -> state().
 apply_lock(LockItem, write, Tid, State = #state{write_locks = WLocks, reverse_write_locks = RWLocks}) ->
-    OldReverseLocks = maps:get(Tid, RWLocks, []) -- [LockItem],
-    RWLocks1 = maps:put(Tid, [LockItem | OldReverseLocks], RWLocks),
+    OldReverseLocks = maps:get(Tid, RWLocks, map_sets:new()),
+    RWLocks1 = maps:put(Tid, map_sets:add_element(LockItem, OldReverseLocks), RWLocks),
     State#state{ write_locks = maps:put(LockItem, Tid, WLocks),
                  reverse_write_locks = RWLocks1};
 apply_lock(LockItem, read, Tid, State = #state{read_locks = RLocks, reverse_read_locks = RRLocks}) ->
-    OldLocks = maps:get(LockItem, RLocks, []) -- [Tid],
-    OldReverseLocks = maps:get(Tid, RRLocks, []) -- [LockItem],
 
-    RLocks1 = maps:put(LockItem, [Tid | OldLocks], RLocks),
-    RRLocks1 = maps:put(Tid, [LockItem | OldReverseLocks], RRLocks),
+    OldLocks = maps:get(LockItem, RLocks, map_sets:new()),
+    OldReverseLocks = maps:get(Tid, RRLocks, map_sets:new()),
+
+    RLocks1 = maps:put(LockItem, map_sets:add_element(Tid, OldLocks), RLocks),
+    RRLocks1 = maps:put(Tid, map_sets:add_element(LockItem, OldReverseLocks), RRLocks),
 
     State#state{ read_locks = RLocks1,
                  reverse_read_locks = RRLocks1 }.
@@ -161,20 +162,21 @@ cleanup_locks(Tid, State) ->
             reverse_read_locks = RRLocks,
             reverse_write_locks = RWLocks} = State,
     %% Remove Tid from write locks
-    WriteLocked = maps:get(Tid, RWLocks, []),
-    WLocks1 = maps:without(WriteLocked, WLocks),
+    WriteLocked = maps:get(Tid, RWLocks, map_sets:new()),
+    WLocks1 = maps:without(map_sets:to_list(WriteLocked), WLocks),
     %% Remove Tid from read locks
-    ReadLocked = maps:get(Tid, RRLocks, []),
+    ReadLocked = maps:get(Tid, RRLocks, map_sets:new()),
     RLocks1 = lists:foldl(
         fun(RLock, RLocks0) ->
             Tids = maps:get(RLock, RLocks0),
-            case Tids -- [Tid] of
-                []    -> maps:remove(RLock, RLocks0);
-                Tids1 -> maps:put(RLock, Tids1, RLocks0)
+            NewTids = map_sets:del_element(Tid, Tids),
+            case map_sets:is_empty(NewTids) of
+                true  -> maps:remove(RLock, RLocks0);
+                false -> maps:put(RLock, NewTids, RLocks0)
             end
         end,
         RLocks,
-        ReadLocked),
+        map_sets:to_list(ReadLocked)),
     State#state{read_locks = RLocks1, write_locks = WLocks1,
                 reverse_read_locks = maps:remove(Tid, RRLocks),
                 reverse_write_locks = maps:remove(Tid, RWLocks)}.
@@ -248,9 +250,12 @@ write_locking_transactions(LockItem, Tid, #state{write_locks = WLocks}) ->
 read_locking_transactions(LockItem, Tid, #state{read_locks = RLocks}) ->
     case maps:get(LockItem, RLocks, not_found) of
         not_found -> [];
-        []        -> [];
-        [Tid]     -> [];
-        Tids      -> lists:usort(Tids) -- [Tid]
+        MapSet when is_map(MapSet) ->
+            WithoutTid = map_sets:del_element(Tid, MapSet),
+            case map_sets:is_empty(WithoutTid) of
+                true  -> [];
+                false -> lists:usort(map_sets:to_list(WithoutTid))
+            end
     end.
 
 -spec cleanup_transaction(transaction_id(), pid(), state()) -> state().

@@ -79,12 +79,7 @@ update_version(Tab) ->
     case get_version(Tab) of
         {ok, Version} ->
             VersionRecord = {versions, Tab, Version + 1},
-            case mnesia:is_transaction() of
-                true ->
-                    ok = mnesia:write(VersionRecord);
-                false ->
-                    ok = mnesia:dirty_write(VersionRecord)
-            end;
+            ok = mnesia:write(versions, VersionRecord, write);
         {error, no_exists} ->
             error({table_version_missing, Tab})
     end.

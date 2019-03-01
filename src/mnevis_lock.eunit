@@ -12,8 +12,8 @@ create_transaction_on_lock_test() ->
 
     #state{
         transactions = #{Source := Tid},
-        read_locks = #{LockItem := [Tid]},
-        reverse_read_locks = #{Tid := [LockItem]},
+        read_locks = #{LockItem := #{Tid := unused}},
+        reverse_read_locks = #{Tid := #{LockItem := unused}},
         monitors = Monitors
     } = State1,
 
@@ -51,8 +51,8 @@ create_new_transaction_on_lock_test() ->
 
     #state{
         transactions = #{Source := Tid1},
-        read_locks = #{LockItem := [Tid1]},
-        reverse_read_locks = #{Tid1 := [LockItem]},
+        read_locks = #{LockItem := #{Tid1 := unused}},
+        reverse_read_locks = #{Tid1 := #{LockItem := unused}},
         monitors = Monitors
     } = State2,
 
@@ -70,11 +70,11 @@ lock_with_existing_transaction_test() ->
 
     #state{
         transactions = #{Source := Tid},
-        read_locks = #{LockItem := [Tid]},
-        reverse_read_locks = #{Tid := [LockItem]},
+        read_locks = #{LockItem := #{Tid := unused}},
+        reverse_read_locks = #{Tid := #{LockItem := unused}},
 
         write_locks = #{LockItem := Tid},
-        reverse_write_locks = #{Tid := [LockItem]},
+        reverse_write_locks = #{Tid := #{LockItem := unused}},
 
         monitors = Monitors
     } = State2,
@@ -95,7 +95,7 @@ read_locked_by_write_test() ->
         transactions = #{Source := Tid, Source1 := Tid1},
 
         write_locks = #{LockItem := Tid},
-        reverse_write_locks = #{Tid := [LockItem]},
+        reverse_write_locks = #{Tid := #{LockItem := unused}},
 
         monitors = Monitors
     } = State2,
@@ -116,7 +116,7 @@ write_locked_by_write_test() ->
         transactions = #{Source := Tid, Source1 := Tid1},
 
         write_locks = #{LockItem := Tid},
-        reverse_write_locks = #{Tid := [LockItem]},
+        reverse_write_locks = #{Tid := #{LockItem := unused}},
 
         monitors = Monitors
     } = State2,
@@ -136,8 +136,8 @@ write_locked_by_read_test() ->
     #state{
         transactions = #{Source := Tid, Source1 := Tid1},
 
-        read_locks = #{LockItem := [Tid]},
-        reverse_read_locks = #{Tid := [LockItem]},
+        read_locks = #{LockItem := #{Tid := unused}},
+        reverse_read_locks = #{Tid := #{LockItem := unused}},
 
         monitors = Monitors
     } = State2,
@@ -157,8 +157,8 @@ read_not_locked_by_read_test() ->
     #state{
         transactions = #{Source := Tid, Source1 := Tid1},
 
-        read_locks = #{LockItem := [Tid1, Tid]},
-        reverse_read_locks = #{Tid := [LockItem], Tid1 := [LockItem]},
+        read_locks = #{LockItem := #{Tid1 := unused, Tid := unused}},
+        reverse_read_locks = #{Tid := #{LockItem := unused}, Tid1 := #{LockItem := unused}},
 
         monitors = Monitors
     } = State2,
@@ -181,8 +181,8 @@ existing_transaction_locked_test() ->
     #state{
         transactions = #{Source := Tid, Source1 := Tid1},
 
-        read_locks = #{LockItem := [Tid]},
-        reverse_read_locks = #{Tid := [LockItem]},
+        read_locks = #{LockItem := #{Tid := unused}},
+        reverse_read_locks = #{Tid := #{LockItem := unused}},
 
         transaction_locks = TransLocks,
 
@@ -209,8 +209,8 @@ lower_number_transaction_locked_nowait_test() ->
     #state{
         transactions = #{Source := Tid, Source1 := Tid1},
 
-        read_locks = #{LockItem := [Tid1]},
-        reverse_read_locks = #{Tid1 := [LockItem]},
+        read_locks = #{LockItem := #{Tid1 := unused}},
+        reverse_read_locks = #{Tid1 := #{LockItem := unused}},
 
         transaction_locks = TransLocks,
 
