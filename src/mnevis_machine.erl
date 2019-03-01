@@ -73,15 +73,20 @@ snapshot_module() ->
 apply(Meta, {commit, Transaction, {Writes, Deletes, DeletesObject}}, State)  ->
     with_valid_locker(Transaction, State,
         fun() ->
-            Result = commit(Transaction, Writes, Deletes, DeletesObject),
-            %% TODO: return committed/skipped
-            case Result of
-                {ok, committed} ->
-                    {State, {ok, ok}, snapshot_effects(Meta, State)};
-                {ok, skipped} ->
+            case {Writes, Deletes, DeletesObject} of
+                {[], [], []} ->
                     {State, {ok, ok}, []};
                 _ ->
-                    {State, Result, []}
+                    Result = commit(Transaction, Writes, Deletes, DeletesObject),
+                    %% TODO: return committed/skipped
+                    case Result of
+                        {ok, committed} ->
+                            {State, {ok, ok}, snapshot_effects(Meta, State)};
+                        {ok, skipped} ->
+                            {State, {ok, ok}, []};
+                        _ ->
+                            {State, Result, []}
+                    end
             end
         end);
 apply(_Meta, {prev, Transaction, {Tab, Key}}, State0) ->
@@ -203,13 +208,14 @@ create_committed_transaction_table() ->
     {ok, committed} | {ok, skipped} | {error, {aborted, term()}}.
 commit(Transaction, Writes, Deletes, DeletesObject) ->
     Res = mnesia:transaction(fun() ->
-        case mnesia:read(committed_transaction, Transaction) of
+        case ets:lookup(committed_transaction, Transaction) of
             [] ->
-                ok = save_committed_transaction(Transaction),
-                ok = update_table_versions(Writes, Deletes, DeletesObject),
                 _ = apply_deletes(Deletes),
                 _ = apply_writes(Writes),
                 _ = apply_deletes_object(DeletesObject),
+                mnesia:lock({table, versions}, write),
+                ok = update_table_versions(Writes, Deletes, DeletesObject),
+                ok = save_committed_transaction(Transaction),
                 committed;
             %% Transaction is already committed.
             [{committed_transaction, Transaction, committed}] ->

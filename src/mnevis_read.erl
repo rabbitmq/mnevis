@@ -16,12 +16,8 @@ create_versions_table() ->
 
 -spec get_version(mnevis:table()) -> {ok, mnevis_context:version()} | {error, no_exists}.
 get_version(Tab) ->
-    MaybeVersion = case mnesia:is_transaction() of
-        true ->
-            mnesia:read(versions, Tab);
-        false ->
-            mnesia:dirty_read(versions, Tab)
-    end,
+    %% TODO: handle error
+    MaybeVersion = ets:lookup(versions, Tab),
     case MaybeVersion of
         [{versions, Tab, Version}] -> {ok, Version};
         [] -> {error, no_exists}
