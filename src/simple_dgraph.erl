@@ -125,13 +125,17 @@ out_edges(Graph, Vertex) ->
 
 -spec out_neighbours(#graph{}, vertex_name()) -> [vertex_name()].
 out_neighbours(Graph, Vertex) ->
-    Out = maps:get(Vertex, Graph#graph.out_edges, map_sets:new()),
-    map_sets:to_list(Out).
+    case maps:get(Vertex, Graph#graph.out_edges, none) of
+        none -> [];
+        Out  -> map_sets:to_list(Out)
+    end.
 
 -spec in_neighbours(#graph{}, vertex_name()) -> [vertex_name()].
 in_neighbours(Graph, Vertex) ->
-    Out = maps:get(Vertex, Graph#graph.in_edges, map_sets:new()),
-    map_sets:to_list(Out).
+    case maps:get(Vertex, Graph#graph.in_edges, none) of
+        none -> [];
+        Out  -> map_sets:to_list(Out)
+    end.
 
 -spec del_vertex(#graph{}, vertex_name()) -> #graph{}.
 del_vertex(Graph, Vertex) ->
