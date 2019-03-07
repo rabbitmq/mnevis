@@ -1,6 +1,7 @@
 -module(mnevis_node).
 
 -export([start/0, node_id/0]).
+-export([add_node/1, remove_node/1]).
 -export([make_initial_nodes/1]).
 
 node_id() ->
@@ -22,8 +23,7 @@ start() ->
         net_adm:ping(N)
     end,
     InitialNodes),
-    {ok, _, _} = ra:start_cluster(Name, {module, mnevis_machine, #{}}, InitialNodes).
-
+    {ok, _, _} = ra:start_or_restart_cluster(Name, {module, mnevis_machine, #{}}, InitialNodes).
 
 make_initial_nodes(Nodes) ->
     [make_initial_node(Node) || Node <- Nodes].
@@ -36,3 +36,9 @@ make_initial_node(Node) ->
             H = inet_db:gethostname(),
             node_id(binary_to_atom(iolist_to_binary([N, "@", H]), utf8))
     end.
+
+add_node(Node) ->
+    ra:add_member(node_id(), node_id(Node)).
+
+remove_node(Node) ->
+    ra:remove_member(node_id(), node_id(Node)).

@@ -143,10 +143,6 @@ transaction0(Fun, Args, Retries, _Err) ->
         %% We retry the same transaction so the locks will be still in place,
         %% preventing updates. This can cause system to be locked more than
         %% needed. Needs benchmarking.
-        exit:{aborted, {version_mismatch, Versions}} ->
-            mnevis_read:wait_for_versions(Versions),
-            retry_same_transaction(Fun, Args, Retries, version_mismatch);
-
         exit:{aborted, Reason} ->
             ok = maybe_rollback_transaction(),
             {aborted, Reason};
@@ -563,6 +559,7 @@ with_lock(Context, LockItem, LockKind, Fun) ->
     end.
 
 with_lock_and_version(Context, LockItem, LockKind, Fun) ->
+%% TODO: maybe get version from ra leader instead of the locker
     case aquire_lock(Context, LockItem, LockKind, lock_version) of
         {ok, no_exists} ->
             Fun();

@@ -123,6 +123,50 @@ write_locked_by_write_test() ->
 
     [Source, Source1] = maps:keys(Monitors).
 
+write_locked_by_table_test() ->
+    State = init(0),
+    Source = self(),
+    Source1 = spawn(fun() -> ok end),
+    LockItem = {foo, bar},
+    TableLockItem = {table, foo},
+
+    {{ok, Tid}, State1} = lock(undefined, Source, TableLockItem, write, State),
+
+    {{error, {locked, Tid1}}, State2} = lock(undefined, Source1, LockItem, write, State1),
+
+    #state{
+        transactions = #{Source := Tid, Source1 := Tid1},
+
+        write_locks = #{TableLockItem := Tid},
+        reverse_write_locks = #{Tid := #{TableLockItem := unused}},
+
+        monitors = Monitors
+    } = State2,
+
+    [Source, Source1] = maps:keys(Monitors).
+
+write_table_locked_by_item_test() ->
+    State = init(0),
+    Source = self(),
+    Source1 = spawn(fun() -> ok end),
+    LockItem = {foo, bar},
+    TableLockItem = {table, foo},
+
+    {{ok, Tid}, State1} = lock(undefined, Source, LockItem, write, State),
+
+    {{error, {locked, Tid1}}, State2} = lock(undefined, Source1, TableLockItem, write, State1),
+
+    #state{
+        transactions = #{Source := Tid, Source1 := Tid1},
+
+        write_locks = #{LockItem := Tid},
+        reverse_write_locks = #{Tid := #{LockItem := unused}},
+
+        monitors = Monitors
+    } = State2,
+
+    [Source, Source1] = maps:keys(Monitors).
+
 write_locked_by_read_test() ->
     State = init(0),
     Source = self(),

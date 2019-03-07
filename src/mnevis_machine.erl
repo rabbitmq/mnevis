@@ -45,17 +45,22 @@
 
 -spec init(config()) -> state().
 init(_Conf) ->
-    %% TODO move committed transaction creation to the create_cluster function
-    %% separate start and recovery
     create_committed_transaction_table(),
-
     mnevis_read:create_versions_table(),
-    ok = mnevis_lock_proc:create_locker_cache(),
     #state{}.
 
 -spec state_enter(ra_server:ra_state() | eol, state()) -> ra_machine:effects().
 state_enter(leader, State) ->
     start_new_locker_effects(State);
+state_enter(recover, State) ->
+    ok = mnevis_lock_proc:create_locker_cache(),
+    [];
+state_enter(recovered, State = #state{locker = Locker}) ->
+    ok = mnevis_lock_proc:update_locker_cache(Locker),
+    [];
+state_enter(follower, State = #state{locker = {Term, Pid}})
+        when is_pid(Pid) andalso node(Pid) == node() ->
+    [{mod_call, mnevis_lock_proc, stop, [Pid]}];
 state_enter(State, _) ->
     error_logger:info_msg("mnevis machine enter state ~p~n", [State]),
     [].
@@ -171,7 +176,7 @@ apply(_Meta, {which_locker, OldLocker},
         none ->
             {State, {ok, CurrentLocker}, []};
         CurrentLocker ->
-            %% TODO: monitor that
+            %% TODO: monitor that. Maybe remove
             {State, {error, locker_up_to_date}, start_new_locker_effects(State)};
         {OldTerm, _} when OldTerm < LockerTerm ->
             {State, {ok, CurrentLocker}, []};
@@ -198,7 +203,7 @@ create_committed_transaction_table() ->
                                         {type, ordered_set}]),
     case CreateResult of
         {atomic, ok} -> ok;
-        {aborted,{already_exists,committed_transaction}} -> ok;
+        % {aborted,{already_exists,committed_transaction}} -> ok;
         Other -> error({cannot_create_committed_transaction_table, Other})
     end.
 
@@ -250,18 +255,18 @@ snapshot_effects(#{index := RaftIdx}, State) ->
 
 -spec apply_deletes([mnevis_context:delete_item()]) -> [ok].
 apply_deletes(Deletes) ->
-    [ok = mnesia:delete(Tab, Key, LockKind)
-     || {Tab, Key, LockKind} <- Deletes].
+    [ok = mnesia:delete(Tab, Key, write)
+     || {Tab, Key, _LockKind} <- Deletes].
 
 -spec apply_deletes_object([mnevis_context:item()]) -> [ok].
 apply_deletes_object(DeletesObject) ->
-    [ok = mnesia:delete_object(Tab, Rec, LockKind)
-     || {Tab, Rec, LockKind} <- DeletesObject].
+    [ok = mnesia:delete_object(Tab, Rec, write)
+     || {Tab, Rec, _LockKind} <- DeletesObject].
 
 -spec apply_writes([mnevis_context:item()]) -> [ok].
 apply_writes(Writes) ->
-    [ok = mnesia:write(Tab, Rec, LockKind)
-     || {Tab, Rec, LockKind} <- Writes].
+    [ok = mnesia:write(Tab, Rec, write)
+     || {Tab, Rec, _LockKind} <- Writes].
 
 -spec closest_next(mnevis:table(), Key) -> Key.
 closest_next(Tab, Key) ->
@@ -314,7 +319,7 @@ transaction_recorded_as_committed(Transaction) ->
 -spec with_valid_locker(transaction(), state(),
                        fun(() -> apply_result(T, E))) -> apply_result(T, E).
 with_valid_locker({_Tid, {LockerTerm, _LockerPid}},
-                  State = #state{locker = {CurrentLockerTerm, _}}, Fun) ->
+                  State = #state{locker = {CurrentLockerTerm, _Pid}}, Fun) ->
     case LockerTerm of
         CurrentLockerTerm -> Fun();
         _ -> {State, {error, {aborted, wrong_locker_term}}, []}
