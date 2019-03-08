@@ -107,13 +107,16 @@ wait_for_versions(TargetVersions) ->
             ok;
         _ ->
             {ok, _} = mnesia:subscribe({table, versions, simple}),
-            wait_for_mnesia_updates(VersionsToWait)
+            try
+                wait_for_mnesia_updates(VersionsToWait)
+            after
+                mnesia:unsubscribe({table, versions, simple}),
+                flush_table_events()
+            end
     end.
 
 -spec wait_for_mnesia_updates([mnevis_context:read_version()]) -> ok.
 wait_for_mnesia_updates([]) ->
-    {ok, _} = mnesia:unsubscribe({table, versions, simple}),
-    flush_table_events(),
     ok;
 wait_for_mnesia_updates(WaitForVersions) ->
     %% TODO: should we wait forever for a follower to catch up with the cluster?
