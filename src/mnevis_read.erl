@@ -131,7 +131,6 @@ wait_for_mnesia_updates(WaitForVersions) ->
         end
     %% TODO: better timeout value?
     after 100 ->
-        rabbit_log:error("Timeout waiting for events"),
         wait_for_mnesia_updates(filter_versions_to_wait(WaitForVersions))
     end.
 

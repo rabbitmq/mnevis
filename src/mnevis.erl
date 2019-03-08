@@ -242,15 +242,33 @@ commit_transaction() ->
                 true -> ok;
                 %% TODO: read-only commits
                 _ ->
-                    {ok, _} = execute_command_with_retry(Context, commit,
-                                                         {Writes,
-                                                          Deletes,
-                                                          DeletesObject}),
-                    ok
+                    case {Writes, Deletes, DeletesObject} of
+                        {[], [], []} ->
+                            %% Read-only commits
+                            case read_only_commit(Context) of
+                                ok -> ok;
+                                {error, Err} -> mnesia:abort(Err)
+                            end;
+                        _ ->
+                            {ok, _} = execute_command_with_retry(Context, commit,
+                                                                 {Writes,
+                                                                  Deletes,
+                                                                  DeletesObject}),
+                            ok
+                    end
             end,
             cleanup_transaction(Transaction)
     end,
     ok.
+
+read_only_commit(Context) ->
+    Locker = mnevis_context:locker(Context),
+    case ra:read_only_query(mnevis_node:node_id(),
+                            {mnevis_machine, check_locker, [Locker]}) of
+        ok              -> ok;
+        {error, Reason} -> mnesia:abort(Reason);
+        {timeout, _}    -> mnesia:abort(timeout)
+    end.
 
 maybe_rollback_transaction() ->
     case is_transaction() of

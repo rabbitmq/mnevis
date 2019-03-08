@@ -9,6 +9,8 @@
          state_enter/2,
          snapshot_module/0]).
 
+-export([check_locker/2]).
+
 -record(state, {locker_status = down,
                 locker = {0, none} :: mnevis_lock_proc:locker() | {0, none}}).
 
@@ -40,6 +42,12 @@
 
 -record(committed_transaction, { transaction :: mnevis_context:transaction(),
                                  value }).
+
+check_locker({LockerTerm, _LockerPid}, #state{locker = {CurrentLockerTerm, _}}) ->
+    case LockerTerm of
+        CurrentLockerTerm -> ok;
+        _                 -> {error, wrong_locker_term}
+    end.
 
 %% Ra machine callbacks
 
@@ -240,7 +248,7 @@ commit(Transaction, Writes, Deletes, DeletesObject) ->
                 _ = apply_deletes(Deletes),
                 _ = apply_writes(Writes),
                 _ = apply_deletes_object(DeletesObject),
-                mnesia:lock({table, versions}, write),
+                _ = mnesia:lock({table, versions}, write),
                 ok = update_table_versions(Writes, Deletes, DeletesObject),
                 ok = save_committed_transaction(Transaction),
                 committed;
@@ -340,11 +348,10 @@ transaction_recorded_as_committed(Transaction) ->
 
 -spec with_valid_locker(transaction(), state(),
                        fun(() -> apply_result(T, E))) -> apply_result(T, E).
-with_valid_locker({_Tid, {LockerTerm, _LockerPid}},
-                  State = #state{locker = {CurrentLockerTerm, _Pid}}, Fun) ->
-    case LockerTerm of
-        CurrentLockerTerm -> Fun();
-        _ -> {State, {error, {aborted, wrong_locker_term}}, []}
+with_valid_locker({_Tid, Locker}, State, Fun) ->
+    case check_locker(Locker, State) of
+        ok -> Fun();
+        {error, Reason} -> {State, {error, {aborted, Reason}}, []}
     end.
 
 -spec catch_abort(fun(() -> reply(R, E))) -> reply(R, E | {aborted, term()}).
