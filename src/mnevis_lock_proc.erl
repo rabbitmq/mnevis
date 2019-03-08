@@ -158,11 +158,16 @@ leader({call, From},
        State = #state{lock_state = LockState}) ->
     {LockResult, LockState1} = mnevis_lock:lock(TransationId, Source, LockItem, LockKind, LockState),
 
+    VersionKey = case LockItem of
+        {table, Table} -> Table;
+        {Tab, Item}    -> {Tab, erlang:phash2(Item, 1000)}
+    end,
+
     LockVersionResult = case LockResult of
         {ok, Tid} ->
-            Table = table(LockItem),
-            case mnevis_read:get_version(table(LockItem)) of
-                {ok, Version}      -> {ok, Tid, {Table, Version}};
+            % Table = table(LockItem),
+            case mnevis_read:get_version(VersionKey) of
+                {ok, Version}      -> {ok, Tid, {VersionKey, Version}};
                 {error, no_exists} -> {ok, Tid, no_exists}
             end;
         Other -> Other

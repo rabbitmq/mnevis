@@ -265,14 +265,23 @@ commit(Transaction, Writes, Deletes, DeletesObject) ->
     end.
 
 update_table_versions(Writes, Deletes, DeletesObject) ->
-    Tabs = lists:usort([Tab || {Tab, _, _} <- Writes ++ Deletes ++ DeletesObject]),
+    % Tabs = lists:usort([Tab || {Tab, _, _} <- Writes ++ Deletes ++ DeletesObject]),
+    TabKeys = lists:usort([{Tab, erlang:phash2(mnevis:record_key(Rec), 1000)}
+                            || {Tab, Rec, _} <- Writes ++ DeletesObject] ++
+                          [{Tab, erlang:phash2(Key, 1000)} || {Tab, Key, _} <- Deletes]),
+    Tabs = lists:usort(element(1, lists:unzip(TabKeys))),
     lists:foreach(
         fun(Tab) ->
             %% This function may crash
             %% Version should be in the database at this point
             ok = mnevis_read:update_version(Tab)
         end,
-        Tabs).
+        Tabs),
+    lists:foreach(
+        fun(TabKey) ->
+            ok = mnevis_read:init_version(TabKey)
+        end,
+        TabKeys).
 
 
 -spec snapshot_effects(map(), state()) -> ra_machine:effects().
