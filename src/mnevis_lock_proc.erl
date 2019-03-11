@@ -165,8 +165,8 @@ leader({call, From},
 
     LockVersionResult = case LockResult of
         {ok, Tid} ->
-            % Table = table(LockItem),
-            case mnevis_read:get_version(VersionKey) of
+            case ra:read_only_query(mnevis_node:node_id(),
+                            {mnevis_machine, get_version, [VersionKey]}) of
                 {ok, Version}      -> {ok, Tid, {VersionKey, Version}};
                 {error, no_exists} -> {ok, Tid, no_exists}
             end;

@@ -10,6 +10,7 @@
          snapshot_module/0]).
 
 -export([check_locker/2]).
+-export([get_version/2]).
 
 -record(state, {locker_status = down,
                 locker = {0, none} :: mnevis_lock_proc:locker() | {0, none}}).
@@ -48,6 +49,9 @@ check_locker({LockerTerm, _LockerPid}, #state{locker = {CurrentLockerTerm, _}}) 
         CurrentLockerTerm -> ok;
         _                 -> {error, wrong_locker_term}
     end.
+
+get_version(VersionKey, _) ->
+    mnevis_read:get_version(VersionKey).
 
 %% Ra machine callbacks
 
@@ -149,7 +153,7 @@ apply(_Meta, {next, Transaction, {Tab, Key}}, State0) ->
 apply(Meta, {create_table, Tab, Opts}, State) ->
     Result = case mnesia:create_table(Tab, Opts) of
         {atomic, ok} ->
-            mnevis_read:init_version(Tab),
+            mnevis_read:init_version(Tab, 0),
             {atomic, ok};
         Res ->
             Res
@@ -279,7 +283,7 @@ update_table_versions(Writes, Deletes, DeletesObject) ->
         Tabs),
     lists:foreach(
         fun(TabKey) ->
-            ok = mnevis_read:init_version(TabKey)
+            ok = mnevis_read:init_version(TabKey, 1)
         end,
         TabKeys).
 

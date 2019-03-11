@@ -1,8 +1,7 @@
 -module(mnevis_read).
 
 -export([create_versions_table/0]).
--export([get_version/1, update_version/1, init_version/1]).
--export([compare_versions/1]).
+-export([get_version/1, update_version/1, init_version/2]).
 -export([local_read_query/1, local_read_query/2]).
 -export([wait_for_versions/1]).
 
@@ -34,7 +33,7 @@ compare_versions(ReadVersions) ->
                 {ok, OtherVersion} ->
                     {true, {Tab, OtherVersion}};
                 {error, no_exists} ->
-                    error({mnevis_data_error, {table_version_missing, Tab}})
+                    {true, {Tab, 0}}
             end
         end,
         ReadVersions),
@@ -84,13 +83,13 @@ update_version(Tab) ->
             error({table_version_missing, Tab})
     end.
 
--spec init_version(mnevis:table()) -> ok.
-init_version(Tab) ->
+-spec init_version(mnevis:table(), integer()) -> ok.
+init_version(Tab, FirstVersion) ->
     VersionRecord = case get_version(Tab) of
         {ok, Version} ->
             {versions, Tab, Version + 1};
         {error, no_exists} ->
-            {versions, Tab, 0}
+            {versions, Tab, FirstVersion}
     end,
     case mnesia:is_transaction() of
         true ->
