@@ -265,7 +265,8 @@ read_only_commit(Context) ->
     Locker = mnevis_context:locker(Context),
     case ra:read_only_query(mnevis_node:node_id(),
                             {mnevis_machine, check_locker, [Locker]}) of
-        ok              -> ok;
+        {ok, ok, _}              -> ok;
+        {ok, {error, Reason}, _} -> mnesia:abort(Reason);
         {error, Reason} -> mnesia:abort(Reason);
         {timeout, _}    -> mnesia:abort(timeout)
     end.
@@ -617,16 +618,26 @@ with_lock(Context, LockItem, LockKind, Fun) ->
     end.
 
 with_lock_and_version(Context, LockItem, LockKind, Fun) ->
-%% TODO: maybe get version from ra leader instead of the locker
-    case aquire_lock(Context, LockItem, LockKind, lock_version) of
-        {ok, no_exists} ->
-            Fun();
-        {ok, TableVersion} ->
-            mnevis_read:wait_for_versions([TableVersion]),
-            Fun();
-        {error, Err} ->
-            mnesia:abort(Err)
-    end.
+    with_lock(Context, LockItem, LockKind, fun() ->
+        VersionKey = case LockItem of
+            {table, Table} -> Table;
+            {Tab, Item}    -> {Tab, erlang:phash2(Item, 1000)}
+        end,
+        case ra:read_only_query(mnevis_node:node_id(),
+                                {mnevis_machine, get_version, [VersionKey]},
+                                infinity) of
+            {ok, Result, _} ->
+                case Result of
+                    {ok, Version} ->
+                        mnevis_read:wait_for_versions([{VersionKey, Version}]),
+                        Fun();
+                    {error, no_exists} ->
+                        Fun()
+                end;
+            {error, Err} ->
+                mnesia:abort(Err)
+        end
+    end).
 
 aquire_lock(Context, LockItem, LockKind, Method) ->
     case do_aquire_lock(Context, LockItem, LockKind, Method) of

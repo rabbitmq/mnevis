@@ -23,7 +23,7 @@
 
 -include_lib("ra/include/ra.hrl").
 
--record(state, {term, correlation, leader, lock_state, waiting_versions, waiting_monitors}).
+-record(state, {term, correlation, leader, lock_state}).
 
 -define(LOCKER_TIMEOUT, 5000).
 
@@ -127,9 +127,7 @@ init(Term) ->
      #state{term = Term,
             correlation = Correlation,
             leader = NodeId,
-            lock_state = mnevis_lock:init(0),
-            waiting_versions = #{},
-            waiting_monitors = #{}},
+            lock_state = mnevis_lock:init(0)},
      [1000]}.
 
 callback_mode() -> state_functions.
@@ -155,74 +153,16 @@ leader({call, From},
        State = #state{lock_state = LockState}) ->
     {LockResult, LockState1} = mnevis_lock:lock(TransationId, Source, LockItem, LockKind, LockState),
     {keep_state, State#state{lock_state = LockState1}, [{reply, From, LockResult}]};
-leader({call, From},
-       {lock_version, TransationId, Source, LockItem, LockKind},
-       State = #state{lock_state = LockState,
-                      waiting_versions = Waiting,
-                      waiting_monitors = WaitingMonitors}) ->
-    {LockResult, LockState1} = mnevis_lock:lock(TransationId, Source, LockItem, LockKind, LockState),
-    case LockResult of
-        {ok, Tid} ->
-            VersionKey = case LockItem of
-                {table, Table} -> Table;
-                {Tab, Item}    -> {Tab, erlang:phash2(Item, 1000)}
-            end,
-            {ok, Correlation, Monitor} =
-                async_read_only_query(mnevis_node:node_id(),
-                                      {mnevis_machine, get_version, [VersionKey]}),
-            {keep_state,
-             State#state{lock_state = LockState1,
-                         waiting_monitors =
-                            WaitingMonitors#{Monitor => Correlation},
-                         waiting_versions =
-                             Waiting#{Correlation => {From, Tid, VersionKey, Monitor}}},
-             []};
-        Other ->
-            {keep_state, State#state{lock_state = LockState1}, [{reply, From, Other}]}
-    end;
 leader({call, From}, {rollback, TransationId, Source}, State) ->
     LockState = mnevis_lock:cleanup(TransationId, Source, State#state.lock_state),
-
-    State1 = cleanup_waiting_pid(Source, State),
-
-    {keep_state, State1#state{lock_state = LockState}, [{reply, From, ok}]};
+    {keep_state, State#state{lock_state = LockState}, [{reply, From, ok}]};
 leader(cast, stop, _State) ->
     {stop, {normal, stopped}};
 leader(cast, _, State) ->
     {keep_state, State};
-leader(info, {'DOWN', MRef, process, Pid, Info},
-       #state{waiting_versions = Waiting,
-              waiting_monitors = WaitingMonitors,
-              lock_state = LockState0} = State0) ->
-    case maps:get(MRef, WaitingMonitors, none) of
-        none ->
-            LockState1 = mnevis_lock:monitor_down(MRef, Pid, Info, LockState0),
-            State1 = cleanup_waiting_pid(Pid, State0),
-            {keep_state, State1#state{lock_state = LockState1}};
-        Correlation ->
-            error_logger:warning_msg("Query process ~p exited with ~p~n", [Pid, Info]),
-            {keep_state, State0#state{waiting_versions = maps:remove(Correlation, Waiting),
-                                      waiting_monitors = maps:remove(MRef, WaitingMonitors)}}
-    end;
-leader(info, {ra_query_reply, Correlation, {ok, {_, Result}, _Leader}},
-       #state{waiting_versions = Waiting, waiting_monitors = WaitingMonitors} = State) ->
-    case maps:get(Correlation, Waiting, none) of
-        none ->
-            error_logger:warning_msg("Unexpected rq query reply ~p~n", [Correlation, Result]),
-            {keep_state, State};
-        {From, Tid, VersionKey, Monitor} ->
-            Reply = case Result of
-                {ok, Version} ->
-                    {ok, Tid, {VersionKey, Version}};
-                {error, no_exists} ->
-                    {ok, Tid, no_exists}
-            end,
-            demonitor(Monitor, [flush]),
-            {keep_state,
-             State#state{waiting_versions = maps:remove(Correlation, Waiting),
-                         waiting_monitors = maps:remove(Monitor, WaitingMonitors)},
-             [{reply, From, Reply}]}
-    end;
+leader(info, {'DOWN', MRef, process, Pid, Info}, #state{lock_state = LockState0} = State) ->
+    LockState1 = mnevis_lock:monitor_down(MRef, Pid, Info, LockState0),
+    {keep_state, State#state{lock_state = LockState1}};
 leader(info, _Info, State) ->
     {keep_state, State}.
 
@@ -275,35 +215,3 @@ reject(State) ->
 
 confirm(State) ->
     {next_state, leader, State}.
-
-cleanup_waiting_pid(Pid, #state{waiting_versions = Waiting0,
-                                waiting_monitors = WaitingMonitors0} = State) when is_pid(Pid) ->
-    {Waiting1, WaitingMonitors1} = maps:fold(
-        fun
-        (Correlation,
-            {{FromPid, _}, _, _, Monitor},
-            {Waiting, WaitingMonitors})
-        when Pid == FromPid ->
-            {maps:remove(Correlation, Waiting), maps:remove(Monitor, WaitingMonitors)};
-        (_, _, {Waiting, WaitingMonitors}) ->
-            {Waiting, WaitingMonitors}
-        end,
-        {Waiting0, WaitingMonitors0},
-        Waiting0),
-    State#state{waiting_versions = Waiting1, waiting_monitors = WaitingMonitors1}.
-
-
-async_read_only_query(ServerRef, QueryFun) ->
-    Correlation = make_ref(),
-    Self = self(),
-    Pid = spawn(fun() ->
-        case ra:read_only_query(ServerRef, QueryFun, infinity) of
-            {ok, Result, Leader} ->
-                Self ! {ra_query_reply, Correlation, {ok, Result, Leader}};
-            {error, Err} ->
-                Self ! {ra_query_reply, Correlation, {error, Err}}
-        end
-    end),
-    Monitor = erlang:monitor(process, Pid),
-    {ok, Correlation, Monitor}.
-
