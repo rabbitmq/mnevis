@@ -212,51 +212,71 @@ lock_transaction(LockedTid, Source, LockingTids0, State) ->
 
 %% Lock check helpers
 
+-type lock_search() :: single | all.
+
 -spec locking_transactions(lock_item(), lock_kind(), transaction_id(), state()) -> [transaction_id()].
 locking_transactions(LockItem, LockKind, Tid, State) ->
-    item_locked_transactions(LockItem, LockKind, Tid, State)
-    ++
-    table_locking_transactions(LockItem, LockKind, Tid, State).
+    Locking = case LockItem of
+        {table, _} ->
+            locking_transactions(LockItem, LockKind, single, Tid, State)
+            ++
+            locking_transactions(LockItem, LockKind, all, Tid, State);
+        {Tab, _Key} ->
+            locking_transactions(LockItem, LockKind, single, Tid, State)
+            ++
+            locking_transactions({table, Tab}, LockKind, single, Tid, State);
+        {global, _, _} ->
+            locking_transactions(LockItem, LockKind, single, Tid, State)
+    end,
+    lists:usort(Locking).
 
 %% TODO: table lock should be Locked BY any item lock in the table.
--spec item_locked_transactions(lock_item(), lock_kind(), transaction_id(), state()) -> [transaction_id()].
-item_locked_transactions(LockItem, read, Tid, State) ->
-    write_locking_transactions(LockItem, Tid, State);
-item_locked_transactions(LockItem, write, Tid, State) ->
-    write_locking_transactions(LockItem, Tid, State)
+-spec locking_transactions(lock_item(), lock_kind(), lock_search(),
+                           transaction_id(), state()) -> [transaction_id()].
+locking_transactions(LockItem, read, LockSearch, Tid, State) ->
+    write_locking_transactions(LockItem, LockSearch, Tid, State);
+locking_transactions(LockItem, write, LockSearch, Tid, State) ->
+    write_locking_transactions(LockItem, LockSearch, Tid, State)
     ++
-    read_locking_transactions(LockItem, Tid, State).
+    read_locking_transactions(LockItem, LockSearch, Tid, State).
 
--spec table_locking_transactions(lock_item(), lock_kind(), transaction_id(), state()) -> [transaction_id()].
-%% Table key is a table key.
-table_locking_transactions({table, _Tab} = LockItem, LockKind, Tid, State) ->
-    item_locked_transactions(LockItem, LockKind, Tid, State);
-%% Record key should check the table key
-table_locking_transactions({Tab, _Key}, LockKind, Tid, State) ->
-    item_locked_transactions({table, Tab}, LockKind, Tid, State);
-%% Global keys are never table locked
-table_locking_transactions({global, _, _}, _LockKind, _Tid, _State) ->
-    [].
-
--spec write_locking_transactions(lock_item(), transaction_id(), state()) -> [transaction_id()].
-write_locking_transactions(LockItem, Tid, #state{write_locks = WLocks}) ->
+-spec write_locking_transactions(lock_item(), lock_search(),
+                                 transaction_id(), state()) -> [transaction_id()].
+write_locking_transactions(LockItem, single, Tid, #state{write_locks = WLocks}) ->
     case maps:get(LockItem, WLocks, not_found) of
         not_found    -> [];
         Tid          -> [];
         DifferentTid -> [DifferentTid]
-    end.
+    end;
+write_locking_transactions({table, Tab}, all, Tid, #state{write_locks = WLocks}) ->
+    Intersecting = maps:filter(fun({Table, _}, TransactionId) ->
+                                   Table =:= Tab andalso TransactionId =/= Tid
+                               end,
+                               WLocks),
+    maps:values(Intersecting).
 
--spec read_locking_transactions(lock_item(), transaction_id(), state()) -> [transaction_id()].
-read_locking_transactions(LockItem, Tid, #state{read_locks = RLocks}) ->
+-spec read_locking_transactions(lock_item(), lock_search(),
+                                transaction_id(), state()) -> [transaction_id()].
+read_locking_transactions(LockItem, single, Tid, #state{read_locks = RLocks}) ->
     case maps:get(LockItem, RLocks, not_found) of
         not_found -> [];
         MapSet when is_map(MapSet) ->
             WithoutTid = map_sets:del_element(Tid, MapSet),
             case map_sets:size(WithoutTid) == 0 of
                 true  -> [];
-                false -> lists:usort(map_sets:to_list(WithoutTid))
+                false -> map_sets:to_list(WithoutTid)
             end
-    end.
+    end;
+read_locking_transactions({table, Tab}, all, Tid, #state{read_locks = RLocks}) ->
+    maps:fold(fun({Table, _}, MapSet, Locking) when Table =:= Tab ->
+                  WithoutTid = map_sets:del_element(Tid, MapSet),
+                  case map_sets:size(WithoutTid) == 0 of
+                      true  -> Locking;
+                      false -> map_sets:to_list(WithoutTid) ++ Locking
+                  end
+              end,
+              [],
+              RLocks).
 
 -spec cleanup_transaction(transaction_id(), pid(), state()) -> state().
 cleanup_transaction(Tid, Source, State0) ->
