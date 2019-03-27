@@ -190,7 +190,6 @@ notify_up(Term, Correlation, NodeId) ->
     gen_statem:event_handler_result(election_states()).
 handle_ra_event({applied, []}, State) -> {keep_state, State};
 handle_ra_event({applied, Replies}, State = #state{correlation = Correlation}) ->
-    error_logger:error_msg("Replies ~p~n", [Replies]),
     case proplists:get_value(Correlation, Replies, none) of
         none    -> {keep_state, State};
         reject  -> reject(State);

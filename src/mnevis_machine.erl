@@ -64,13 +64,13 @@ init(_Conf) ->
 -spec state_enter(ra_server:ra_state() | eol, state()) -> ra_machine:effects().
 state_enter(leader, State) ->
     start_new_locker_effects(State);
-state_enter(recover, State) ->
+state_enter(recover, _State) ->
     ok = mnevis_lock_proc:create_locker_cache(),
     [];
-state_enter(recovered, State = #state{locker = Locker}) ->
+state_enter(recovered, #state{locker = Locker}) ->
     ok = mnevis_lock_proc:update_locker_cache(Locker),
     [];
-state_enter(follower, State = #state{locker = {Term, Pid}})
+state_enter(follower, #state{locker = {_Term, Pid}})
         when is_pid(Pid) andalso node(Pid) == node() ->
     [{mod_call, mnevis_lock_proc, stop, [Pid]}];
 state_enter(State, _) ->
