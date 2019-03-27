@@ -263,8 +263,8 @@ commit_transaction() ->
 
 read_only_commit(Context) ->
     Locker = mnevis_context:locker(Context),
-    case ra:read_only_query(mnevis_node:node_id(),
-                            {mnevis_machine, check_locker, [Locker]}) of
+    case ra:consistent_query(mnevis_node:node_id(),
+                             {mnevis_machine, check_locker, [Locker]}) of
         {ok, ok, _}              -> ok;
         {ok, {error, Reason}, _} -> mnesia:abort(Reason);
         {error, Reason} -> mnesia:abort(Reason);
@@ -623,9 +623,9 @@ with_lock_and_version(Context, LockItem, LockKind, Fun) ->
             {table, Table} -> Table;
             {Tab, Item}    -> {Tab, erlang:phash2(Item, 1000)}
         end,
-        case ra:read_only_query(mnevis_node:node_id(),
-                                {mnevis_machine, get_version, [VersionKey]},
-                                infinity) of
+        case ra:consistent_query(mnevis_node:node_id(),
+                                 {mnevis_machine, get_version, [VersionKey]},
+                                 infinity) of
             {ok, Result, _} ->
                 case Result of
                     {ok, Version} ->
