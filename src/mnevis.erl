@@ -13,7 +13,7 @@
 %% System info
 -export([db_nodes/0, running_db_nodes/0]).
 
--export([transaction/3, transaction/1]).
+-export([transaction/4, transaction/3, transaction/2, transaction/1]).
 -export([is_transaction/0]).
 
 -compile(nowarn_deprecated_function).
@@ -117,22 +117,40 @@ transform_table(Tab, {_, _, _} = MFA, NewAttributeList) ->
 transaction(Fun) ->
     transaction(Fun, [], infinity).
 
-transaction(Fun, Args, Retries) ->
-    transaction(Fun, Args, Retries, none).
+transaction(Fun, Args) ->
+    transaction(Fun, Args, infinity).
 
-transaction(Fun, Args, Retries, Err) ->
+transaction(Fun, Args, Retries) ->
+    transaction(Fun, Args, Retries, []).
+
+
+transaction(Fun, Args, Retries, Options) ->
     case is_transaction() of
         true ->
             {atomic, mnesia:activity(ets, Fun, Args, mnevis)};
         false ->
-            transaction0(Fun, Args, Retries, Err)
+            case transaction0(Fun, Args, Retries, none) of
+                {atomic, Result, CommitResult} ->
+                    case proplists:get_value(wait_for_commit, Options, false) of
+                        true  -> wait_for_commit_to_apply(CommitResult);
+                        false -> ok
+                    end,
+                    {atomic, Result};
+                Other -> Other
+            end
     end.
+
+wait_for_commit_to_apply(ok) -> ok;
+wait_for_commit_to_apply({versions, Versions}) ->
+    mnevis_read:wait_for_versions(Versions);
+wait_for_commit_to_apply({transaction, Transaction}) ->
+    wait_for_transaction(Transaction).
 
 %% Transaction implementation.
 %% Can be called in recusively for retries
 %% Handles aborted errors
 transaction0(_Fun, _Args, 0, Err) ->
-    ok = maybe_rollback_transaction(),
+    ok = maybe_cleanup_transaction(),
     clean_transaction_context(),
     {aborted, Err};
 transaction0(Fun, Args, Retries, _Err) ->
@@ -157,8 +175,8 @@ transaction0(Fun, Args, Retries, _Err) ->
                 end
             end,
             [], ?MODULE),
-        ok = commit_transaction(),
-        {atomic, Res}
+        CommitResult = commit_transaction(),
+        {atomic, Res, CommitResult}
     catch
         exit:{aborted, locked_nowait} ->
             retry_same_transaction(Fun, Args, Retries, locked);
@@ -184,12 +202,12 @@ transaction0(Fun, Args, Retries, _Err) ->
         %% preventing updates. This can cause system to be locked more than
         %% needed. Needs benchmarking.
         exit:{aborted, Reason} ->
-            ok = maybe_rollback_transaction(),
+            ok = maybe_cleanup_transaction(),
             {aborted, Reason};
         _:Reason ->
             ST = erlang:get_stacktrace(),
             error_logger:warning_msg("Mnevis transaction error ~p~n Stacktrace ~p~n", [Reason, ST]),
-            ok = maybe_rollback_transaction(),
+            ok = maybe_cleanup_transaction(),
             {aborted, {Reason, ST}}
     after
         clean_transaction_context()
@@ -238,7 +256,7 @@ commit_transaction() ->
             Writes = mnevis_context:writes(Context),
             Deletes = mnevis_context:deletes(Context),
             DeletesObject = mnevis_context:deletes_object(Context),
-            case mnevis_context:is_empty(Context) of
+            CommitResult = case mnevis_context:is_empty(Context) of
                 true -> ok;
                 %% TODO: read-only commits
                 _ ->
@@ -250,16 +268,23 @@ commit_transaction() ->
                                 {error, Err} -> mnesia:abort(Err)
                             end;
                         _ ->
-                            {ok, _} = execute_command_with_retry(Context, commit,
-                                                                 {Writes,
-                                                                  Deletes,
-                                                                  DeletesObject}),
-                            ok
+                            {ok, Result, _} =
+                                execute_command_with_retry(Context, commit,
+                                                           {Writes,
+                                                            Deletes,
+                                                            DeletesObject}),
+
+                            case Result of
+                                {committed, Versions} ->
+                                    {versions, Versions};
+                                skipped ->
+                                    {transaction, mnevis_context:transaction(Context)}
+                            end
                     end
             end,
-            cleanup_transaction(Transaction)
-    end,
-    ok.
+            cleanup_transaction(Transaction),
+            CommitResult
+    end.
 
 read_only_commit(Context) ->
     Locker = mnevis_context:locker(Context),
@@ -271,13 +296,7 @@ read_only_commit(Context) ->
         {timeout, _}    -> mnesia:abort(timeout)
     end.
 
-maybe_rollback_transaction() ->
-    case is_transaction() of
-        true  -> rollback_transaction();
-        false -> ok
-    end.
-
-rollback_transaction() ->
+maybe_cleanup_transaction() ->
     Context = get_transaction_context(),
     case mnevis_context:transaction(Context) of
         undefined   -> ok;
@@ -529,18 +548,18 @@ execute_command_with_retry(Context, Command, Args) ->
     Transaction = mnevis_context:transaction(Context),
     RaCommand = {Command, Transaction, Args},
     NodeId = mnevis_node:node_id(),
-    Leader = retry_ra_command(NodeId, RaCommand),
-    {ok, Leader}.
+    {ok, Result, Leader} = retry_ra_command(NodeId, RaCommand),
+    {ok, Result, Leader}.
 
 retry_ra_command(NodeId, RaCommand) ->
     %% TODO: timeout?
     case ra:process_command(NodeId, RaCommand) of
-        {ok, {ok, ok}, Leader}              -> Leader;
+        {ok, {ok, Result}, Leader}          -> {ok, Result, Leader};
         {ok, {error, {aborted, Reason}}, _} -> mnesia:abort(Reason);
-        {ok, {error, Reason}, _} -> mnesia:abort({apply_error, Reason});
-        {error, _Reason}         -> timer:sleep(100),
-                                    retry_ra_command(NodeId, RaCommand);
-        {timeout, _}             -> retry_ra_command(NodeId, RaCommand)
+        {ok, {error, Reason}, _}            -> mnesia:abort({apply_error, Reason});
+        {error, _Reason}                    -> timer:sleep(100),
+                                               retry_ra_command(NodeId, RaCommand);
+        {timeout, _}                        -> retry_ra_command(NodeId, RaCommand)
     end.
 
 record_key(Record) ->
@@ -713,3 +732,20 @@ retry_lock_call(Locker, LockRequest) ->
             end;
         Other -> Other
     end.
+
+wait_for_transaction(Transaction) ->
+    wait_for_transaction(Transaction, 2000).
+
+wait_for_transaction(Transaction, 0) ->
+    error({no_more_attempts_waiting_for_transaction_to_apply_locally, Transaction});
+wait_for_transaction(Transaction, Attempts) ->
+    %% TODO: mnesia subscribe.
+    case ets:lookup(committed_transaction, Transaction) of
+        [] -> timer:sleep(100),
+              wait_for_transaction(Transaction, Attempts - 1);
+        _  -> ok
+    end.
+
+
+
+

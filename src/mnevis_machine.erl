@@ -97,10 +97,10 @@ apply(Meta, {commit, Transaction, {Writes, Deletes, DeletesObject}}, State)  ->
                     Result = commit(Transaction, Writes, Deletes, DeletesObject),
                     %% TODO: return committed/skipped
                     case Result of
-                        {ok, committed} ->
-                            {State, {ok, ok}, snapshot_effects(Meta, State)};
+                        {ok, {committed, Versions}} ->
+                            {State, {ok, {committed, Versions}}, snapshot_effects(Meta, State)};
                         {ok, skipped} ->
-                            {State, {ok, ok}, []};
+                            {State, {ok, skipped}, []};
                         _ ->
                             {State, Result, []}
                     end
@@ -153,7 +153,7 @@ apply(_Meta, {next, Transaction, {Tab, Key}}, State0) ->
 apply(Meta, {create_table, Tab, Opts}, State) ->
     Result = case mnesia:create_table(Tab, Opts) of
         {atomic, ok} ->
-            mnevis_read:init_version(Tab, 0),
+            _ = mnevis_read:init_version(Tab, 0),
             {atomic, ok};
         Res ->
             Res
@@ -244,7 +244,9 @@ create_committed_transaction_table() ->
 -spec commit(transaction(), [mnevis_context:item()],
                             [mnevis_context:delete_item()],
                             [mnevis_context:item()]) ->
-    {ok, committed} | {ok, skipped} | {error, {aborted, term()}}.
+    {ok, {committed, [{mnevis:table(), mnevis_context:version()}]}} |
+    {ok, skipped} |
+    {error, {aborted, term()}}.
 commit(Transaction, Writes, Deletes, DeletesObject) ->
     Res = mnesia:transaction(fun() ->
         case ets:lookup(committed_transaction, Transaction) of
@@ -253,9 +255,9 @@ commit(Transaction, Writes, Deletes, DeletesObject) ->
                 _ = apply_writes(Writes),
                 _ = apply_deletes_object(DeletesObject),
                 _ = mnesia:lock({table, versions}, write),
-                ok = update_table_versions(Writes, Deletes, DeletesObject),
+                UpdatedVersions = update_table_versions(Writes, Deletes, DeletesObject),
                 ok = save_committed_transaction(Transaction),
-                committed;
+                {committed, UpdatedVersions};
             %% Transaction is already committed.
             [{committed_transaction, Transaction, committed}] ->
                 skipped
@@ -274,18 +276,19 @@ update_table_versions(Writes, Deletes, DeletesObject) ->
                             || {Tab, Rec, _} <- Writes ++ DeletesObject] ++
                           [{Tab, erlang:phash2(Key, 1000)} || {Tab, Key, _} <- Deletes]),
     Tabs = lists:usort(element(1, lists:unzip(TabKeys))),
-    lists:foreach(
+    TabUpdates = lists:map(
         fun(Tab) ->
             %% This function may crash
             %% Version should be in the database at this point
-            ok = mnevis_read:update_version(Tab)
+            mnevis_read:update_version(Tab)
         end,
         Tabs),
-    lists:foreach(
+    KeyUpdates = lists:map(
         fun(TabKey) ->
-            ok = mnevis_read:init_version(TabKey, 1)
+            mnevis_read:init_version(TabKey, 1)
         end,
-        TabKeys).
+        TabKeys),
+    TabUpdates ++ KeyUpdates.
 
 
 -spec snapshot_effects(map(), state()) -> ra_machine:effects().

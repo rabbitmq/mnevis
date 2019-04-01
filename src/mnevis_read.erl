@@ -73,30 +73,34 @@ local_read_query({Op, [Tab | _] = Args}, CurrentVersions) ->
             end
     end.
 
--spec update_version(mnevis:table()) -> ok.
+-spec update_version(mnevis:table()) -> {mnevis:table(), mnevis_context:version()}.
 update_version(Tab) ->
     case get_version(Tab) of
         {ok, Version} ->
-            VersionRecord = {versions, Tab, Version + 1},
-            ok = mnesia:write(versions, VersionRecord, write);
+            NewVersion = Version + 1,
+            VersionRecord = {versions, Tab, NewVersion},
+            ok = mnesia:write(versions, VersionRecord, write),
+            {Tab, NewVersion};
         {error, no_exists} ->
             error({table_version_missing, Tab})
     end.
 
--spec init_version(mnevis:table(), integer()) -> ok.
+-spec init_version(mnevis:table(), integer()) -> {mnevis:table(), mnevis_context:version()}.
 init_version(Tab, FirstVersion) ->
-    VersionRecord = case get_version(Tab) of
+    NewVersion = case get_version(Tab) of
         {ok, Version} ->
-            {versions, Tab, Version + 1};
+            Version + 1;
         {error, no_exists} ->
-            {versions, Tab, FirstVersion}
+            FirstVersion
     end,
+    VersionRecord = {versions, Tab, NewVersion},
     case mnesia:is_transaction() of
         true ->
             ok = mnesia:write(VersionRecord);
         false ->
             ok = mnesia:dirty_write(VersionRecord)
-    end.
+    end,
+    {Tab, NewVersion}.
 
 -spec wait_for_versions([mnevis_context:read_version()]) -> ok.
 wait_for_versions(TargetVersions) ->
