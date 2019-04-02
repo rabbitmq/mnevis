@@ -174,6 +174,11 @@ instantly.
 When transaction is restarted - all its locks and transaction context is cleared
 but transaction ID stays registered with the lock process.
 
+**Behaviour differences with mnesia**
+Because locks are aquired cluster-wide and not on specific nodes, global locks
+aquired with a `{global, LockTerm :: term(), Nodes :: [node()]}` lock item will
+not scope on nodes. It will lock all nodes on `LockTerm`.
+
 ### Snapshotting and log replay
 
 When a transaction is committed, the changes are saved to mnesia DB.

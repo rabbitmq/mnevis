@@ -102,12 +102,12 @@ transaction_for_source(Source, #state{transactions = Transactions}) ->
     end.
 
 -spec lock_internal(transaction_id(), pid(), lock_item(), lock_kind(), state()) -> {lock_result(), state()}.
-lock_internal(Tid, Source, LockItem, LockKind, State0) ->
+lock_internal(Tid, Source, LockItem0, LockKind, State0) ->
     %% If we run lock operation - the current transaction is not locked anymore
     %% It might have been restarted by timeout. We need to cleanup it's lockers
     State1 = unlock_transaction(Tid, State0),
 
-
+    LockItem = normalize_lock_item(LockItem0),
     case locking_transactions(LockItem, LockKind, Tid, State1) of
         [] ->
             {{ok, Tid}, apply_lock(LockItem, LockKind, Tid, State1)};
@@ -128,6 +128,9 @@ lock_internal(Tid, Source, LockItem, LockKind, State0) ->
             State3 = lock_transaction(Tid, Source, LockingTids, State2),
             {Error, State3}
     end.
+
+normalize_lock_item({global, Key, _Nodes}) -> {global, Key, ignore_nodes};
+normalize_lock_item(Other) -> Other.
 
 -spec apply_lock(lock_item(), lock_kind(), transaction_id(), state()) -> state().
 apply_lock(LockItem, write, Tid, State = #state{write_locks = WLocks, reverse_write_locks = RWLocks}) ->
