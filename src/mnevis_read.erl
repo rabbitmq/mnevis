@@ -109,12 +109,25 @@ wait_for_versions(TargetVersions) ->
         [] ->
             ok;
         _ ->
-            {ok, _} = mnesia:subscribe({table, versions, simple}),
-            try
-                wait_for_mnesia_updates(VersionsToWait)
-            after
-                mnesia:unsubscribe({table, versions, simple}),
-                flush_table_events()
+            %% NOTE: create a one-off process to wait for mnesia events.
+            %% If we subscribe in the main process - events may be delivered
+            %% after we unsubscribe and mess up gen servers.
+            {WaitingPid, MonRef} = spawn_monitor(fun() ->
+                {ok, _} = mnesia:subscribe({table, versions, simple}),
+                try
+                    wait_for_mnesia_updates(VersionsToWait)
+                after
+                    mnesia:unsubscribe({table, versions, simple}),
+                    flush_table_events(),
+                    error_logger:warning_msg("Messages left: ~p~n", [process_info(self(), messages)])
+                end
+            end),
+            receive {'DOWN', MonRef, process, WaitingPid, Reason} ->
+                case Reason of
+                    normal -> ok;
+                    Error  -> error({mnevis_error_waitnig_for_versions,
+                                     Error, TargetVersions})
+                end
             end
     end.
 
