@@ -157,6 +157,6 @@ filter_versions_to_wait(TargetVersions) ->
     end.
 
 flush_table_events() ->
-    receive {mnesia_table_event, _, _} -> flush_table_events()
+    receive {mnesia_table_event, _} -> flush_table_events()
     after 0 -> ok
     end.
