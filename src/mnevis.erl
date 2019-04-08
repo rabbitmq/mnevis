@@ -20,6 +20,10 @@
 
 -define(AQUIRE_LOCK_ATTEMPTS, 10).
 
+%% TODO: better timeout value.
+%% Maybe a smarter way to handle situations with no quorum
+-define(CONSISTENT_QUERY_TIMEOUT, 5000).
+
 % -behaviour(mnesia_access).
 
 %% mnesia_access behaviour
@@ -225,7 +229,11 @@ retry_new_transaction(Fun, Args, Retries, Error) ->
         infinity -> infinity;
         R when is_integer(R) -> R - 1
     end,
+    Context = get_transaction_context(),
+    error_logger:warning_msg("Retrying transaction ~p with error ~p",
+        [mnevis_context:transaction(Context), Error]),
     clean_transaction_context(),
+
     transaction0(Fun, Args, NextRetries, Error).
 
 %% Keep the transaction ID and locker, but remove temp data and retry.
@@ -238,6 +246,8 @@ retry_same_transaction(Fun, Args, Retries, Error) ->
     Context = get_transaction_context(),
     %% The context should have a transaction to be locked
     mnevis_context:assert_transaction(Context),
+    error_logger:warning_msg("Retrying transaction ~p with error ~p",
+        [mnevis_context:transaction(Context), Error]),
     Context1 = mnevis_context:cleanup_changes(Context),
     update_transaction_context(Context1),
     transaction0(Fun, Args, NextRetries, Error).
@@ -644,7 +654,7 @@ with_lock_and_version(Context, LockItem, LockKind, Fun) ->
         end,
         case ra:consistent_query(mnevis_node:node_id(),
                                  {mnevis_machine, get_version, [VersionKey]},
-                                 infinity) of
+                                 ?CONSISTENT_QUERY_TIMEOUT) of
             {ok, Result, _} ->
                 case Result of
                     {ok, Version} ->
@@ -654,7 +664,9 @@ with_lock_and_version(Context, LockItem, LockKind, Fun) ->
                         Fun()
                 end;
             {error, Err} ->
-                mnesia:abort(Err)
+                mnesia:abort(Err);
+            {timeout, TO} ->
+                mnesia:abort({timeout, TO})
         end
     end).
 
