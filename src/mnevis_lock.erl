@@ -271,12 +271,15 @@ read_locking_transactions(LockItem, single, Tid, #state{read_locks = RLocks}) ->
             end
     end;
 read_locking_transactions({table, Tab}, all, Tid, #state{read_locks = RLocks}) ->
-    maps:fold(fun({Table, _}, MapSet, Locking) when Table =:= Tab ->
-                  WithoutTid = map_sets:del_element(Tid, MapSet),
-                  case map_sets:size(WithoutTid) == 0 of
-                      true  -> Locking;
-                      false -> map_sets:to_list(WithoutTid) ++ Locking
-                  end
+    maps:fold(fun
+                ({Table, _}, MapSet, Locking) when Table =:= Tab ->
+                    WithoutTid = map_sets:del_element(Tid, MapSet),
+                    case map_sets:size(WithoutTid) == 0 of
+                        true  -> Locking;
+                        false -> map_sets:to_list(WithoutTid) ++ Locking
+                    end;
+                (_, _, Locking) ->
+                    Locking
               end,
               [],
               RLocks).
