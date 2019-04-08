@@ -4,6 +4,8 @@
 -export([add_node/1, remove_node/1]).
 -export([make_initial_nodes/1]).
 
+-define(START_TIMEOUT, 100000).
+
 node_id() ->
     node_id(node()).
 
@@ -23,7 +25,27 @@ start() ->
         net_adm:ping(N)
     end,
     InitialNodes),
-    {ok, _, _} = ra:start_or_restart_cluster(Name, {module, mnevis_machine, #{}}, InitialNodes).
+    Res = case ra_directory:uid_of(Name) of
+        undefined ->
+            ra:start_server(Name, NodeId, {module, mnevis_machine, #{}}, InitialNodes);
+        _ ->
+            ra:restart_server(NodeId)
+    end,
+    case Res of
+        ok ->
+            case ra:members(NodeId, ?START_TIMEOUT) of
+                {ok, _, _} ->
+                    ok;
+                {timeout, _} = Err ->
+                    %% TODO: improve error reporting
+                    error_logger:error_msg("Timeout waiting for mnevis cluster"),
+                    Err;
+                Err ->
+                    Err
+            end;
+        _ ->
+            Res
+    end.
 
 make_initial_nodes(Nodes) ->
     [make_initial_node(Node) || Node <- Nodes].
