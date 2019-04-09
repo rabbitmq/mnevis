@@ -22,7 +22,7 @@
 
 %% TODO: better timeout value.
 %% Maybe a smarter way to handle situations with no quorum
--define(CONSISTENT_QUERY_TIMEOUT, 5000).
+-define(CONSISTENT_QUERY_TIMEOUT, 60000).
 
 % -behaviour(mnesia_access).
 
