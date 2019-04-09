@@ -18,7 +18,7 @@
 -type lock_item() :: {mnevis:table(), term()} | {table, mnevis:table()} | {global, term(), [node()]}.
 -type lock_kind() :: read | write.
 
--type lock_request() :: {lock | lock_version, transaction_id() | undefined, pid(),
+-type lock_request() :: {lock, transaction_id() | undefined, pid(),
                                lock_item(), lock_kind()}.
 
 -type lock_result() :: {ok, transaction_id()} |

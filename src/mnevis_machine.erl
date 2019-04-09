@@ -92,6 +92,7 @@ apply(Meta, {commit, Transaction, {Writes, Deletes, DeletesObject}}, State)  ->
         fun() ->
             case {Writes, Deletes, DeletesObject} of
                 {[], [], []} ->
+                    %% TODO: this should not happen
                     {State, {ok, ok}, []};
                 _ ->
                     Result = commit(Transaction, Writes, Deletes, DeletesObject),
