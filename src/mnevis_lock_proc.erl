@@ -7,7 +7,7 @@
 -export([locate/0,
          ensure_lock_proc/1,
          try_lock_call/2,
-         rollback/2]).
+         cleanup/2]).
 
 -export([create_locker_cache/0,
          update_locker_cache/1]).
@@ -112,9 +112,18 @@ try_lock_call({_Term, Pid}, LockRequest) ->
             {error, locker_timeout}
     end.
 
--spec rollback(mnevis_lock:transaction_id(), locker()) -> ok.
-rollback(Tid, {_LockerTerm, LockerPid}) ->
-    ok = gen_statem:call(LockerPid, {rollback, Tid, self()}).
+-spec cleanup(mnevis_lock:transaction_id(), locker()) -> ok.
+cleanup(Tid, {_LockerTerm, LockerPid}) ->
+    Call = {cleanup, Tid, self()},
+    try
+        ok = gen_statem:call(LockerPid, Call)
+    %% Ignore noproc.
+    %% If locker process is unavailable it will cleanup the transaction
+    catch
+        exit:{noproc,{gen_statem,call,[LockerPid,Call,infinity]}} ->
+            ok
+    end.
+
 
 -spec init(locker_term()) -> gen_statem:init_result(election_states()).
 init(Term) ->
@@ -153,7 +162,7 @@ leader({call, From},
        State = #state{lock_state = LockState}) ->
     {LockResult, LockState1} = mnevis_lock:lock(TransationId, Source, LockItem, LockKind, LockState),
     {keep_state, State#state{lock_state = LockState1}, [{reply, From, LockResult}]};
-leader({call, From}, {rollback, TransationId, Source}, State) ->
+leader({call, From}, {cleanup, TransationId, Source}, State) ->
     LockState = mnevis_lock:cleanup(TransationId, Source, State#state.lock_state),
     {keep_state, State#state{lock_state = LockState}, [{reply, From, ok}]};
 leader(cast, stop, _State) ->

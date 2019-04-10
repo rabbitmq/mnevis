@@ -252,8 +252,11 @@ write_locking_transactions(LockItem, single, Tid, #state{write_locks = WLocks}) 
         DifferentTid -> [DifferentTid]
     end;
 write_locking_transactions({table, Tab}, all, Tid, #state{write_locks = WLocks}) ->
-    Intersecting = maps:filter(fun({Table, _}, TransactionId) ->
-                                   Table =:= Tab andalso TransactionId =/= Tid
+    Intersecting = maps:filter(fun
+                                ({Table, _}, TransactionId) ->
+                                    Table =:= Tab andalso TransactionId =/= Tid;
+                                ({global, _, _}, _) ->
+                                    false
                                end,
                                WLocks),
     maps:values(Intersecting).

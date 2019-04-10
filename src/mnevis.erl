@@ -230,8 +230,8 @@ retry_new_transaction(Fun, Args, Retries, Error) ->
         R when is_integer(R) -> R - 1
     end,
     Context = get_transaction_context(),
-    error_logger:warning_msg("Retrying transaction ~p with error ~p",
-        [mnevis_context:transaction(Context), Error]),
+    % error_logger:warning_msg("Retrying transaction ~p with error ~p",
+        % [mnevis_context:transaction(Context), Error]),
     clean_transaction_context(),
 
     transaction0(Fun, Args, NextRetries, Error).
@@ -315,7 +315,7 @@ maybe_cleanup_transaction() ->
     ok.
 
 cleanup_transaction({TransactionId, Locker}) ->
-    mnevis_lock_proc:rollback(TransactionId, Locker).
+    mnevis_lock_proc:cleanup(TransactionId, Locker).
 
 update_transaction_context(Context) ->
     put(mnevis_transaction_context, Context).
@@ -704,6 +704,9 @@ do_aquire_lock_with_new_transaction(_Context, _LockItem, _LockKind, _Method, 0) 
     mnesia:abort({unable_to_aquire_lock, no_promoted_lock_processes});
 do_aquire_lock_with_new_transaction(Context, LockItem, LockKind, Method, Attempts) ->
     ok = mnevis_context:assert_no_transaction(Context),
+    %% TODO: monitor the lock process to make sure there is no disconnect.
+    %% If there is a disconnect - the locker process will clean up the locks,
+    %% but transaction may still think it holds them.
     Locker = case mnevis_lock_proc:locate() of
         {ok, L}      -> L;
         {error, Err} -> mnesia:abort(Err)
