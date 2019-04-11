@@ -126,7 +126,6 @@ transaction(Fun, Args) ->
 transaction(Fun, Args, Retries) ->
     transaction(Fun, Args, Retries, []).
 
-
 transaction(Fun, Args, Retries, Options) ->
     case is_transaction() of
         true ->
