@@ -441,33 +441,75 @@ last(ActivityId, Opaque, Tab) ->
 
 prev(ActivityId, Opaque, Tab, Key) ->
     Context = get_transaction_context(),
-    with_lock(Context, {table, Tab}, read, fun() ->
+    % TODO LRB with_lock?
+    with_lock_and_version(Context, {table, Tab}, read, fun() ->
         Context1 = get_transaction_context(),
-        NewKey = case execute_command(Context1, prev, {Tab, Key}) of
-            {ok, NKey} ->
-                NKey;
-            {error, {key_not_found, ClosestKey}} ->
-                ClosestKey;
-            {error, key_not_found} ->
-                mnevis_context:prev_cached_key(Context1, Tab, Key)
-        end,
-        check_key(ActivityId, Opaque, Tab, NewKey, Key, prev, Context1)
+        try
+            {NewKey, Context2} = execute_local_read_query({dirty_prev, [Tab]}, Context1),
+            check_key(ActivityId, Opaque, Tab, NewKey, Key, prev, Context2)
+        catch
+            exit:{aborted, {badarg, [Tab, Key]}} ->
+                closest_key(prev, Tab, Key)
+        end
     end).
 
 next(ActivityId, Opaque, Tab, Key) ->
     Context = get_transaction_context(),
-    with_lock(Context, {table, Tab}, read, fun() ->
+    % TODO LRB with_lock?
+    with_lock_and_version(Context, {table, Tab}, read, fun() ->
         Context1 = get_transaction_context(),
-        NewKey = case execute_command(Context1, next, {Tab, Key}) of
-            {ok, NKey} ->
-                NKey;
-            {error, {key_not_found, ClosestKey}} ->
-                ClosestKey;
-            {error, key_not_found} ->
-                mnevis_context:next_cached_key(Context1, Tab, Key)
-        end,
-        check_key(ActivityId, Opaque, Tab, NewKey, Key, next, Context1)
+        try
+            {NewKey, Context2} = execute_local_read_query({dirty_next, [Tab]}, Context1),
+            check_key(ActivityId, Opaque, Tab, NewKey, Key, next, Context2)
+        catch
+            exit:{aborted, {badarg, [Tab, Key]}} ->
+                closest_key(next, Tab, Key)
+        end
     end).
+
+-spec closest_key(prev | next, mnevis:table(), Key) -> Key.
+closest_key(prev, Tab, Key) ->
+    case mnesia:table_info(Tab, type) of
+        ordered_set ->
+           closest_prev(Tab, Key);
+        _ ->
+           mnesia:dirty_last(Tab)
+    end;
+closest_key(next, Tab, Key) ->
+    case mnesia:table_info(Tab, type) of
+        ordered_set ->
+           closest_next(Tab, Key);
+        _ ->
+           mnesia:dirty_first(Tab)
+    end.
+
+-spec closest_next(mnevis:table(), Key) -> Key.
+closest_next(Tab, Key) ->
+    First = mnesia:dirty_first(Tab),
+    closest_next(Tab, Key, First).
+
+-spec closest_next(mnevis:table(), Key, Key) -> Key.
+closest_next(_Tab, _Key, '$end_of_table') ->
+    '$end_of_table';
+closest_next(Tab, Key, CurrentKey) ->
+    case Key < CurrentKey of
+        true  -> CurrentKey;
+        false -> closest_next(Tab, Key, mnesia:dirty_next(Tab, CurrentKey))
+    end.
+
+-spec closest_prev(mnevis:table(), Key) -> Key.
+closest_prev(Tab, Key) ->
+    First = mnesia:dirty_last(Tab),
+    closest_prev(Tab, Key, First).
+
+-spec closest_prev(mnevis:table(), Key, Key) -> Key.
+closest_prev(_Tab, _Key, '$end_of_table') ->
+    '$end_of_table';
+closest_prev(Tab, Key, CurrentKey) ->
+    case Key > CurrentKey of
+        true  -> CurrentKey;
+        false -> closest_prev(Tab, Key, mnesia:dirty_prev(Tab, CurrentKey))
+    end.
 
 foldl(ActivityId, Opaque, Fun, Acc, Tab, LockKind) ->
     First = first(ActivityId, Opaque, Tab),
@@ -546,12 +588,13 @@ select_cont(_ActivityId, _Opaque, _Cont) ->
 
 %% ==========================
 
--spec execute_command(context(), atom(), term()) -> {ok, term()} | {error, term()}.
-execute_command(Context, Command, Args) ->
-    mnevis_context:assert_transaction(Context),
-    Transaction = mnevis_context:transaction(Context),
-    RaCommand = {Command, Transaction, Args},
-    run_ra_command(RaCommand).
+% TODO
+% -spec execute_command(context(), atom(), term()) -> {ok, term()} | {error, term()}.
+% execute_command(Context, Command, Args) ->
+%     mnevis_context:assert_transaction(Context),
+%     Transaction = mnevis_context:transaction(Context),
+%     RaCommand = {Command, Transaction, Args},
+%     run_ra_command(RaCommand).
 
 
 -spec run_ra_command(term()) -> {ok, term()} | {error, term()}.

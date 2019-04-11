@@ -24,11 +24,6 @@ Commands:
             if transaction locker is not current - reject
         effects:
             release_cursor if committed successfully
-    read/index_read/match_object/etc. - read data from the mnesia DB.
-                                        Can return the read data or aborted error.
-        pre_conditions:
-            if transaction locker is not current - reject
-    prev/next - same as read, but can return `key_not_found` error.
     down - locker exited - set locker_status to `down` and start a new locker
     create_table/delete-table - perform a mnesia operation. TODO!
 

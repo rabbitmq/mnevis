@@ -70,59 +70,6 @@ commit_write_test() ->
     Table = lists:usort(ets:tab2list(foo)),
     Expected = Table.
 
-% read ops:
-%     fail if wrong transaction term
-%     skip if transaction is committed
-%     return read data
-
-
-%% Prev
-
-prev_wrong_locker_transaction_error_test() ->
-    wrong_locker_transaction_error(prev, {table, foo}).
-
-prev_aborted_transaction_error_test() ->
-    aborted_transaction_error(prev, {unknown_table, foo}, {no_exists,[unknown_table, foo]}).
-
-prev_committed_transaction_error_test() ->
-    committed_transaction_error(prev, {table, foo}).
-
-%% Next
-
-next_wrong_locker_transaction_error_test() ->
-    wrong_locker_transaction_error(next, {table, foo}).
-
-next_aborted_transaction_error_test() ->
-    aborted_transaction_error(next, {unknown_table, foo}, {no_exists,[unknown_table, foo]}).
-
-next_committed_transaction_error_test() ->
-    committed_transaction_error(next, {table, foo}).
-
-
-wrong_locker_transaction_error(Command, Args) ->
-    init_mnesia_table(),
-    InitState = init_state(),
-    InvalidTransaction = invalid_transaction(InitState),
-    {InitState, {error, {aborted, wrong_locker_term}}, []} =
-        mnevis_machine:apply(none, {Command, InvalidTransaction, Args}, InitState).
-
-aborted_transaction_error(Command, Args, Err) ->
-    init_mnesia_table(),
-    InitState = init_state(),
-    Transaction = valid_transaction(InitState),
-    {InitState, {error, {aborted, Err}}, []} =
-        mnevis_machine:apply(none, {Command, Transaction, Args}, InitState).
-
-committed_transaction_error(Command, Args) ->
-    init_mnesia_table(),
-    InitState = init_state(),
-    Transaction = valid_transaction(InitState),
-    {InitState, {ok, _}, _} =
-        mnevis_machine:apply(#{index => 1}, {commit, Transaction, {[{sample, {sample, foo, bar}, write}], [], []}}, InitState),
-
-    {InitState, {error, {transaction_committed, Transaction}}, []} =
-        mnevis_machine:apply(none, {Command, Transaction, Args}, InitState).
-
 % DOWN from a monitor:
 %     create a new locker
 

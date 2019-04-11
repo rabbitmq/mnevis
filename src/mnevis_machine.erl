@@ -30,8 +30,6 @@
                             {[mnevis_context:item()],
                              [mnevis_context:delete_item()],
                              [mnevis_context:item()]}} |
-                   {prev, transaction(), {mnevis:table(), term()}} |
-                   {next, transaction(), {mnevis:table(), term()}} |
                    {create_table, mnevis:table(), [term()]} |
                    {delete_table, mnevis:table()} |
                    {down, pid(), term()} |
@@ -116,49 +114,6 @@ apply(Meta, {commit, Transaction, {Writes, Deletes, DeletesObject}}, State)  ->
                     end
             end
         end);
-apply(_Meta, {prev, Transaction, {Tab, Key}}, State0) ->
-    with_transaction(Transaction, State0,
-        fun() ->
-            catch_abort(
-                fun() ->
-                    try {ok, mnesia:dirty_prev(Tab, Key)}
-                    catch
-                        exit:{aborted, {badarg, [Tab, Key]}} ->
-                            case mnesia:table_info(Tab, type) of
-                                ordered_set ->
-                                    {error,
-                                        {key_not_found,
-                                         closest_prev(Tab, Key)}};
-                                _ ->
-                                    {error,
-                                        {key_not_found,
-                                         mnesia:dirty_last(Tab)}}
-                            end
-                    end
-                end)
-        end);
-apply(_Meta, {next, Transaction, {Tab, Key}}, State0) ->
-    with_transaction(Transaction, State0,
-        fun() ->
-            catch_abort(
-                fun() ->
-                    try {ok, mnesia:dirty_next(Tab, Key)}
-                    catch
-                        exit:{aborted, {badarg, [Tab, Key]}} ->
-                            case mnesia:table_info(Tab, type) of
-                                ordered_set ->
-                                    {error,
-                                        {key_not_found,
-                                         closest_next(Tab, Key)}};
-                                _ ->
-                                    {error,
-                                        {key_not_found,
-                                         mnesia:dirty_first(Tab)}}
-                            end
-                    end
-                end)
-        end);
-
 %% TODO: return type for create_table
 apply(Meta, {create_table, Tab, Opts}, State) ->
     Result = case mnesia:create_table(Tab, Opts) of
@@ -281,6 +236,7 @@ commit(Transaction, Writes, Deletes, DeletesObject) ->
     end.
 
 update_table_versions(Writes, Deletes, DeletesObject) ->
+    % TODO why commented out?
     % Tabs = lists:usort([Tab || {Tab, _, _} <- Writes ++ Deletes ++ DeletesObject]),
     TabKeys = lists:usort([{Tab, erlang:phash2(mnevis:record_key(Rec), 1000)}
                             || {Tab, Rec, _} <- Writes ++ DeletesObject] ++
@@ -324,49 +280,22 @@ apply_writes(Writes) ->
     [ok = mnesia:write(Tab, Rec, write)
      || {Tab, Rec, _LockKind} <- Writes].
 
--spec closest_next(mnevis:table(), Key) -> Key.
-closest_next(Tab, Key) ->
-    First = mnesia:dirty_first(Tab),
-    closest_next(Tab, Key, First).
-
--spec closest_next(mnevis:table(), Key, Key) -> Key.
-closest_next(_Tab, _Key, '$end_of_table') ->
-    '$end_of_table';
-closest_next(Tab, Key, CurrentKey) ->
-    case Key < CurrentKey of
-        true  -> CurrentKey;
-        false -> closest_next(Tab, Key, mnesia:dirty_next(Tab, CurrentKey))
-    end.
-
--spec closest_prev(mnevis:table(), Key) -> Key.
-closest_prev(Tab, Key) ->
-    First = mnesia:dirty_last(Tab),
-    closest_prev(Tab, Key, First).
-
--spec closest_prev(mnevis:table(), Key, Key) -> Key.
-closest_prev(_Tab, _Key, '$end_of_table') ->
-    '$end_of_table';
-closest_prev(Tab, Key, CurrentKey) ->
-    case Key > CurrentKey of
-        true  -> CurrentKey;
-        false -> closest_prev(Tab, Key, mnesia:dirty_prev(Tab, CurrentKey))
-    end.
-
 %% TODO: optimise transaction numbers
 -spec save_committed_transaction(transaction()) -> ok.
 save_committed_transaction(Transaction) ->
     ok = mnesia:write({committed_transaction, Transaction, committed}).
 
 %% TODO: store committed transactions in memory
--spec transaction_recorded_as_committed(transaction()) -> boolean().
-transaction_recorded_as_committed(Transaction) ->
-    Res = mnesia:dirty_read(committed_transaction, Transaction),
-    case Res of
-        [] ->
-            false;
-        [{committed_transaction, Transaction, committed}] ->
-            true
-    end.
+% TODO LRB
+% -spec transaction_recorded_as_committed(transaction()) -> boolean().
+% transaction_recorded_as_committed(Transaction) ->
+%     Res = mnesia:dirty_read(committed_transaction, Transaction),
+%     case Res of
+%         [] ->
+%             false;
+%         [{committed_transaction, Transaction, committed}] ->
+%             true
+%     end.
 
 %% ==========================
 
@@ -380,26 +309,27 @@ with_valid_locker({_Tid, Locker}, State, Fun) ->
         {error, Reason} -> {State, {error, {aborted, Reason}}, []}
     end.
 
--spec catch_abort(fun(() -> reply(R, E))) -> reply(R, E | {aborted, term()}).
-catch_abort(Fun) ->
-    try
-        Fun()
-    catch exit:{aborted, Reason} ->
-        {error, {aborted, Reason}}
-    end.
-
--spec with_transaction(transaction(), state(),
-                       fun(() -> reply(T, E))) -> apply_result(T, E).
-with_transaction(Transaction, State, Fun) ->
-    with_valid_locker(Transaction, State,
-        fun() ->
-            case transaction_recorded_as_committed(Transaction) of
-                %% This is a log replay and the transaction is already committed.
-                %% Result will not be received by any client.
-                true  -> {State, {error, {transaction_committed, Transaction}}, []};
-                false -> {State, Fun(), []}
-            end
-        end).
+% TODO LRB
+% -spec catch_abort(fun(() -> reply(R, E))) -> reply(R, E | {aborted, term()}).
+% catch_abort(Fun) ->
+%     try
+%         Fun()
+%     catch exit:{aborted, Reason} ->
+%         {error, {aborted, Reason}}
+%     end.
+%
+% -spec with_transaction(transaction(), state(),
+%                        fun(() -> reply(T, E))) -> apply_result(T, E).
+% with_transaction(Transaction, State, Fun) ->
+%     with_valid_locker(Transaction, State,
+%         fun() ->
+%             case transaction_recorded_as_committed(Transaction) of
+%                 %% This is a log replay and the transaction is already committed.
+%                 %% Result will not be received by any client.
+%                 true  -> {State, {error, {transaction_committed, Transaction}}, []};
+%                 false -> {State, Fun(), []}
+%             end
+%         end).
 
 %% ==============================
 
