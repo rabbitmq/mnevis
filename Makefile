@@ -2,7 +2,7 @@ PROJECT = mnevis
 PROJECT_DESCRIPTION = New project
 PROJECT_VERSION = 0.1.0
 
-DEPS = ra map_sts
+DEPS = ra map_sets
 LOCAL_DEPS = mnesia
 TEST_DEPS = proper
 

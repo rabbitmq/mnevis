@@ -2,8 +2,13 @@
 
 -export([start/1]).
 
-%% TODO: support table manipulation.
 -export([create_table/2, delete_table/1]).
+-export([add_table_index/2, del_table_index/2]).
+
+-export([clear_table/1]).
+
+%% TODO: invetigate safety of transform.
+-export([transform_table/3, transform_table/4]).
 
 %% System info
 -export([db_nodes/0, running_db_nodes/0]).
@@ -83,6 +88,30 @@ create_table(Tab, Opts) ->
 delete_table(Tab) ->
     %% TODO: handle errors/retry
     {ok, R} = run_ra_command({delete_table, Tab}),
+    R.
+
+add_table_index(Tab, AttrName) ->
+    {ok, R} = run_ra_command({add_table_index, Tab, AttrName}),
+    R.
+
+del_table_index(Tab, AttrName) ->
+    {ok, R} = run_ra_command({del_table_index, Tab, AttrName}),
+    R.
+
+clear_table(Tab) ->
+    {ok, R} = run_ra_command({clear_table, Tab}),
+    R.
+
+%% NOTE: transform table does not support closures
+%% because transform is persisted to the raft log
+%% If arguments are specified there will be
+%% appended to the record M:F(Record, A1, A2 ...)
+transform_table(Tab, {_, _, _} = MFA, NewAttributeList, NewRecordName) ->
+    {ok, R} = run_ra_command({transform_table, Tab, MFA, NewAttributeList, NewRecordName}),
+    R.
+
+transform_table(Tab, {_, _, _} = MFA, NewAttributeList) ->
+    {ok, R} = run_ra_command({transform_table, Tab, MFA, NewAttributeList}),
     R.
 
 transaction(Fun) ->

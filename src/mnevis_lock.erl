@@ -170,7 +170,7 @@ cleanup_locks(Tid, State) ->
         fun(RLock, RLocks0) ->
             Tids = maps:get(RLock, RLocks0),
             NewTids = map_sets:del_element(Tid, Tids),
-            case map_sets:is_empty(NewTids) of
+            case map_sets:size(NewTids) == 0 of
                 true  -> maps:remove(RLock, RLocks0);
                 false -> maps:put(RLock, NewTids, RLocks0)
             end
@@ -252,7 +252,7 @@ read_locking_transactions(LockItem, Tid, #state{read_locks = RLocks}) ->
         not_found -> [];
         MapSet when is_map(MapSet) ->
             WithoutTid = map_sets:del_element(Tid, MapSet),
-            case map_sets:is_empty(WithoutTid) of
+            case map_sets:size(WithoutTid) == 0 of
                 true  -> [];
                 false -> lists:usort(map_sets:to_list(WithoutTid))
             end

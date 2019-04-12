@@ -136,8 +136,9 @@ apply(_Meta, {next, Transaction, {Tab, Key}}, State0) ->
                     end
                 end)
         end);
+
 %% TODO: return type for create_table
-apply(_Meta, {create_table, Tab, Opts}, State) ->
+apply(Meta, {create_table, Tab, Opts}, State) ->
     Result = case mnesia:create_table(Tab, Opts) of
         {atomic, ok} ->
             mnevis_read:init_version(Tab),
@@ -145,10 +146,31 @@ apply(_Meta, {create_table, Tab, Opts}, State) ->
         Res ->
             Res
     end,
-    {State, {ok, Result}, []};
-apply(_Meta, {delete_table, Tab}, State) ->
+    {State, {ok, Result}, snapshot_effects(Meta, State)};
+apply(Meta, {delete_table, Tab}, State) ->
     Result = mnesia:delete_table(Tab),
-    {State, {ok, Result}, []};
+    {State, {ok, Result}, snapshot_effects(Meta, State)};
+apply(Meta, {add_table_index, Tab, AttrName}, State) ->
+    Result = mnesia:add_table_index(Tab, AttrName),
+    {State, {ok, Result}, snapshot_effects(Meta, State)};
+apply(Meta, {del_table_index, Tab, AttrName}, State) ->
+    Result = mnesia:del_table_index(Tab, AttrName),
+    {State, {ok, Result}, snapshot_effects(Meta, State)};
+
+apply(Meta, {clear_table, Tab}, State) ->
+    Result = mnesia:clear_table(Tab),
+    {State, {ok, Result}, snapshot_effects(Meta, State)};
+
+apply(Meta, {transform_table, Tab, {M, F, A}, NewAttributeList, NewRecordName}, State) ->
+    Fun = fun(Record) -> erlang:apply(M, F, [Record | A]) end,
+    Result = mnesia:transform_table(Tab, Fun, NewAttributeList, NewRecordName),
+    {State, {ok, Result}, snapshot_effects(Meta, State)};
+apply(Meta, {transform_table, Tab, {M, F, A}, NewAttributeList}, State) ->
+    Fun = fun() -> erlang:apply(M, F, A) end,
+    Result = mnesia:transform_table(Tab, Fun, NewAttributeList),
+    {State, {ok, Result}, snapshot_effects(Meta, State)};
+
+
 apply(_Meta, {down, Pid, _Reason}, State = #state{locker = {_Term, LockerPid}}) ->
     case Pid of
         LockerPid ->
