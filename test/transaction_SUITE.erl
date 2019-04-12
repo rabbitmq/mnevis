@@ -167,7 +167,7 @@ empty_transaction(_Config) ->
 empty_transaction_abort(_Config) ->
     {aborted, error} = mnevis:transaction(fun() -> mnesia:abort(error) end).
 empty_transaction_error(_Config) ->
-    {aborted, {reason, _ST}} = mnevis:transaction(fun() -> error(reason) end).
+    {aborted, {empty_transaction_error_reason, _ST}} = mnevis:transaction(fun() -> error(empty_transaction_error_reason) end).
 
 
 nested_empty_transaction(_Config) ->

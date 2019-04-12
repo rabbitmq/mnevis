@@ -129,7 +129,7 @@ transaction(Fun, Args, Retries) ->
 transaction(Fun, Args, Retries, Options) ->
     case is_transaction() of
         true ->
-            {atomic, mnesia:activity(ets, Fun, Args, mnevis)};
+            {atomic, mnesia:activity(ets, Fun, Args, ?MODULE)};
         false ->
             case transaction0(Fun, Args, Retries, none) of
                 {atomic, Result, CommitResult} ->
@@ -206,11 +206,11 @@ transaction0(Fun, Args, Retries, _Err) ->
         exit:{aborted, Reason} ->
             ok = maybe_cleanup_transaction(),
             {aborted, Reason};
-        _:Reason ->
+        E:R ->
             ST = erlang:get_stacktrace(),
-            error_logger:warning_msg("Mnevis transaction error ~p~n Stacktrace ~p~n", [Reason, ST]),
+            error_logger:warning_msg("Mnevis transaction error ~p:~p~n Stacktrace ~p~n", [E, R, ST]),
             ok = maybe_cleanup_transaction(),
-            {aborted, {Reason, ST}}
+            {aborted, {R, ST}}
     after
         clean_transaction_context()
     end.
@@ -441,11 +441,10 @@ last(ActivityId, Opaque, Tab) ->
 
 prev(ActivityId, Opaque, Tab, Key) ->
     Context = get_transaction_context(),
-    % TODO LRB with_lock?
     with_lock_and_version(Context, {table, Tab}, read, fun() ->
         Context1 = get_transaction_context(),
         try
-            {NewKey, Context2} = execute_local_read_query({dirty_prev, [Tab]}, Context1),
+            {NewKey, Context2} = execute_local_read_query({dirty_prev, [Tab, Key]}, Context1),
             check_key(ActivityId, Opaque, Tab, NewKey, Key, prev, Context2)
         catch
             exit:{aborted, {badarg, [Tab, Key]}} ->
@@ -455,11 +454,10 @@ prev(ActivityId, Opaque, Tab, Key) ->
 
 next(ActivityId, Opaque, Tab, Key) ->
     Context = get_transaction_context(),
-    % TODO LRB with_lock?
     with_lock_and_version(Context, {table, Tab}, read, fun() ->
         Context1 = get_transaction_context(),
         try
-            {NewKey, Context2} = execute_local_read_query({dirty_next, [Tab]}, Context1),
+            {NewKey, Context2} = execute_local_read_query({dirty_next, [Tab, Key]}, Context1),
             check_key(ActivityId, Opaque, Tab, NewKey, Key, next, Context2)
         catch
             exit:{aborted, {badarg, [Tab, Key]}} ->
