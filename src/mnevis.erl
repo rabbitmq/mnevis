@@ -516,7 +516,8 @@ table_info(ActivityId, Opaque, Tab, InfoItem) ->
         {error, {no_exists, Tab}} -> mnesia:abort({no_exists, Tab, InfoItem})
     end.
 
-consistent_table_info(ActivityId, Opaque, Tab, InfoItem) ->
+% TODO first two args are unused
+consistent_table_info(_ActivityId, _Opaque, Tab, InfoItem) ->
     case ra:consistent_query(mnevis_node:node_id(),
                              {mnevis_machine, safe_table_info, [Tab, InfoItem]}) of
         {ok, Result, _} ->

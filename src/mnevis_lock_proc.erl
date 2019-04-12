@@ -163,8 +163,10 @@ leader({call, From},
     {LockResult, LockState1} = mnevis_lock:lock(TransationId, Source, LockItem, LockKind, LockState),
     {keep_state, State#state{lock_state = LockState1}, [{reply, From, LockResult}]};
 leader({call, From},
-       {{lock, _, _, _, _}, Term},
-       State = #state{term = CurrentTerm}) ->
+       {{lock, _, _, _, _}, _Term},
+       State = #state{term = _CurrentTerm}) ->
+    % TODO Term and CurrentTerm are unused. This case is for when they don't
+    % match, do we want to log an error?
     {keep_state, State, [{reply, From, {error, locker_term_mismatch}}]};
 leader({call, From}, {cleanup, TransationId, Source}, State) ->
     LockState = mnevis_lock:cleanup(TransationId, Source, State#state.lock_state),
