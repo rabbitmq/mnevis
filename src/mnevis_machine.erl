@@ -10,6 +10,7 @@
          snapshot_module/0]).
 
 -export([check_locker/2]).
+-export([safe_table_info/3]).
 -export([get_version/2]).
 
 -record(state, {locker_status = down,
@@ -48,6 +49,15 @@ check_locker({LockerTerm, _LockerPid}, #state{locker = {CurrentLockerTerm, _}}) 
     case LockerTerm of
         CurrentLockerTerm -> ok;
         _                 -> {error, wrong_locker_term}
+    end.
+
+-spec safe_table_info(mnevis:table(), term(), state()) ->
+    {ok, term()} | {error, {no_exists, mnevis:table()}}.
+safe_table_info(Tab, Key, _State) ->
+    Tables = mnesia:system_info(tables),
+    case lists:member(Tab, Tables) of
+        true  -> {ok, mnesia:table_info(Tab, Key)};
+        false -> {error, {no_exists, Tab}}
     end.
 
 get_version(VersionKey, _) ->

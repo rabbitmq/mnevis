@@ -229,7 +229,7 @@ retry_new_transaction(Fun, Args, Retries, Error) ->
         infinity -> infinity;
         R when is_integer(R) -> R - 1
     end,
-    Context = get_transaction_context(),
+    % Context = get_transaction_context(),
     % error_logger:warning_msg("Retrying transaction ~p with error ~p",
         % [mnevis_context:transaction(Context), Error]),
     clean_transaction_context(),
@@ -246,8 +246,8 @@ retry_same_transaction(Fun, Args, Retries, Error) ->
     Context = get_transaction_context(),
     %% The context should have a transaction to be locked
     mnevis_context:assert_transaction(Context),
-    error_logger:warning_msg("Retrying transaction ~p with error ~p",
-        [mnevis_context:transaction(Context), Error]),
+    % error_logger:warning_msg("Retrying transaction ~p with error ~p",
+        % [mnevis_context:transaction(Context), Error]),
     Context1 = mnevis_context:cleanup_changes(Context),
     update_transaction_context(Context1),
     transaction0(Fun, Args, NextRetries, Error).
@@ -336,7 +336,7 @@ write(ActivityId, Opaque, Tab, Rec, LockKind) ->
     Context = get_transaction_context(),
     with_lock(Context, {Tab, record_key(Rec)}, LockKind, fun() ->
         Context1 = get_transaction_context(),
-        Context2 = case table_info(ActivityId, Opaque, Tab, type) of
+        Context2 = case maybe_safe_table_info(ActivityId, Opaque, Tab, type) of
             bag ->
                 mnevis_context:add_write_bag(Context1, Tab, Rec, LockKind);
             Set when Set =:= set; Set =:= ordered_set ->
@@ -761,6 +761,21 @@ wait_for_transaction(Transaction, Attempts) ->
         _  -> ok
     end.
 
-
-
+maybe_safe_table_info(ActivityId, Opaque, Tab, Key) ->
+    case catch table_info(ActivityId, Opaque, Tab, Key) of
+        {'EXIT', {aborted, {no_exists, Tab, Key}}} ->
+            case ra:leader_query(mnevis_node:node_id(),
+                                 {mnevis_machine, safe_table_info, [Tab, Key]}) of
+                {ok, {_, {error, {no_exists, Tab}}}, _} ->
+                    mnesia:abort({no_exists, Tab});
+                {ok, {_, {ok, Result}}, _} ->
+                    Result;
+                {error, Err} ->
+                    ct:pal("error executing leader query"),
+                    mnesia:abort({error, Err});
+                {timeout, Timeout} ->
+                    mnesia:abort({table_info_timeout, Timeout})
+            end;
+        Res -> Res
+    end.
 

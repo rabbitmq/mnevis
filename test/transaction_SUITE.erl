@@ -205,7 +205,10 @@ writes_aborted(_Config, Tab) ->
     %% Data is not in mnesia
     [] = mnesia:dirty_read(Tab, foo),
     %% Data is not in transaction
-    {atomic, []} = mnesia:transaction(fun() -> mnesia:read(Tab, foo) end).
+    {atomic, []} = mnesia:transaction(fun() -> mnesia:read(Tab, foo) end),
+    {aborted, {no_exists, non_existent}} = mnevis:transaction(fun() ->
+        mnesia:write({non_existent, foo, bar})
+    end).
 
 deletes_aborted(_Config) ->
     {aborted, abort_delete} = mnevis:transaction(fun() ->
