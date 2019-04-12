@@ -106,7 +106,6 @@ apply(Meta, {commit, Transaction, {Writes, Deletes, DeletesObject}}, State)  ->
                     {State, {ok, ok}, []};
                 _ ->
                     Result = commit(Transaction, Writes, Deletes, DeletesObject),
-                    %% TODO: return committed/skipped
                     case Result of
                         {ok, {committed, Versions}} ->
                             {State, {ok, {committed, Versions}}, snapshot_effects(Meta, State)};

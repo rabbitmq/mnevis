@@ -510,8 +510,6 @@ index_read(_ActivityId, _Opaque, Tab, SecondaryKey, Pos, LockKind) ->
         mnevis_context:filter_index_from_context(Context2, Tab, SecondaryKey, Pos, RecList)
     end).
 
-%% TODO: table can be not present on the current node or not up-to-date
-%% Make table manipulation consistent.
 table_info(ActivityId, Opaque, Tab, InfoItem) ->
     case consistent_table_info(ActivityId, Opaque, Tab, InfoItem) of
         {ok, Result}              -> Result;
@@ -559,7 +557,6 @@ execute_command(Context, Command, Args) ->
 -spec run_ra_command(term()) -> {ok, term()} | {error, term()}.
 run_ra_command(RaCommand) ->
     NodeId = mnevis_node:node_id(),
-    %% TODO: timeout?
     case ra:process_command(NodeId, RaCommand) of
         {ok, {ok, Result}, _}                    -> {ok, Result};
         {ok, {error, {aborted, Reason}}, _}      -> mnesia:abort(Reason);
@@ -577,7 +574,7 @@ execute_command_with_retry(Context, Command, Args) ->
     {ok, Result, Leader}.
 
 retry_ra_command(NodeId, RaCommand) ->
-    %% TODO: timeout?
+    %% TODO: better timeout value?
     case ra:process_command(NodeId, RaCommand) of
         {ok, {ok, Result}, Leader}          -> {ok, Result, Leader};
         {ok, {error, {aborted, Reason}}, _} -> mnesia:abort(Reason);
@@ -726,7 +723,6 @@ do_aquire_lock_with_new_transaction(Context, LockItem, LockKind, Method, Attempt
         {ok, L}      -> L;
         {error, Err} -> mnesia:abort(Err)
     end,
-    %% TODO: include lock term into lock request.
     LockRequest = {Method, undefined, self(), LockItem, LockKind},
     case retry_lock_call(Locker, LockRequest) of
         {ok, Tid1} ->

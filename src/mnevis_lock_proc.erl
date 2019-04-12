@@ -102,9 +102,9 @@ get_current_ra_locker(CurrentLocker) ->
     {ok, mnevis_lock:transaction_id(), term()} |
     {error, locker_not_running} |
     {error, is_not_leader}.
-try_lock_call({_Term, Pid}, LockRequest) ->
+try_lock_call({Term, Pid}, LockRequest) ->
     try
-        gen_statem:call(Pid, LockRequest, ?LOCKER_TIMEOUT)
+        gen_statem:call(Pid, {LockRequest, Term}, ?LOCKER_TIMEOUT)
     catch
         exit:{noproc, {gen_statem, call, [Pid, LockRequest, ?LOCKER_TIMEOUT]}} ->
             {error, locker_not_running};
@@ -158,10 +158,14 @@ candidate(info, _Info, State) ->
 -spec leader(gen_statem:event_type(), term(), state()) ->
     gen_statem:event_handler_result(election_states()).
 leader({call, From},
-       {lock, TransationId, Source, LockItem, LockKind},
-       State = #state{lock_state = LockState}) ->
+       {{lock, TransationId, Source, LockItem, LockKind}, Term},
+       State = #state{lock_state = LockState, term = Term}) ->
     {LockResult, LockState1} = mnevis_lock:lock(TransationId, Source, LockItem, LockKind, LockState),
     {keep_state, State#state{lock_state = LockState1}, [{reply, From, LockResult}]};
+leader({call, From},
+       {{lock, _, _, _, _}, Term},
+       State = #state{term = CurrentTerm}) ->
+    {keep_state, State, [{reply, From, {error, locker_term_mismatch}}]};
 leader({call, From}, {cleanup, TransationId, Source}, State) ->
     LockState = mnevis_lock:cleanup(TransationId, Source, State#state.lock_state),
     {keep_state, State#state{lock_state = LockState}, [{reply, From, ok}]};

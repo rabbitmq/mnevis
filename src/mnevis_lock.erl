@@ -233,7 +233,6 @@ locking_transactions(LockItem, LockKind, Tid, State) ->
     end,
     lists:usort(Locking).
 
-%% TODO: table lock should be Locked BY any item lock in the table.
 -spec locking_transactions(lock_item(), lock_kind(), lock_search(),
                            transaction_id(), state()) -> [transaction_id()].
 locking_transactions(LockItem, read, LockSearch, Tid, State) ->
