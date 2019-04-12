@@ -64,7 +64,6 @@
 
 -export_type([table/0]).
 
-%% TODO: configure ra data dir for already started ra.
 start(DataDir) ->
     _ = application:load(ra),
     application:set_env(ra, data_dir, DataDir),
@@ -268,7 +267,6 @@ commit_transaction() ->
             DeletesObject = mnevis_context:deletes_object(Context),
             CommitResult = case mnevis_context:is_empty(Context) of
                 true -> ok;
-                %% TODO: read-only commits
                 _ ->
                     case {Writes, Deletes, DeletesObject} of
                         {[], [], []} ->
@@ -515,6 +513,23 @@ index_read(_ActivityId, _Opaque, Tab, SecondaryKey, Pos, LockKind) ->
 %% TODO: table can be not present on the current node or not up-to-date
 %% Make table manipulation consistent.
 table_info(ActivityId, Opaque, Tab, InfoItem) ->
+    case consistent_table_info(ActivityId, Opaque, Tab, InfoItem) of
+        {ok, Result}              -> Result;
+        {error, {no_exists, Tab}} -> mnesia:abort({no_exists, Tab, InfoItem})
+    end.
+
+consistent_table_info(ActivityId, Opaque, Tab, InfoItem) ->
+    case ra:consistent_query(mnevis_node:node_id(),
+                             {mnevis_machine, safe_table_info, [Tab, InfoItem]}) of
+        {ok, Result, _} ->
+            Result;
+        {error, Err} ->
+            mnesia:abort({error, Err});
+        {timeout, Timeout} ->
+            mnesia:abort({table_info_timeout, Timeout})
+    end.
+
+local_table_info(ActivityId, Opaque, Tab, InfoItem) ->
     mnesia:table_info(ActivityId, Opaque, Tab, InfoItem).
 
 clear_table(_ActivityId, _Opaque, _Tab, _Obj) ->
@@ -762,19 +777,11 @@ wait_for_transaction(Transaction, Attempts) ->
     end.
 
 maybe_safe_table_info(ActivityId, Opaque, Tab, Key) ->
-    case catch table_info(ActivityId, Opaque, Tab, Key) of
+    case catch local_table_info(ActivityId, Opaque, Tab, Key) of
         {'EXIT', {aborted, {no_exists, Tab, Key}}} ->
-            case ra:leader_query(mnevis_node:node_id(),
-                                 {mnevis_machine, safe_table_info, [Tab, Key]}) of
-                {ok, {_, {error, {no_exists, Tab}}}, _} ->
-                    mnesia:abort({no_exists, Tab});
-                {ok, {_, {ok, Result}}, _} ->
-                    Result;
-                {error, Err} ->
-                    ct:pal("error executing leader query"),
-                    mnesia:abort({error, Err});
-                {timeout, Timeout} ->
-                    mnesia:abort({table_info_timeout, Timeout})
+            case consistent_table_info(ActivityId, Opaque, Tab, Key) of
+                {ok, Result}              -> Result;
+                {error, {no_exists, Tab}} -> mnesia:abort({no_exists, Tab})
             end;
         Res -> Res
     end.
