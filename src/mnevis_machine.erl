@@ -202,7 +202,8 @@ create_committed_transaction_table() ->
                                         {type, ordered_set}]),
     case CreateResult of
         {atomic, ok} -> ok;
-        % {aborted,{already_exists,committed_transaction}} -> ok;
+        %% TODO: Find a way to execute create_committed_transaction_table only once
+        {aborted,{already_exists,committed_transaction}} -> ok;
         Other -> error({cannot_create_committed_transaction_table, Other})
     end.
 
