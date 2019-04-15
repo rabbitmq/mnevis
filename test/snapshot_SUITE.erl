@@ -4,9 +4,6 @@
 
 -include_lib("common_test/include/ct.hrl").
 
--define(NODE1, mnevis_snapshot_SUITE1).
--define(NODE2, mnevis_snapshot_SUITE2).
-
 all() -> [{group, tests}].
 
 groups() ->
@@ -16,47 +13,9 @@ groups() ->
 init_per_suite(Config) ->
     PrivDir = ?config(priv_dir, Config),
     filelib:ensure_dir(PrivDir),
-    Nodes = create_initial_nodes(),
-    start_cluster(Nodes, PrivDir),
-
+    Nodes = mnevis_test_utils:create_initial_nodes(),
+    mnevis_test_utils:start_cluster(Nodes, PrivDir),
     [ {nodes, Nodes} | Config].
-
-create_initial_nodes() ->
-    [node() | [start_erlang_node(NodeP) || NodeP <- [?NODE1, ?NODE2]]].
-
-start_erlang_node(NodePrefix) ->
-    {ok, Host} = inet:gethostname(),
-    LocalPath = code:get_path(),
-    {ok, Node} = slave:start(Host, NodePrefix),
-    LocalPath = code:get_path(),
-    add_paths(Node, LocalPath),
-    Node.
-
-add_paths(Node, LocalPath) ->
-    RemotePath = rpc:call(Node, code, get_path, []),
-    AddPath = LocalPath -- RemotePath,
-    ok = rpc:call(Node, code, add_pathsa, [AddPath]).
-
-start_cluster(Nodes, PrivDir) ->
-    [start_node(Node, Nodes, PrivDir) || Node <- Nodes],
-    {Name, _} = mnevis_node:node_id(),
-    Servers = [{Name, Node} || Node <- Nodes],
-    {ok, _, _} = ra:start_cluster(Name, {module, mnevis_machine, #{}}, Servers).
-
-start_server(Node, Nodes) ->
-    {Name, _} = mnevis_node:node_id(),
-    Servers = [{Name, Node} || Node <- Nodes],
-    ra:start_server(Name, {Name, Node}, {module, mnevis_machine, #{}}, Servers).
-
-start_node(Node, Nodes, PrivDir) ->
-    Node = rpc:call(Node, erlang, node, []),
-    rpc:call(Node, application, load, [ra]),
-    ok = rpc:call(Node, application, set_env, [ra, data_dir, filename:join(PrivDir, Node)]),
-    {ok, _} = rpc:call(Node, application, ensure_all_started, [mnevis]),
-    ok.
-
-node_dir(Node, Dir) ->
-    filename:join(Dir, Node).
 
 end_per_suite(Config) ->
     Nodes = ?config(nodes, Config),
@@ -88,6 +47,7 @@ delete_sample_table() ->
 
 create_snapshot(Config) ->
     Nodes = ?config(nodes, Config),
+    Node2P = lists:last(mnevis_test_utils:extra_nodes()),
     Node2 = lists:last(Nodes),
     slave:stop(Node2),
 
@@ -100,9 +60,9 @@ create_snapshot(Config) ->
 
 
     PrivDir = ?config(priv_dir, Config),
-    Node2 = start_erlang_node(?NODE2),
-    start_node(Node2, Nodes, PrivDir),
-    start_server(Node2, Nodes),
+    Node2 = mnevis_test_utils:start_erlang_node(Node2P),
+    mnevis_test_utils:start_node(Node2, Nodes, PrivDir),
+    mnevis_test_utils:start_server(Node2, Nodes),
 
     ct:sleep(1000),
 

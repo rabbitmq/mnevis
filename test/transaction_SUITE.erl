@@ -9,11 +9,10 @@
 
 
 all() ->
-    [{group, tests}].
+    [{group, single_node}, {group, two_nodes}].
 
 groups() ->
-    [
-     {tests, [], [
+    Tests = [
         empty_transaction,
         empty_transaction_abort,
         empty_transaction_error,
@@ -47,7 +46,10 @@ groups() ->
         write_delete_object_converge,
         write_bag_delete_converge,
         write_bag_delete_object_converge
-     ]}
+     ],
+    [
+     {two_nodes, [], Tests},
+     {single_node, [], Tests}
     ].
 
 %% -------------------------------------------------------------------
@@ -55,28 +57,49 @@ groups() ->
 %% -------------------------------------------------------------------
 
 init_per_suite(Config) ->
-    PrivDir = ?config(priv_dir, Config),
-    ok = filelib:ensure_dir(PrivDir),
-    ct:pal("~nPriv dir ~p~n", [PrivDir]),
-    mnevis:start(PrivDir),
-    % mnevis_node:trigger_election(),
     Config.
 
 end_per_suite(Config) ->
-    ra:stop_server(mnevis_node:node_id()),
-    application:stop(mnevis),
-    application:stop(mnesia),
-    application:stop(ra),
-    % mnesia:delete_table(committed_transaction),
     Config.
 
 %% -------------------------------------------------------------------
 %% Groups.
 %% -------------------------------------------------------------------
 
-init_per_group(_, Config) -> Config.
+init_per_group(single_node, Config) ->
+    PrivDir = ?config(priv_dir, Config),
+    ok = filelib:ensure_dir(PrivDir),
+    ct:pal("~nPriv dir ~p~n", [PrivDir]),
+    mnevis:start(PrivDir),
+    % mnevis_node:trigger_election(),
+    Config;
+init_per_group(two_nodes, Config) ->
+    PrivDir = ?config(priv_dir, Config),
+    filelib:ensure_dir(PrivDir),
+    Nodes = mnevis_test_utils:create_initial_nodes(),
+    mnevis_test_utils:start_cluster(Nodes, PrivDir),
+    %% Shift the leader out of the current node.
+    %% This allows to run tests on follower without RPCs.
+    mnevis_test_utils:ensure_not_leader(),
+    [ {nodes, Nodes} | Config].
 
-end_per_group(_, Config) -> Config.
+
+end_per_group(single_node, Config) ->
+    ra:stop_server(mnevis_node:node_id()),
+    application:stop(mnevis),
+    application:stop(mnesia),
+    application:stop(ra),
+    % mnesia:delete_table(committed_transaction),
+    Config;
+end_per_group(two_nodes, Config) ->
+    Nodes = ?config(nodes, Config),
+    [slave:stop(Node) || Node <- Nodes, Node =/= node()],
+    ra:stop_server(mnevis_node:node_id()),
+    application:stop(mnevis),
+    application:stop(mnesia),
+    application:stop(ra),
+    Config.
+
 
 init_per_testcase(deletes_aborted, Config) ->
     create_sample_tables(),
@@ -195,7 +218,10 @@ writes_aborted(Config) ->
     writes_aborted(Config, sample_ordered_set).
 
 writes_aborted(_Config, Tab) ->
-    {aborted, {read, ReadAborted}} = mnevis:transaction(fun() ->
+    {atomic, _} = mnevis:transaction(fun() ->
+        mnesia:read(Tab, foo)
+    end),
+    {aborted, {read, ReadAborted}} = mnevis:sync_transaction(fun() ->
         mnesia:write({Tab, foo, bar}),
         Read = mnesia:read(Tab, foo),
         mnesia:abort({read, Read})
@@ -819,7 +845,7 @@ write_delete_converge(_Config) ->
     mnevis:transaction(fun() ->
         ok = mnesia:write({sample, foo, bar})
     end),
-    {atomic, []} = mnevis:transaction(fun() ->
+    {atomic, []} = mnevis:sync_transaction(fun() ->
         ok = mnesia:write({sample, foo, baz}),
         ok = mnesia:delete({sample, foo}),
         [] = mnesia:read(sample, foo)
@@ -830,7 +856,7 @@ write_delete_converge(_Config) ->
     mnevis:transaction(fun() ->
         ok = mnesia:write({sample, bar, bar})
     end),
-    {atomic, [{sample, bar, baz}]} = mnevis:transaction(fun() ->
+    {atomic, [{sample, bar, baz}]} = mnevis:sync_transaction(fun() ->
         ok = mnesia:delete({sample, bar}),
         ok = mnesia:write({sample, bar, baz}),
         [{sample, bar, baz}] = mnesia:read(sample, bar)
@@ -839,11 +865,11 @@ write_delete_converge(_Config) ->
 
 write_delete_object_converge(_Config) ->
     %% Delete pbject after update deletes
-    mnevis:transaction(fun() ->
+    mnevis:sync_transaction(fun() ->
         ok = mnesia:write({sample, foo, bar})
     end),
     [{sample, foo, bar}] = mnesia:dirty_read(sample, foo),
-    {atomic, []} = mnevis:transaction(fun() ->
+    {atomic, []} = mnevis:sync_transaction(fun() ->
         ok = mnesia:write({sample, foo, baz}),
         ok = mnesia:delete_object({sample, foo, baz}),
         [] = mnesia:read(sample, foo)
@@ -851,11 +877,11 @@ write_delete_object_converge(_Config) ->
     [] = mnesia:dirty_read(sample, foo),
 
     %% Delete object after update to different does not delete
-    mnevis:transaction(fun() ->
+    mnevis:sync_transaction(fun() ->
         ok = mnesia:write({sample, bar, bar})
     end),
     [{sample, bar, bar}] = mnesia:dirty_read(sample, bar),
-    {atomic, [{sample, bar, baz}]} = mnevis:transaction(fun() ->
+    {atomic, [{sample, bar, baz}]} = mnevis:sync_transaction(fun() ->
         ok = mnesia:write({sample, bar, baz}),
         ok = mnesia:delete_object({sample, bar, bar}),
         [{sample, bar, baz}] = mnesia:read(sample, bar)
@@ -863,11 +889,11 @@ write_delete_object_converge(_Config) ->
     [{sample, bar, baz}] = mnesia:dirty_read(sample, bar),
 
     %% Different object is not deleted
-    mnevis:transaction(fun() ->
+    mnevis:sync_transaction(fun() ->
         ok = mnesia:write({sample, baz, bar})
     end),
     [{sample, baz, bar}] = mnesia:dirty_read(sample, baz),
-    {atomic, [{sample, baz, baz}]} = mnevis:transaction(fun() ->
+    {atomic, [{sample, baz, baz}]} = mnevis:sync_transaction(fun() ->
         ok = mnesia:write({sample, baz, baz}),
         ok = mnesia:delete_object({sample, baz, baq}),
         [{sample, baz, baz}] = mnesia:read(sample, baz)
@@ -879,7 +905,7 @@ write_bag_delete_converge(_Config) ->
     mnevis:transaction(fun() ->
         ok = mnesia:write({sample_bag, foo, bar})
     end),
-    {atomic, []} = mnevis:transaction(fun() ->
+    {atomic, []} = mnevis:sync_transaction(fun() ->
         ok = mnesia:write({sample_bag, foo, baz}),
         [{sample_bag, foo, bar}, {sample_bag, foo, baz}] = mnesia:read(sample_bag, foo),
         ok = mnesia:delete({sample_bag, foo}),
@@ -891,7 +917,7 @@ write_bag_delete_converge(_Config) ->
     mnevis:transaction(fun() ->
         ok = mnesia:write({sample_bag, bar, bar})
     end),
-    {atomic, [{sample_bag, bar, baz}]} = mnevis:transaction(fun() ->
+    {atomic, [{sample_bag, bar, baz}]} = mnevis:sync_transaction(fun() ->
         ok = mnesia:delete({sample_bag, bar}),
         [] = mnesia:read(sample_bag, bar),
         ok = mnesia:write({sample_bag, bar, baz}),
@@ -901,11 +927,11 @@ write_bag_delete_converge(_Config) ->
 
 write_bag_delete_object_converge(_Config) ->
     %% Delete pbject deletes written
-    mnevis:transaction(fun() ->
+    mnevis:sync_transaction(fun() ->
         ok = mnesia:write({sample_bag, foo, bar})
     end),
     [{sample_bag, foo, bar}] = mnesia:dirty_read(sample_bag, foo),
-    {atomic, [{sample_bag, foo, bar}]} = mnevis:transaction(fun() ->
+    {atomic, [{sample_bag, foo, bar}]} = mnevis:sync_transaction(fun() ->
         ok = mnesia:write({sample_bag, foo, baz}),
         [{sample_bag, foo, bar}, {sample_bag, foo, baz}] = mnesia:read(sample_bag, foo),
         ok = mnesia:delete_object({sample_bag, foo, baz}),
@@ -914,11 +940,11 @@ write_bag_delete_object_converge(_Config) ->
     [{sample_bag, foo, bar}] = mnesia:dirty_read(sample_bag, foo),
 
     %% Delete object deletes old
-    mnevis:transaction(fun() ->
+    mnevis:sync_transaction(fun() ->
         ok = mnesia:write({sample_bag, bar, bar})
     end),
     [{sample_bag, bar, bar}] = mnesia:dirty_read(sample_bag, bar),
-    {atomic, [{sample_bag, bar, baz}]} = mnevis:transaction(fun() ->
+    {atomic, [{sample_bag, bar, baz}]} = mnevis:sync_transaction(fun() ->
         ok = mnesia:write({sample_bag, bar, baz}),
         [{sample_bag, bar, bar}, {sample_bag, bar, baz}] = mnesia:read(sample_bag, bar),
         ok = mnesia:delete_object({sample_bag, bar, bar}),
@@ -927,11 +953,11 @@ write_bag_delete_object_converge(_Config) ->
     [{sample_bag, bar, baz}] = mnesia:dirty_read(sample_bag, bar),
 
     %% Different object is not deleted
-    mnevis:transaction(fun() ->
+    mnevis:sync_transaction(fun() ->
         ok = mnesia:write({sample_bag, baz, bar})
     end),
     [{sample_bag, baz, bar}] = mnesia:dirty_read(sample_bag, baz),
-    {atomic, [{sample_bag, baz, bar}, {sample_bag, baz, baz}]} = mnevis:transaction(fun() ->
+    {atomic, [{sample_bag, baz, bar}, {sample_bag, baz, baz}]} = mnevis:sync_transaction(fun() ->
         ok = mnesia:write({sample_bag, baz, baz}),
         [{sample_bag, baz, bar}, {sample_bag, baz, baz}] = mnesia:read(sample_bag, baz),
         ok = mnesia:delete_object({sample_bag, baz, baq}),
