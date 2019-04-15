@@ -28,7 +28,10 @@ commit_valid_locker_test() ->
     init_mnesia_table(),
     InitState = init_state(),
     Transaction = valid_transaction(InitState),
-    {InitState, {ok, ok}, [{release_cursor, 1, InitState}]} =
+    VersionHash = erlang:phash2(foo, 1000),
+    {InitState,
+     {ok, {committed, [{sample,1},{{sample,VersionHash},1}]}},
+     [{release_cursor, 1, InitState}]} =
         mnevis_machine:apply(#{index => 1}, {commit, Transaction, {[{sample, {sample, foo, bar}, write}], [], []}}, InitState),
     %% Transaction is already committed
     {InitState, {ok, ok}, []} =
@@ -65,7 +68,7 @@ commit_write_test() ->
     Expected = lists:usort([{foo, to_rewrite, other_val},
                             {foo, to_write, val},
                             {foo, to_not_delete_object, not_val}]),
-    {InitState, {ok, ok}, _} =
+    {InitState, {ok, {committed, _}}, _} =
         mnevis_machine:apply(#{index => 1}, {commit, Transaction, {Writes, Deletes, DeletesObject}}, InitState),
     Table = lists:usort(ets:tab2list(foo)),
     Expected = Table.
