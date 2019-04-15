@@ -725,11 +725,11 @@ next_cached_state(_Config) ->
 
         fzz = mnesia:next(sample_ordered_set, foo),
 
-        % ok = mnesia:write({sample_ordered_set, faa, baz}),
-        % ok = mnesia:write({sample_ordered_set, fbb, baz}),
+        ok = mnesia:write({sample_ordered_set, faa, baz}),
+        ok = mnesia:write({sample_ordered_set, fbb, baz}),
 
-        % fbb = mnesia:next(sample_ordered_set, faa),
-        % foo = mnesia:next(sample_ordered_set, fbb),
+        fbb = mnesia:next(sample_ordered_set, faa),
+        foo = mnesia:next(sample_ordered_set, fbb),
         mnesia:abort(foo)
     end),
     mnevis:transaction(fun() ->
