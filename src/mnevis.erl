@@ -13,6 +13,7 @@
 %% System info
 -export([db_nodes/0, running_db_nodes/0]).
 
+-export([sync_transaction/1, sync_transaction/2, sync_transaction/3]).
 -export([transaction/4, transaction/3, transaction/2, transaction/1]).
 -export([is_transaction/0]).
 
@@ -116,6 +117,15 @@ transform_table(Tab, {_, _, _} = MFA, NewAttributeList, NewRecordName) ->
 transform_table(Tab, {_, _, _} = MFA, NewAttributeList) ->
     {ok, R} = run_ra_command({transform_table, Tab, MFA, NewAttributeList}),
     R.
+
+sync_transaction(Fun) ->
+    transaction(Fun, [], infinity, [{wait_for_commit, true}]).
+
+sync_transaction(Fun, Args) ->
+    transaction(Fun, Args, infinity, [{wait_for_commit, true}]).
+
+sync_transaction(Fun, Args, Retries) ->
+    transaction(Fun, Args, Retries, [{wait_for_commit, true}]).
 
 transaction(Fun) ->
     transaction(Fun, [], infinity).
@@ -705,6 +715,7 @@ with_lock_and_version(Context, LockItem, LockKind, Fun) ->
             {table, Table} -> Table;
             {Tab, Item}    -> {Tab, erlang:phash2(Item, 1000)}
         end,
+
         case ra:consistent_query(mnevis_node:node_id(),
                                  {mnevis_machine, get_version, [VersionKey]},
                                  ?CONSISTENT_QUERY_TIMEOUT) of
