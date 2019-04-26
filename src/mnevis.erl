@@ -145,7 +145,18 @@ transaction0(Fun, Args, Retries, _Err) ->
                 update_transaction_context(InitContext);
             _ -> ok
         end,
-        Res = mnesia:activity(ets, Fun, Args, mnevis),
+        %% TODO: don't do additional try/catch after fic in mnesia
+        Res = mnesia:activity(ets,
+            fun() ->
+                try
+                    apply(Fun, Args)
+                catch
+                    throw:R:_ST       -> {aborted, {throw, R}};
+                    exit:{aborted, E} -> {aborted, E};
+                    _:R:ST            -> {aborted, {R, ST}}
+                end
+            end,
+            [], ?MODULE),
         ok = commit_transaction(),
         {atomic, Res}
     catch
