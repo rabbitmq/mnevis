@@ -1,4 +1,4 @@
--module(mnevis_isolation_SUITE).
+-module(isolation_SUITE).
 
 -compile(export_all).
 
@@ -6,24 +6,30 @@
 
 all() -> [{group, tests}].
 
+% suite() -> [{timetrap, {seconds, 10}}].
+
 groups() ->
     [
      {tests, [], [
         write_invisible_outside_transaction,
-        delete_invisible_outside_transaction
-        ,
+        delete_invisible_outside_transaction,
+        unlock_on_transaction_exit,
         consistent_counter
-        %,
-        % conststent_register
         ]}].
 
 init_per_suite(Config) ->
     PrivDir = ?config(priv_dir, Config),
+    filelib:ensure_dir(PrivDir),
     mnevis:start(PrivDir),
-    mnevis_node:trigger_election(),
+    application:start(sasl),
+    % mnevis_node:trigger_election(),
     Config.
 
 end_per_suite(Config) ->
+    ra:stop_server(mnevis_node:node_id()),
+    application:stop(mnevis),
+    application:stop(mnesia),
+    application:stop(ra),
     Config.
 
 
@@ -38,11 +44,11 @@ end_per_testcase(_Test, Config) ->
 
 create_sample_table() ->
     delete_sample_table(),
-    mnesia:create_table(sample, []),
+    mnevis:create_table(sample, []),
     ok.
 
 delete_sample_table() ->
-    mnesia:delete_table(sample),
+    mnevis:delete_table(sample),
     ok.
 
 add_sample(Key, Val) ->
@@ -60,20 +66,18 @@ write_invisible_outside_transaction(_Config) ->
     BackgroundTransaction = spawn_link(fun() ->
         mnevis:transaction(fun() ->
             %% Update foo key
-            % ct:pal("Write invisible ~p~n", [self()]),
             mnesia:write({sample, foo, baz}),
             %% Add a new key
             mnesia:write({sample, bar, baz}),
             Pid ! ready,
             receive stop -> ok
-            end
+            end,
+            timer:sleep(100)
         end)
     end),
     receive ready -> ok
     after 1000 -> error(background_transaction_not_ready)
     end,
-
-    % ct:pal("Read write ~p~n", [self()]),
     [{sample, foo, bar}] = mnesia:dirty_read(sample, foo),
     [] = mnesia:dirty_read(sample, bar),
 
@@ -85,21 +89,49 @@ delete_invisible_outside_transaction(_Config) ->
     Pid = self(),
     BackgroundTransaction = spawn_link(fun() ->
         mnevis:transaction(fun() ->
-            % ct:pal("Delete invisible ~p~n", [self()]),
             mnesia:delete({sample, foo}),
             mnesia:delete_object({sample, bar, baz}),
             Pid ! ready,
             receive stop -> ok
-            end
+            end,
+            timer:sleep(100)
         end)
     end),
     receive ready -> ok
     after 1000 -> error(background_transaction_not_ready)
     end,
-    % ct:pal("Read delete ~p~n", [self()]),
     [{sample, foo, bar}] = mnesia:dirty_read(sample, foo),
     [{sample, bar, baz}] = mnesia:dirty_read(sample, bar),
     BackgroundTransaction ! stop.
+
+unlock_on_transaction_exit(_Config) ->
+    Pid = self(),
+    Locking = spawn(fun() ->
+        mnevis:transaction(fun() ->
+            mnesia:lock({sample, bar}, write),
+            Pid ! ready,
+            receive stop -> ok
+            end
+        end)
+    end),
+
+    Locked = spawn(fun() ->
+        mnevis:transaction(fun() ->
+            mnesia:lock({sample, bar}, write),
+            Pid ! unlocked
+        end)
+    end),
+    receive ready -> ok
+    after 1000 -> error(background_transaction_not_ready)
+    end,
+    receive unlocked -> error(should_be_locked)
+    after 1000 -> ok
+    end,
+    exit(Locking, die),
+    receive unlocked -> ok
+    after 1000 -> error(should_be_unlocked)
+    end.
+
 
 consistent_counter(_Config) ->
     add_sample(counter, 0),

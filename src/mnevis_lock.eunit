@@ -1,0 +1,380 @@
+-ifdef(TEST).
+
+create_transaction_on_lock_test() ->
+    State = init(0),
+    Source = self(),
+    LockItem = {foo, bar},
+    LockKind = read,
+
+    {Result, State1} = lock(undefined, Source, LockItem, LockKind, State),
+
+    {ok, Tid = 1} = Result,
+
+    #state{
+        transactions = #{Source := Tid},
+        read_locks = #{LockItem := #{Tid := []}},
+        reverse_read_locks = #{Tid := #{LockItem := []}},
+        monitors = Monitors
+    } = State1,
+
+    [Source] = maps:keys(Monitors).
+
+transaction_mismatch_test() ->
+    State = init(0),
+    Source = self(),
+    LockItem = {foo, bar},
+    LockKind = read,
+
+    {Result, State1} = lock(undefined, Source, LockItem, LockKind, State),
+
+    {ok, 1} = Result,
+
+
+    {{error, no_transaction_for_pid}, _} =
+        lock(1, Source, LockItem, LockKind, State),
+
+    {{error, {wrong_transaction_id, 1}}, _} =
+        lock(2, Source, LockItem, LockKind, State1).
+
+
+create_new_transaction_on_lock_test() ->
+    State = init(0),
+    Source = self(),
+    LockItem = {foo, bar},
+    LockKind = read,
+
+    {Result, State1} = lock(undefined, Source, LockItem, LockKind, State),
+    {Result1, State2} = lock(undefined, Source, LockItem, LockKind, State1),
+
+    {ok, 1} = Result,
+    {ok, Tid1 = 2} = Result1,
+
+    #state{
+        transactions = #{Source := Tid1},
+        read_locks = #{LockItem := #{Tid1 := []}},
+        reverse_read_locks = #{Tid1 := #{LockItem := []}},
+        monitors = Monitors
+    } = State2,
+
+    [Source] = maps:keys(Monitors).
+
+lock_with_existing_transaction_test() ->
+    State = init(0),
+    Source = self(),
+    LockItem = {foo, bar},
+    LockKind = read,
+
+    {{ok, Tid}, State1} = lock(undefined, Source, LockItem, LockKind, State),
+
+    {{ok, Tid}, State2} = lock(Tid, Source, LockItem, write, State1),
+
+    #state{
+        transactions = #{Source := Tid},
+        read_locks = #{LockItem := #{Tid := []}},
+        reverse_read_locks = #{Tid := #{LockItem := []}},
+
+        write_locks = #{LockItem := Tid},
+        reverse_write_locks = #{Tid := #{LockItem := []}},
+
+        monitors = Monitors
+    } = State2,
+
+    [Source] = maps:keys(Monitors).
+
+read_locked_by_write_test() ->
+    State = init(0),
+    Source = self(),
+    Source1 = spawn(fun() -> ok end),
+    LockItem = {foo, bar},
+
+    {{ok, Tid}, State1} = lock(undefined, Source, LockItem, write, State),
+
+    {{error, {locked, Tid1}}, State2} = lock(undefined, Source1, LockItem, read, State1),
+
+    #state{
+        transactions = #{Source := Tid, Source1 := Tid1},
+
+        write_locks = #{LockItem := Tid},
+        reverse_write_locks = #{Tid := #{LockItem := []}},
+
+        monitors = Monitors
+    } = State2,
+
+    [Source, Source1] = maps:keys(Monitors).
+
+write_locked_by_write_test() ->
+    State = init(0),
+    Source = self(),
+    Source1 = spawn(fun() -> ok end),
+    LockItem = {foo, bar},
+
+    {{ok, Tid}, State1} = lock(undefined, Source, LockItem, write, State),
+
+    {{error, {locked, Tid1}}, State2} = lock(undefined, Source1, LockItem, write, State1),
+
+    #state{
+        transactions = #{Source := Tid, Source1 := Tid1},
+
+        write_locks = #{LockItem := Tid},
+        reverse_write_locks = #{Tid := #{LockItem := []}},
+
+        monitors = Monitors
+    } = State2,
+
+    [Source, Source1] = maps:keys(Monitors).
+
+write_locked_by_table_test() ->
+    State = init(0),
+    Source = self(),
+    Source1 = spawn(fun() -> ok end),
+    LockItem = {foo, bar},
+    TableLockItem = {table, foo},
+
+    {{ok, Tid}, State1} = lock(undefined, Source, TableLockItem, write, State),
+
+    {{error, {locked, Tid1}}, State2} = lock(undefined, Source1, LockItem, write, State1),
+
+    #state{
+        transactions = #{Source := Tid, Source1 := Tid1},
+
+        write_locks = #{TableLockItem := Tid},
+        reverse_write_locks = #{Tid := #{TableLockItem := []}},
+
+        monitors = Monitors
+    } = State2,
+
+    [Source, Source1] = maps:keys(Monitors).
+
+write_table_locked_by_item_test() ->
+    State = init(0),
+    Source = self(),
+    Source1 = spawn(fun() -> ok end),
+    LockItem = {foo, bar},
+    TableLockItem = {table, foo},
+
+    {{ok, Tid}, State1} = lock(undefined, Source, LockItem, write, State),
+
+    {{error, {locked, Tid1}}, State2} = lock(undefined, Source1, TableLockItem, write, State1),
+
+    #state{
+        transactions = #{Source := Tid, Source1 := Tid1},
+
+        write_locks = #{LockItem := Tid},
+        reverse_write_locks = #{Tid := #{LockItem := []}},
+
+        monitors = Monitors
+    } = State2,
+
+    [Source, Source1] = maps:keys(Monitors).
+
+write_locked_by_read_test() ->
+    State = init(0),
+    Source = self(),
+    Source1 = spawn(fun() -> ok end),
+    LockItem = {foo, bar},
+
+    {{ok, Tid}, State1} = lock(undefined, Source, LockItem, read, State),
+
+    {{error, {locked, Tid1}}, State2} = lock(undefined, Source1, LockItem, write, State1),
+
+    #state{
+        transactions = #{Source := Tid, Source1 := Tid1},
+
+        read_locks = #{LockItem := #{Tid := []}},
+        reverse_read_locks = #{Tid := #{LockItem := []}},
+
+        monitors = Monitors
+    } = State2,
+
+    [Source, Source1] = maps:keys(Monitors).
+
+read_not_locked_by_read_test() ->
+    State = init(0),
+    Source = self(),
+    Source1 = spawn(fun() -> ok end),
+    LockItem = {foo, bar},
+
+    {{ok, Tid}, State1} = lock(undefined, Source, LockItem, read, State),
+
+    {{ok, Tid1}, State2} = lock(undefined, Source1, LockItem, read, State1),
+
+    #state{
+        transactions = #{Source := Tid, Source1 := Tid1},
+
+        read_locks = #{LockItem := #{Tid1 := [], Tid := []}},
+        reverse_read_locks = #{Tid := #{LockItem := []}, Tid1 := #{LockItem := []}},
+
+        monitors = Monitors
+    } = State2,
+
+    [Source, Source1] = maps:keys(Monitors).
+
+
+existing_transaction_locked_test() ->
+    State = init(0),
+    Source = self(),
+    Source1 = spawn(fun() -> ok end),
+    LockItem = {foo, bar},
+
+    {{ok, Tid}, State1} = lock(undefined, Source, LockItem, read, State),
+
+    {{ok, Tid1}, State2} = lock(undefined, Source1, LockItem, read, State1),
+
+    {{error, {locked, Tid1}}, State3} = lock(Tid1, Source1, LockItem, write, State2),
+
+    #state{
+        transactions = #{Source := Tid, Source1 := Tid1},
+
+        read_locks = #{LockItem := #{Tid := []}},
+        reverse_read_locks = #{Tid := #{LockItem := []}},
+
+        transaction_locks = TransLocks,
+
+        monitors = Monitors
+    } = State3,
+
+    [Tid] = simple_dgraph:in_neighbours(TransLocks, Tid1),
+    [Tid1] = simple_dgraph:out_neighbours(TransLocks, Tid),
+
+    [Source, Source1] = maps:keys(Monitors).
+
+lower_number_transaction_locked_nowait_test() ->
+    State = init(0),
+    Source = self(),
+    Source1 = spawn(fun() -> ok end),
+    LockItem = {foo, bar},
+
+    {{ok, Tid}, State1} = lock(undefined, Source, LockItem, read, State),
+
+    {{ok, Tid1}, State2} = lock(undefined, Source1, LockItem, read, State1),
+
+    {{error, {locked_nowait, Tid}}, State3} = lock(Tid, Source, LockItem, write, State2),
+
+    #state{
+        transactions = #{Source := Tid, Source1 := Tid1},
+
+        read_locks = #{LockItem := #{Tid1 := []}},
+        reverse_read_locks = #{Tid1 := #{LockItem := []}},
+
+        transaction_locks = TransLocks,
+
+        monitors = Monitors
+    } = State3,
+
+    [] = simple_dgraph:out_neighbours(TransLocks, Tid1),
+    [] = simple_dgraph:in_neighbours(TransLocks, Tid1),
+
+    [] = simple_dgraph:out_neighbours(TransLocks, Tid),
+    [] = simple_dgraph:in_neighbours(TransLocks, Tid),
+
+    [Source, Source1] = maps:keys(Monitors).
+
+cleanup_transaction_test() ->
+    State = init(0),
+    Source = self(),
+    Self = self(),
+    Source1 = spawn(fun() ->
+        receive {mnevis_unlock, _} ->
+            Self ! notified
+        end
+    end),
+
+    flush_notified(),
+
+    LockItem = {foo, bar},
+
+    {{ok, Tid}, State1} = lock(undefined, Source, LockItem, read, State),
+    {{ok, Tid}, State2} = lock(Tid, Source, {foo, baz}, write, State1),
+
+    {{ok, Tid1}, State3} = lock(undefined, Source1, LockItem, read, State2),
+
+    {{error, {locked, Tid1}}, State4} = lock(Tid1, Source1, LockItem, write, State3),
+
+    State5 = cleanup(Tid, Source, State4),
+
+    #state{
+        transactions = #{Source1 := Tid1},
+        read_locks = #{},
+        reverse_read_locks = #{},
+        write_locks = #{},
+        reverse_write_locks = #{},
+        monitors = Monitors,
+        transaction_locks = TransLocks
+    } = State5,
+
+    [] = simple_dgraph:out_neighbours(TransLocks, Tid1),
+    [] = simple_dgraph:in_neighbours(TransLocks, Tid1),
+    [Source1] = maps:keys(Monitors),
+
+    receive notified -> ok
+    after 1000 -> error({unlock_message_lost, notified_is_not_received})
+    end.
+
+monitor_down_cleanup_test() ->
+    State = init(0),
+    Source = self(),
+    Self = self(),
+    Source1 = spawn(fun() ->
+        receive {mnevis_unlock, _} ->
+            Self ! notified
+        end
+    end),
+
+    flush_notified(),
+
+    LockItem = {foo, bar},
+
+    {{ok, Tid}, State1} = lock(undefined, Source, LockItem, read, State),
+    {{ok, Tid}, State2} = lock(Tid, Source, {foo, baz}, write, State1),
+
+    {{ok, Tid1}, State3} = lock(undefined, Source1, LockItem, read, State2),
+
+    {{error, {locked, Tid1}}, State4} = lock(Tid1, Source1, LockItem, write, State3),
+
+    State5 = monitor_down(ref, Source, reason, State4),
+
+    #state{
+        transactions = #{Source1 := Tid1},
+        read_locks = #{},
+        reverse_read_locks = #{},
+        write_locks = #{},
+        reverse_write_locks = #{},
+        monitors = Monitors,
+        transaction_locks = TransLocks
+    } = State5,
+
+    [] = simple_dgraph:out_neighbours(TransLocks, Tid1),
+    [] = simple_dgraph:in_neighbours(TransLocks, Tid1),
+    [Source1] = maps:keys(Monitors),
+
+    receive notified -> ok
+    after 1000 -> error({unlock_message_lost, notified_is_not_received})
+    end.
+
+monitor_down_unknown_test() ->
+    State = init(0),
+    Source = self(),
+    Source1 = spawn(fun() ->
+        ok
+    end),
+
+    flush_notified(),
+
+    LockItem = {foo, bar},
+
+    {{ok, Tid}, State1} = lock(undefined, Source, LockItem, read, State),
+    {{ok, Tid}, State2} = lock(Tid, Source, {foo, baz}, write, State1),
+
+    {{ok, Tid1}, State3} = lock(undefined, Source1, LockItem, read, State2),
+
+    {{error, {locked, Tid1}}, State4} = lock(Tid1, Source1, LockItem, write, State3),
+
+    State4 = monitor_down(ref, spawn(fun() -> ok end), reason, State4).
+
+
+flush_notified() ->
+    receive notified -> flush_notified()
+    after 0 -> ok
+    end.
+
+-endif.

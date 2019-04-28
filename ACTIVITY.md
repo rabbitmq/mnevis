@@ -92,7 +92,7 @@ Then it runs a mnesia activity with `ets` access context and the `mnevis` access
 
 The access module implements callbacks for each transactional function, which
 modify the local process transaction state and communicate with the raft cluster
-to set locks and consistently read data.
+to consistently read data.
 
 Local transactional data contains writes and deletes performed in the transaction.
 
@@ -101,17 +101,17 @@ local writes and deletes.
 Before the commit message local writes and deletes are not accessible from other
 transactions.
 
-If raft cluster returns the lock result, the transaction may be restarted with
-the clean local transaction state.
+Locks are coordinated with a separate lock process, which is managed by the raft
+cluster.
+
+If transaction is locked - the local data will be cleared and transaction
+will be restarted.
 
 If there is an abort, the activity will crash with `{aborted, Reason}` error and
 transaction function returns `{aborted, Reason}`.
 
 In many ways access module works the same way as mnesia access module, keeping
 track of local writes and deletes.
-
-Raft cluster manages locks in its internal state and applies commits to the
-database.
 
 It's also performs reads from the leader database for consistency reasons,
 but it may be optimised in future.

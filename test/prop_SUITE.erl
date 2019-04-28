@@ -1,4 +1,4 @@
--module(mnevis_prop_SUITE).
+-module(prop_SUITE).
 -compile(export_all).
 
 -include_lib("proper/include/proper.hrl").
@@ -13,11 +13,19 @@ all() ->
 
 init_per_suite(Config) ->
     PrivDir = ?config(priv_dir, Config),
+    ok = filelib:ensure_dir(PrivDir),
+    ct:pal("~nPriv dir ~p~n", [PrivDir]),
     mnevis:start(PrivDir),
-    mnevis_node:trigger_election(),
+    % mnevis_node:trigger_election(),
     Config.
 
-end_per_suite(Config) -> Config.
+end_per_suite(Config) ->
+    ra:stop_server(mnevis_node:node_id()),
+    application:stop(mnevis),
+    application:stop(mnesia),
+    application:stop(ra),
+    % mnesia:delete_table(committed_transaction),
+    Config.
 
 mnesia_transaction_yield_same_result_as_mnevis(_Config) ->
     ct:timetrap(18000000),
@@ -73,8 +81,8 @@ contains_underscore(_) -> false.
 
 transaction_equal(Actions0) ->
     Actions = lists:flatten(Actions0),
-    mnesia:delete_table(mnesia_table),
-    mnesia:create_table(mnesia_table, []),
+    mnevis:delete_table(mnesia_table),
+    mnevis:create_table(mnesia_table, []),
     % mnesia:create_table(mnevis_table, []),
 
     MnesiaRes = mnesia:transaction(fun() ->
@@ -83,8 +91,8 @@ transaction_equal(Actions0) ->
 
     MnesiaDB = lists:usort(ets:tab2list(mnesia_table)),
 
-    mnesia:delete_table(mnesia_table),
-    mnesia:create_table(mnesia_table, []),
+    mnevis:delete_table(mnesia_table),
+    mnevis:create_table(mnesia_table, []),
 
     RamnesiaRes = mnevis:transaction(fun() ->
         [run_op(mnesia_table, Action) || Action <- Actions]

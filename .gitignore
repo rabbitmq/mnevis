@@ -4,3 +4,4 @@ ebin/
 mnevis.d
 test/*.beam
 _rel/
+_build/

@@ -1,25 +1,42 @@
 -module(mnevis_context).
 
--export([init/1,
-         add_write_set/4, add_write_bag/4, add_delete/4, add_delete_object/4,
+-export([init/0, init/1,
+         is_empty/1,
+         add_write_set/4,
+         add_write_bag/4,
+         add_delete/4,
+         add_delete_object/4,
+         add_read/3,
+         get_read/2,
+
          read_from_context/3,
          filter_read_from_context/4,
          filter_match_from_context/4,
          filter_index_from_context/5,
          filter_all_keys_from_context/3,
+
+         transaction/1,
          transaction_id/1,
+         locker/1,
+
+         has_transaction/1,
+         assert_transaction/1,
+         assert_no_transaction/1,
+
+         set_transaction/2,
+         cleanup_changes/1,
+
          writes/1,
          deletes/1,
          deletes_object/1,
          writes/2,
          deletes/2,
          deletes_object/2,
+
          key_deleted/3,
          delete_object_for_key/3,
          prev_cached_key/3,
-         next_cached_key/3,
-         set_retry/1,
-         is_retry/1]).
+         next_cached_key/3]).
 
 % Keeps track of deletes and writes.
 
@@ -72,29 +89,97 @@
 %         Run index filter on write_set cache
 %         Run index filter on write_bag cache
 
--record(context, {
-    transaction_id,
-    delete = #{},
-    delete_object = #{},
-    write_set = #{},
-    write_bag = #{},
-    retry = false}).
+-type read_op() :: dirty_all_keys | dirty_first | dirty_last |
+                   dirty_index_match_object | dirty_index_read  |
+                   dirty_match_object | dirty_read.
 
--type context() :: #context{}.
+-type read_spec() :: {read_op(), [table() | key()]}.
+-type version() :: non_neg_integer().
+-type read_version() :: {table(), version()}.
+
 -type record() :: tuple().
 -type lock_kind() :: read | write.
 -type key() :: term().
 -type table() :: atom().
--type transaction_id() :: integer().
+
+-type tabkey() :: {table(), key()}.
+
 -type delete_item() :: {table(), key(), lock_kind()}.
 -type item() :: {table(), record(), lock_kind()}.
 
--export_type([context/0]).
+-type transaction() :: {mnevis_lock:transaction_id(),
+                        mnevis_lock_proc:locker()}.
 
--spec init(transaction_id()) -> context().
-init(Tid) -> #context{transaction_id = Tid}.
+-record(context, {
+    transaction = undefined :: transaction() | undefined,
+    delete = #{} :: #{tabkey() => delete_item()},
+    delete_object = #{} :: #{tabkey() => item()},
+    write_set = #{} :: #{tabkey() => item()},
+    write_bag = #{} :: #{tabkey() => [item()]},
+    read = #{} :: #{read_spec() => [record()]}}).
 
-transaction_id(#context{transaction_id = Tid}) -> Tid.
+-type context() :: #context{}.
+
+-export_type([context/0,
+              item/0,
+              delete_item/0,
+              transaction/0,
+              read_spec/0,
+              record/0,
+              version/0,
+              read_version/0]).
+
+-spec init() -> context().
+init() -> #context{}.
+
+-spec init(transaction()) -> context().
+init(Transaction) -> #context{transaction = Transaction}.
+
+-spec transaction(context()) -> transaction() | undefined.
+transaction(#context{transaction = Transaction}) -> Transaction.
+
+-spec transaction_id(context()) -> mnevis_lock:transaction_id().
+transaction_id(#context{transaction = {Tid, _}}) -> Tid.
+
+-spec locker(context()) -> mnevis_lock_proc:locker().
+locker(#context{transaction = {_, Locker}}) -> Locker.
+
+-spec has_transaction(context()) -> boolean().
+has_transaction(#context{transaction = undefined}) -> false;
+has_transaction(#context{transaction = {_, {_, _}}}) -> true.
+
+-spec is_empty(context()) -> boolean().
+is_empty(#context{delete = Delete, delete_object = DeleteObject,
+                  write_set = WriteSet, write_bag = WriteBag, read = Read}) ->
+    0 == maps:size(Delete) andalso
+    0 == maps:size(DeleteObject) andalso
+    0 == maps:size(WriteSet) andalso
+    0 == maps:size(WriteBag) andalso
+    0 == maps:size(Read).
+
+-spec assert_transaction(context()) -> ok.
+assert_transaction(Context) ->
+    case has_transaction(Context) of
+        true  -> ok;
+        false -> error({mnevis_context, no_transaction_set})
+    end.
+
+-spec assert_no_transaction(context()) -> ok.
+assert_no_transaction(Context) ->
+    case has_transaction(Context) of
+        true  -> error({mnevis_context, unexpected_transaction});
+        false -> ok
+    end.
+
+-spec set_transaction(transaction(), context()) -> context().
+set_transaction(Transaction, Context) ->
+    assert_no_transaction(Context),
+    Context#context{transaction = Transaction}.
+
+%% Remove everything except transaction.
+-spec cleanup_changes(context()) -> context().
+cleanup_changes(#context{transaction = Transaction}) ->
+    #context{transaction = Transaction}.
 
 -spec deletes(context()) -> [delete_item()].
 deletes(#context{delete = Delete}) -> maps:values(Delete).
@@ -137,6 +222,20 @@ key_deleted(#context{delete = Delete}, Tab, Key) ->
 -spec delete_object_for_key(context(), table(), key()) -> [item()].
 delete_object_for_key(#context{delete_object = DeleteObject}, Tab, Key) ->
     maps:get({Tab, Key}, DeleteObject, []).
+
+-spec add_read(context(), read_spec(), [record()]) -> context().
+add_read(#context{read = Read0} = Context, ReadSpec, RecList) ->
+    Read1 = maps:put(ReadSpec, RecList, Read0),
+    Context#context{read = Read1}.
+
+-spec get_read(context(), read_spec()) -> {ok, record()} | {error, not_found}.
+get_read(#context{read = Read}, ReadSpec) ->
+    case maps:get(ReadSpec, Read, not_found) of
+        not_found ->
+            {error, not_found};
+        RecList ->
+            {ok, RecList}
+    end.
 
 -spec add_write_set(context(), table(), record(), lock_kind()) -> context().
 add_write_set(#context{write_set = WriteSet,
@@ -348,12 +447,6 @@ next_cached_key(Context, Tab, Key) ->
         []   -> '$end_of_table';
         Keys -> lists:min(Keys)
     end.
-
--spec set_retry(context()) -> context().
-set_retry(Context) -> Context#context{retry = true}.
-
--spec is_retry(context()) -> boolean().
-is_retry(#context{retry = Retry}) -> Retry == true.
 
 
 

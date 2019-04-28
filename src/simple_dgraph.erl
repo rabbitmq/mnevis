@@ -29,9 +29,13 @@
 
 -record(graph, {
     labels = #{} :: #{vertex_name() => term()},
-    out_edges = #{} :: #{vertex_name() => sets:set(vertex_name())},
-    in_edges = #{} :: #{vertex_name() => sets:set(vertex_name())}
+    out_edges = #{} :: #{vertex_name() => map_sets:set(vertex_name())},
+    in_edges = #{} :: #{vertex_name() => map_sets:set(vertex_name())}
 }).
+
+-type graph() :: #graph{}.
+
+-export_type([graph/0]).
 
 new() ->
     #graph{}.
@@ -59,15 +63,15 @@ vertex_label(Graph, VertexName) ->
 add_edge(Graph, From, To) ->
     case validate_vertices(Graph, From, To) of
         ok ->
-            OldOut = maps:get(From, Graph#graph.out_edges, sets:new()),
-            OldIn = maps:get(To, Graph#graph.in_edges, sets:new()),
+            OldOut = maps:get(From, Graph#graph.out_edges, map_sets:new()),
+            OldIn = maps:get(To, Graph#graph.in_edges, map_sets:new()),
 
             {ok, Graph#graph{
                      out_edges = maps:put(From,
-                                          sets:add_element(To, OldOut),
+                                          map_sets:add_element(To, OldOut),
                                           Graph#graph.out_edges),
                      in_edges = maps:put(To,
-                                         sets:add_element(From, OldIn),
+                                         map_sets:add_element(From, OldIn),
                                          Graph#graph.in_edges)
                  }};
         {error, {bad_vertex, _}} = Err ->
@@ -94,18 +98,18 @@ del_edges(Graph, Edges) ->
 
 -spec del_edge(#graph{}, edge()) -> #graph{}.
 del_edge(Graph, {From, To}) ->
-    OldOut = maps:get(From, Graph#graph.out_edges, sets:new()),
-    OldIn = maps:get(To, Graph#graph.in_edges, sets:new()),
+    OldOut = maps:get(From, Graph#graph.out_edges, map_sets:new()),
+    OldIn = maps:get(To, Graph#graph.in_edges, map_sets:new()),
 
-    NewOut = sets:del_element(To, OldOut),
-    NewIn = sets:del_element(From, OldIn),
+    NewOut = map_sets:del_element(To, OldOut),
+    NewIn = map_sets:del_element(From, OldIn),
 
     Graph#graph{
-        out_edges = case sets:size(NewOut) == 0 of
+        out_edges = case map_sets:size(NewOut) == 0 of
             true  -> maps:remove(From, Graph#graph.out_edges);
             false -> maps:put(From, NewOut, Graph#graph.out_edges)
         end,
-        in_edges = case sets:size(NewIn) == 0 of
+        in_edges = case map_sets:size(NewIn) == 0 of
             true  -> maps:remove(To, Graph#graph.in_edges);
             false -> maps:put(To, NewIn, Graph#graph.in_edges)
         end
@@ -121,13 +125,17 @@ out_edges(Graph, Vertex) ->
 
 -spec out_neighbours(#graph{}, vertex_name()) -> [vertex_name()].
 out_neighbours(Graph, Vertex) ->
-    Out = maps:get(Vertex, Graph#graph.out_edges, sets:new()),
-    sets:to_list(Out).
+    case maps:get(Vertex, Graph#graph.out_edges, none) of
+        none -> [];
+        Out  -> map_sets:to_list(Out)
+    end.
 
 -spec in_neighbours(#graph{}, vertex_name()) -> [vertex_name()].
 in_neighbours(Graph, Vertex) ->
-    Out = maps:get(Vertex, Graph#graph.in_edges, sets:new()),
-    sets:to_list(Out).
+    case maps:get(Vertex, Graph#graph.in_edges, none) of
+        none -> [];
+        Out  -> map_sets:to_list(Out)
+    end.
 
 -spec del_vertex(#graph{}, vertex_name()) -> #graph{}.
 del_vertex(Graph, Vertex) ->
