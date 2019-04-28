@@ -18,7 +18,7 @@ mnevis:start("my/ra/directory").
 
 This will start a single node cluster. Not so useful.
 
-To start a multi-node configuration, you will have to provide `initital_nodes`
+To start a multi-node configuration, you will have to provide `initial_nodes`
 environment variable to the `mnevis` application:
 
 ```
@@ -103,7 +103,7 @@ Mnevis is designed to support (most of) mnesia transaction functions as is.
 - Commits are coordinated with the Raft cluster
 - Commit runs a mnesia transaction, which can abort and it aborts a mnevis transaction.
 
-### Transactoins on the caller side
+### Transactions on the caller side
 
 This project uses [mnesia activity](http://erlang.org/doc/man/mnesia.html#activity-4)
 feature to implement a custom transaction layer for mnesia.
@@ -164,7 +164,7 @@ If transaction ID is `undefined` - a new transaction will be created
 and all locks for the old transaction associated with the transaction process
 will be cleared, if there were any.
 
-Locks work mostly the same way as [in mnesia](http://erlang.org/doc/man/mnesia.html#lock-2)
+Locks work mostly the same way as [in mnesia](http://erlang.org/doc/man/mnesia.html#lock-2).
 
 If a transaction is blocked by another transaction it should be restarted.
 To avoid livelocks transactions wait for locking transactions with lower ID to
@@ -202,7 +202,7 @@ The snapshot consists of the mnesia backup and the server state saved by `ra_log
 Table manipulation functions are not fully implemented and tables should be pre-created
 on all nodes with all the indexes for mnevis to work.
 
-Startup of ra currrently requires a global `data_dir` setting, which is not nice.
+Startup of ra currently requires a global `data_dir` setting, which is not nice.
 
 Startup configuration can be improved.
 
