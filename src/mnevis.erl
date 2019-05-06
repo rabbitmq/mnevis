@@ -738,7 +738,8 @@ with_lock_and_version(Context, LockItem, LockKind, Fun) ->
 aquire_lock(Context, LockItem, LockKind, Method) ->
     case do_aquire_lock(Context, LockItem, LockKind, Method) of
         {ok, Response, Context1} ->
-            update_transaction_context(Context1),
+            Context2 = mnevis_context:set_lock_aquired(LockItem, LockKind, Context1),
+            update_transaction_context(Context2),
             {ok, Response};
         {error, Err, Context1} ->
             update_transaction_context(Context1),
@@ -755,14 +756,41 @@ do_aquire_lock(Context, LockItem, LockKind, Method) ->
 
 do_aquire_lock_with_existing_transaction(Context, LockItem, LockKind, Method) ->
     Tid = mnevis_context:transaction_id(Context),
-    Locker = mnevis_context:locker(Context),
-    LockRequest = {Method, Tid, self(), LockItem, LockKind},
-    case mnevis_lock_proc:try_lock_call(Locker, LockRequest) of
-        {ok, Tid, Response}           -> {ok, Response, Context};
-        {ok, Tid}                     -> {ok, ok, Context};
-        {error, {locked, Tid}}        -> {error, locked, Context};
-        {error, {locked_nowait, Tid}} -> {error, locked_nowait, Context};
-        {error, Err}                  -> mnesia:abort(Err)
+    Locks = mnevis_context:locks(Context),
+    case lock_already_aquired(LockItem, LockKind, Locks) of
+        true ->
+            {ok, ok, Context};
+        false ->
+            Locker = mnevis_context:locker(Context),
+            LockRequest = {Method, Tid, self(), LockItem, LockKind},
+            case mnevis_lock_proc:try_lock_call(Locker, LockRequest) of
+                {ok, Tid, Response}           -> {ok, Response, Context};
+                {ok, Tid}                     -> {ok, ok, Context};
+                {error, {locked, Tid}}        -> {error, locked, Context};
+                {error, {locked_nowait, Tid}} -> {error, locked_nowait, Context};
+                {error, Err}                  -> mnesia:abort(Err)
+            end
+    end.
+
+%% TODO: maybe merge that with mnevis_lock
+lock_already_aquired({table, _} = LockItem, LockKind, Locks) ->
+    lock_already_aquired_1(LockItem, LockKind, Locks);
+lock_already_aquired({Tab, Key}, LockKind, Locks) ->
+    lock_already_aquired_1({table, Tab}, LockKind, Locks)
+    orelse
+    lock_already_aquired_1({Tab, Key}, LockKind, Locks);
+lock_already_aquired({global, _, _} = LockItem, LockKind, Locks) ->
+    lock_already_aquired_1(LockItem, LockKind, Locks).
+
+lock_already_aquired_1(LockItem, LockKind, Locks) ->
+    case {LockKind, maps:get(LockItem, Locks, none)} of
+        {read,  read}  -> true;
+        {read,  write} -> true;
+
+        {write, read}  -> false;
+        {write, write} -> true;
+
+        {_, none}      -> false
     end.
 
 do_aquire_lock_with_new_transaction(_Context, _LockItem, _LockKind, _Method, 0) ->
