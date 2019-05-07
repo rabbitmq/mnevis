@@ -11,7 +11,7 @@
 
 -export([check_locker/2]).
 -export([safe_table_info/3]).
--export([get_version/2]).
+-export([get_item_version/2]).
 
 -record(state, {locker_status = down,
                 locker = {0, none} :: mnevis_lock_proc:locker() | {0, none}}).
@@ -58,8 +58,24 @@ safe_table_info(Tab, Key, _State) ->
         false -> {error, {no_exists, Tab}}
     end.
 
-get_version(VersionKey, _) ->
-    mnevis_read:get_version(VersionKey).
+-type version_key() :: {mnevis:table(), term()} | mnevis:table().
+
+-spec get_item_version(version_key(), state()) -> {ok, {version_key(), mnevis_context:version()}} | {error, no_exists}.
+get_item_version(VersionKey, _) ->
+    case mnevis_read:get_version(VersionKey) of
+        {error, no_exists} ->
+            case VersionKey of
+                {table, _} -> {error, no_exists};
+                {Tab, _} ->
+                    case mnevis_read:get_version(Tab) of
+                        {ok, Version}    -> {ok, {Tab, Version}};
+                        {error, _} = Err -> Err
+                    end;
+                _ -> {error, no_exists}
+            end;
+        {ok, Version} ->
+            {ok, {VersionKey, Version}}
+    end.
 
 %% Ra machine callbacks
 

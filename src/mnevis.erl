@@ -290,7 +290,6 @@ commit_transaction() ->
                                                            {Writes,
                                                             Deletes,
                                                             DeletesObject}),
-
                             case Result of
                                 {committed, Versions} ->
                                     {versions, Versions};
@@ -717,33 +716,15 @@ with_lock_and_version(Context, LockItem, LockKind, Fun) ->
         end,
 
         case ra:consistent_query(mnevis_node:node_id(),
-                                 {mnevis_machine, get_version, [VersionKey]},
+                                 {mnevis_machine, get_item_version, [VersionKey]},
                                  ?CONSISTENT_QUERY_TIMEOUT) of
             {ok, Result, _} ->
                 case Result of
                     {ok, Version} ->
-                        mnevis_read:wait_for_versions([{VersionKey, Version}]),
+                        mnevis_read:wait_for_versions([Version]),
                         Fun();
                     {error, no_exists} ->
-                        %% TODO: make this a single query
-                        case VersionKey of
-                            {table, _} -> Fun();
-                            {Tab1, _} ->
-                                TableVersionKey = Tab1,
-                                case ra:consistent_query(mnevis_node:node_id(),
-                                                         {mnevis_machine, get_version, [TableVersionKey]},
-                                                         ?CONSISTENT_QUERY_TIMEOUT) of
-                                    {ok, {ok, Version}, _} ->
-                                        mnevis_read:wait_for_versions([{TableVersionKey, Version}]),
-                                        Fun();
-                                    {ok, {error, no_exists}, _} ->
-                                        Fun();
-                                    {error, Err} ->
-                                        mnesia:abort(Err);
-                                    {timeout, TO} ->
-                                        mnesia:abort({timeout, TO})
-                                end
-                        end
+                        Fun()
                 end;
             {error, Err} ->
                 mnesia:abort(Err);
