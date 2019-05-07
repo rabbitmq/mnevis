@@ -5,6 +5,8 @@
 -export([local_read_query/1, local_read_query/2]).
 -export([wait_for_versions/1]).
 
+-export([compare_versions/1]).
+
 create_versions_table() ->
     CreateResult = mnesia:create_table(versions, []),
     case CreateResult of

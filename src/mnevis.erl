@@ -211,7 +211,10 @@ transaction0(Fun, Args, Retries, _Err) ->
             %% Need to retry finding the locker process
             %% TODO: maybe wait?
             retry_new_transaction(Fun, Args, Retries, {lock_proc_not_found, Reason});
-
+        exit:{aborted, {version_mismatch, VM}} ->
+            mnevis_read:wait_for_versions(VM),
+            maybe_cleanup_transaction(),
+            retry_new_transaction(Fun, Args, Retries, version_mismatch);
         %% We retry the same transaction so the locks will be still in place,
         %% preventing updates. This can cause system to be locked more than
         %% needed. Needs benchmarking.
@@ -276,13 +279,14 @@ commit_transaction() ->
             Writes = mnevis_context:writes(Context),
             Deletes = mnevis_context:deletes(Context),
             DeletesObject = mnevis_context:deletes_object(Context),
+            Versions = mnevis_context:get_read_versions(Context),
             CommitResult = case mnevis_context:is_empty(Context) of
                 true -> ok;
                 _ ->
                     case {Writes, Deletes, DeletesObject} of
                         {[], [], []} ->
                             %% Read-only commits
-                            case read_only_commit(Context) of
+                            case read_only_commit(Context, Versions) of
                                 ok -> ok;
                                 {error, Err} -> mnesia:abort(Err)
                             end;
@@ -291,10 +295,11 @@ commit_transaction() ->
                                 execute_command_with_retry(Context, commit,
                                                            {Writes,
                                                             Deletes,
-                                                            DeletesObject}),
+                                                            DeletesObject,
+                                                            Versions}),
                             case Result of
-                                {committed, Versions} ->
-                                    {versions, Versions};
+                                {committed, CommittedVersions} ->
+                                    {versions, CommittedVersions};
                                 skipped ->
                                     {transaction, mnevis_context:transaction(Context)}
                             end
@@ -304,10 +309,10 @@ commit_transaction() ->
             CommitResult
     end.
 
-read_only_commit(Context) ->
+read_only_commit(Context, Versions) ->
     Locker = mnevis_context:locker(Context),
     case ra:consistent_query(mnevis_node:node_id(),
-                             {mnevis_machine, check_locker, [Locker]}) of
+                             {mnevis_machine, read_only_commit, [Locker, Versions]}) of
         {ok, ok, _}              -> ok;
         {ok, {error, Reason}, _} -> mnesia:abort(Reason);
         {error, Reason} -> mnesia:abort(Reason);
@@ -387,20 +392,48 @@ read(_ActivityId, _Opaque, Tab, Key, LockKind) ->
                 %% previous.
                 %% We use dirty operations here because we want to call them
                 %% directly via erlang:apply/3
-                {RecList, Context2} = execute_local_read_query(ReadQuery, Context1),
+                {RecList, Context2} = execute_local_read_query(ReadQuery, {Tab, Key}, Context1),
                 mnevis_context:filter_read_from_context(Context2, Tab, Key, RecList)
             end)
     end.
 
-execute_local_read_query({Op, Args} = ReadSpec, Context) ->
+execute_local_read_query({Op, Args} = ReadSpec, LockItem, Context) ->
     case mnevis_context:get_read(Context, ReadSpec) of
         {ok, CachedRecList} ->
             {CachedRecList, Context};
         {error, not_found} ->
-            RecList = erlang:apply(mnesia, Op, Args),
-            NewContext = mnevis_context:add_read(Context, ReadSpec, RecList),
+            RecList = try
+                erlang:apply(mnesia, Op, Args)
+            catch
+                exit:{aborted, _Reason} ->
+                    execute_remote_read_query(ReadSpec)
+            end,
+            VersionKey = case LockItem of
+                {table, Table} -> Table;
+                {Tab, Item}    -> {Tab, erlang:phash2(Item, 1000)}
+            end,
+            LocalVersion = case mnevis_machine:get_item_version(VersionKey, none) of
+                {ok, Version} -> Version;
+                {error, no_exists} -> {VersionKey, 0}
+            end,
+
+            NewContext = mnevis_context:add_read(Context, ReadSpec, RecList, LocalVersion),
             update_transaction_context(NewContext),
             {RecList, NewContext}
+    end.
+
+execute_remote_read_query(ReadSpec) ->
+    case ra:consistent_query(mnevis_node:node_id(),
+                             {mnevis_machine, execute_read_query, [ReadSpec]}) of
+        {ok, Result, _} ->
+            case Result of
+                {ok, RecList}    -> RecList;
+                {aborted, Abort} -> mnesia:abort(Abort)
+            end;
+        {error, Err} ->
+            mnesia:abort({error, Err});
+        {timeout, Timeout} ->
+            mnesia:abort({table_info_timeout, Timeout})
     end.
 
 
@@ -408,7 +441,7 @@ match_object(_ActivityId, _Opaque, Tab, Pattern, LockKind) ->
     Context0 = get_transaction_context(),
     with_lock_and_version(Context0, {table, Tab}, LockKind, fun() ->
         Context1 = get_transaction_context(),
-        {RecList, Context2} = execute_local_read_query({dirty_match_object, [Tab, Pattern]}, Context1),
+        {RecList, Context2} = execute_local_read_query({dirty_match_object, [Tab, Pattern]}, {table, Tab}, Context1),
         mnevis_context:filter_match_from_context(Context2, Tab, Pattern, RecList)
     end).
 
@@ -416,7 +449,7 @@ all_keys(ActivityId, Opaque, Tab, LockKind) ->
     Context = get_transaction_context(),
     with_lock_and_version(Context, {table, Tab}, LockKind, fun() ->
         Context1 = get_transaction_context(),
-        {AllKeys, Context2} = execute_local_read_query({dirty_all_keys, [Tab]}, Context1),
+        {AllKeys, Context2} = execute_local_read_query({dirty_all_keys, [Tab]}, {table, Tab}, Context1),
 
         case mnevis_context:deletes_object(Context2, Tab) of
             [] ->
@@ -438,7 +471,7 @@ first(ActivityId, Opaque, Tab) ->
     Context = get_transaction_context(),
     with_lock_and_version(Context, {table, Tab}, read, fun() ->
         Context1 = get_transaction_context(),
-        {Key, Context2} = execute_local_read_query({dirty_first, [Tab]}, Context1),
+        {Key, Context2} = execute_local_read_query({dirty_first, [Tab]}, {table, Tab}, Context1),
         check_key(ActivityId, Opaque, Tab, Key, '$end_of_table', next, Context2)
     end).
 
@@ -446,7 +479,7 @@ last(ActivityId, Opaque, Tab) ->
     Context = get_transaction_context(),
     with_lock_and_version(Context, {table, Tab}, read, fun() ->
         Context1 = get_transaction_context(),
-        {Key, Context2} = execute_local_read_query({dirty_last, [Tab]}, Context1),
+        {Key, Context2} = execute_local_read_query({dirty_last, [Tab]}, {table, Tab}, Context1),
         check_key(ActivityId, Opaque, Tab, Key, '$end_of_table', prev, Context2)
     end).
 
@@ -455,7 +488,7 @@ prev(ActivityId, Opaque, Tab, Key) ->
     with_lock_and_version(Context, {table, Tab}, read, fun() ->
         Context1 = get_transaction_context(),
         try
-            {NewKey, Context2} = execute_local_read_query({dirty_prev, [Tab, Key]}, Context1),
+            {NewKey, Context2} = execute_local_read_query({dirty_prev, [Tab, Key]}, {table, Tab}, Context1),
             check_key(ActivityId, Opaque, Tab, NewKey, Key, prev, Context2)
         catch
             exit:{aborted, {badarg, [Tab, Key]}} ->
@@ -468,7 +501,7 @@ next(ActivityId, Opaque, Tab, Key) ->
     with_lock_and_version(Context, {table, Tab}, read, fun() ->
         Context1 = get_transaction_context(),
         try
-            {NewKey, Context2} = execute_local_read_query({dirty_next, [Tab, Key]}, Context1),
+            {NewKey, Context2} = execute_local_read_query({dirty_next, [Tab, Key]}, {table, Tab}, Context1),
             check_key(ActivityId, Opaque, Tab, NewKey, Key, next, Context2)
         catch
             exit:{aborted, {badarg, [Tab, Key]}} ->
@@ -548,7 +581,7 @@ index_match_object(_ActivityId, _Opaque, Tab, Pattern, Pos, LockKind) ->
     Context = get_transaction_context(),
     with_lock_and_version(Context, {table, Tab}, LockKind, fun() ->
         Context1 = get_transaction_context(),
-        {RecList, Context2} = execute_local_read_query({dirty_index_match_object, [Tab, Pattern, Pos]}, Context1),
+        {RecList, Context2} = execute_local_read_query({dirty_index_match_object, [Tab, Pattern, Pos]}, {table, Tab}, Context1),
         mnevis_context:filter_match_from_context(Context2, Tab, Pattern, RecList)
     end).
 
@@ -556,7 +589,7 @@ index_read(_ActivityId, _Opaque, Tab, SecondaryKey, Pos, LockKind) ->
     Context = get_transaction_context(),
     with_lock_and_version(Context, {table, Tab}, LockKind, fun() ->
         Context1 = get_transaction_context(),
-        {RecList, Context2} = execute_local_read_query({dirty_index_read, [Tab, SecondaryKey, Pos]}, Context1),
+        {RecList, Context2} = execute_local_read_query({dirty_index_read, [Tab, SecondaryKey, Pos]}, {table, Tab}, Context1),
         mnevis_context:filter_index_from_context(Context2, Tab, SecondaryKey, Pos, RecList)
     end).
 
@@ -711,29 +744,7 @@ with_lock(Context, LockItem, LockKind, Fun) ->
     end.
 
 with_lock_and_version(Context, LockItem, LockKind, Fun) ->
-    with_lock(Context, LockItem, LockKind, fun() ->
-        VersionKey = case LockItem of
-            {table, Table} -> Table;
-            {Tab, Item}    -> {Tab, erlang:phash2(Item, ?VERSION_HASH_RESOLUTION)}
-        end,
-
-        case ra:consistent_query(mnevis_node:node_id(),
-                                 {mnevis_machine, get_item_version, [VersionKey]},
-                                 ?CONSISTENT_QUERY_TIMEOUT) of
-            {ok, Result, _} ->
-                case Result of
-                    {ok, Version} ->
-                        mnevis_read:wait_for_versions([Version]),
-                        Fun();
-                    {error, no_exists} ->
-                        Fun()
-                end;
-            {error, Err} ->
-                mnesia:abort(Err);
-            {timeout, TO} ->
-                mnesia:abort({timeout, TO})
-        end
-    end).
+    with_lock(Context, LockItem, LockKind, Fun).
 
 acquire_lock(Context, LockItem, LockKind, Method) ->
     case do_acquire_lock(Context, LockItem, LockKind, Method) of

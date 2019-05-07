@@ -170,16 +170,16 @@ delete_sample_tables() ->
     ok.
 
 add_sample({Tab, Key, Val}) ->
-    {atomic, ok} = mnevis:transaction(fun() ->
+    {atomic, ok} = mnevis:sync_transaction(fun() ->
         mnesia:write({Tab, Key, Val})
     end),
-    {atomic, Read} = mnevis:transaction(fun() ->
+    {atomic, Read} = mnevis:sync_transaction(fun() ->
         mnesia:read(Tab, Key)
     end),
     true = lists:member({Tab, Key, Val}, Read).
 
 delete_sample(Tab, Key) ->
-    {atomic, ok} = mnevis:transaction(fun() ->
+    {atomic, ok} = mnevis:sync_transaction(fun() ->
         mnesia:delete({Tab, Key}),
         [] = mnesia:read(Tab, Key),
         ok
@@ -902,7 +902,7 @@ write_delete_object_converge(_Config) ->
 
 write_bag_delete_converge(_Config) ->
     %% Bag write is deleted on delete
-    mnevis:transaction(fun() ->
+    mnevis:sync_transaction(fun() ->
         ok = mnesia:write({sample_bag, foo, bar})
     end),
     {atomic, []} = mnevis:sync_transaction(fun() ->
@@ -914,7 +914,7 @@ write_bag_delete_converge(_Config) ->
     [] = mnesia:dirty_read(sample_bag, foo),
 
     %% Delete from bag deletes old items
-    mnevis:transaction(fun() ->
+    mnevis:sync_transaction(fun() ->
         ok = mnesia:write({sample_bag, bar, bar})
     end),
     {atomic, [{sample_bag, bar, baz}]} = mnevis:sync_transaction(fun() ->

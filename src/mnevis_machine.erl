@@ -14,6 +14,8 @@
 -export([check_locker/2]).
 -export([safe_table_info/3]).
 -export([get_item_version/2]).
+-export([read_only_commit/3]).
+-export([execute_read_query/2]).
 
 -record(state, {locker_status = down,
                 locker = {0, none} :: mnevis_lock_proc:locker() | {0, none}}).
@@ -44,6 +46,25 @@
 
 -record(committed_transaction, { transaction :: mnevis_context:transaction(),
                                  value }).
+
+
+execute_read_query({Op, Args}, _) ->
+    try
+        {ok, erlang:apply(mnesia, Op, Args)}
+    catch exit:{aborted, Err} -> {aborted, Err}
+    end.
+
+read_only_commit(Locker, Versions, State) ->
+    case check_locker(Locker, State) of
+        ok -> check_versions(Versions, State);
+        {error, wrong_locker_term} -> {error, wrong_locker_term}
+    end.
+
+check_versions(Versions, #state{}) ->
+    case mnevis_read:compare_versions(Versions) of
+        ok -> ok;
+        {version_mismatch, VM} -> {error, {version_mismatch, VM}}
+    end.
 
 check_locker({LockerTerm, _LockerPid}, #state{locker = {CurrentLockerTerm, _}}) ->
     case LockerTerm of
@@ -113,23 +134,28 @@ snapshot_module() ->
 
 -spec apply(map(), command(), state()) ->
     {state(), reply(), ra_machine:effects()}.
-apply(Meta, {commit, Transaction, {Writes, Deletes, DeletesObject}}, State)  ->
+apply(Meta, {commit, Transaction, {Writes, Deletes, DeletesObject, Versions}}, State)  ->
     with_valid_locker(Transaction, State,
         fun() ->
-            case {Writes, Deletes, DeletesObject} of
-                {[], [], []} ->
-                    %% TODO: this should not happen
-                    {State, {ok, ok}, []};
-                _ ->
-                    Result = commit(Transaction, Writes, Deletes, DeletesObject),
-                    case Result of
-                        {ok, {committed, Versions}} ->
-                            {State, {ok, {committed, Versions}}, snapshot_effects(Meta, State)};
-                        {ok, skipped} ->
-                            {State, {ok, skipped}, []};
+            case check_versions(Versions, State) of
+                ok ->
+                    case {Writes, Deletes, DeletesObject} of
+                        {[], [], []} ->
+                            %% TODO: this should not happen
+                            {State, {ok, ok}, []};
                         _ ->
-                            {State, Result, []}
-                    end
+                            Result = commit(Transaction, Writes, Deletes, DeletesObject),
+                            case Result of
+                                {ok, {committed, Versions}} ->
+                                    {State, {ok, {committed, Versions}}, snapshot_effects(Meta, State)};
+                                {ok, skipped} ->
+                                    {State, {ok, skipped}, []};
+                                _ ->
+                                    {State, Result, []}
+                            end
+                    end;
+                {version_mismatch, VM} ->
+                    {State, {error, {aborted, {version_mismatch, VM}}}, []}
             end
         end);
 %% TODO: return type for create_table

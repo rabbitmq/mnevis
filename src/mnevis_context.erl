@@ -6,8 +6,10 @@
          add_write_bag/4,
          add_delete/4,
          add_delete_object/4,
-         add_read/3,
+         add_read/4,
          get_read/2,
+
+         get_read_versions/1,
 
          read_from_context/3,
          filter_read_from_context/4,
@@ -240,9 +242,9 @@ key_deleted(#context{delete = Delete}, Tab, Key) ->
 delete_object_for_key(#context{delete_object = DeleteObject}, Tab, Key) ->
     maps:get({Tab, Key}, DeleteObject, []).
 
--spec add_read(context(), read_spec(), [record()]) -> context().
-add_read(#context{read = Read0} = Context, ReadSpec, RecList) ->
-    Read1 = maps:put(ReadSpec, RecList, Read0),
+-spec add_read(context(), read_spec(), [record()], term()) -> context().
+add_read(#context{read = Read0} = Context, ReadSpec, RecList, Version) ->
+    Read1 = maps:put(ReadSpec, {RecList, Version}, Read0),
     Context#context{read = Read1}.
 
 -spec get_read(context(), read_spec()) -> {ok, record()} | {error, not_found}.
@@ -250,9 +252,14 @@ get_read(#context{read = Read}, ReadSpec) ->
     case maps:get(ReadSpec, Read, not_found) of
         not_found ->
             {error, not_found};
-        RecList ->
+        {RecList, _} ->
             {ok, RecList}
     end.
+
+-spec get_read_versions(context()) -> [term()].
+get_read_versions(#context{read = Read}) ->
+    {_, Versions} = lists:unzip(maps:values(Read)),
+    Versions.
 
 -spec add_write_set(context(), table(), record(), lock_kind()) -> context().
 add_write_set(#context{write_set = WriteSet,
