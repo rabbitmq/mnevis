@@ -36,7 +36,7 @@ start() ->
             %% Trigger election.
             %% This is required when we start a node for the first time.
             %% Using default timeout because it supposed to reply fast.
-            ra:trigger_election(NodeId),
+            ra:trigger_election(NodeId, ?START_TIMEOUT),
             case ra:members(NodeId, ?START_TIMEOUT) of
                 {ok, _, _} ->
                     ok;

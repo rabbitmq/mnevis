@@ -56,14 +56,18 @@ execute_read_query({Op, Args}, _) ->
 
 read_only_commit(Locker, Versions, State) ->
     case check_locker(Locker, State) of
-        ok -> check_versions(Versions, State);
+        ok -> check_versions(Versions);
         {error, wrong_locker_term} -> {error, wrong_locker_term}
     end.
 
-check_versions(Versions, #state{}) ->
+check_versions(Versions) ->
     case mnevis_read:compare_versions(Versions) of
         ok -> ok;
-        {version_mismatch, VM} -> {error, {version_mismatch, VM}}
+        {version_mismatch, VM} ->
+            case [{Key, Ver} || {Key, Ver} <- VM, Ver /= 0] of
+                [] -> ok;
+                _  -> {error, {version_mismatch, VM}}
+            end
     end.
 
 check_locker({LockerTerm, _LockerPid}, #state{locker = {CurrentLockerTerm, _}}) ->
@@ -137,25 +141,19 @@ snapshot_module() ->
 apply(Meta, {commit, Transaction, {Writes, Deletes, DeletesObject, Versions}}, State)  ->
     with_valid_locker(Transaction, State,
         fun() ->
-            case check_versions(Versions, State) of
-                ok ->
-                    case {Writes, Deletes, DeletesObject} of
-                        {[], [], []} ->
-                            %% TODO: this should not happen
-                            {State, {ok, ok}, []};
+            case {Writes, Deletes, DeletesObject} of
+                {[], [], []} ->
+                    error(read_only_commit);
+                _ ->
+                    Result = commit(Transaction, Writes, Deletes, DeletesObject, Versions),
+                    case Result of
+                        {ok, {committed, Versions}} ->
+                            {State, {ok, {committed, Versions}}, snapshot_effects(Meta, State)};
+                        {ok, skipped} ->
+                            {State, {ok, skipped}, []};
                         _ ->
-                            Result = commit(Transaction, Writes, Deletes, DeletesObject),
-                            case Result of
-                                {ok, {committed, Versions}} ->
-                                    {State, {ok, {committed, Versions}}, snapshot_effects(Meta, State)};
-                                {ok, skipped} ->
-                                    {State, {ok, skipped}, []};
-                                _ ->
-                                    {State, Result, []}
-                            end
-                    end;
-                {version_mismatch, VM} ->
-                    {State, {error, {aborted, {version_mismatch, VM}}}, []}
+                            {State, Result, []}
+                    end
             end
         end);
 %% TODO: return type for create_table
@@ -253,21 +251,28 @@ create_committed_transaction_table() ->
 
 -spec commit(transaction(), [mnevis_context:item()],
                             [mnevis_context:delete_item()],
-                            [mnevis_context:item()]) ->
+                            [mnevis_context:item()],
+                            %% TODO: versions type
+                            {term(), term()}) ->
     {ok, {committed, [{mnevis:table(), mnevis_context:version()}]}} |
     {ok, skipped} |
     {error, {aborted, term()}}.
-commit(Transaction, Writes, Deletes, DeletesObject) ->
+commit(Transaction, Writes, Deletes, DeletesObject, Versions) ->
     Res = mnesia:transaction(fun() ->
         case ets:lookup(committed_transaction, Transaction) of
             [] ->
-                _ = apply_deletes(Deletes),
-                _ = apply_writes(Writes),
-                _ = apply_deletes_object(DeletesObject),
-                _ = mnesia:lock({table, versions}, write),
-                UpdatedVersions = update_table_versions(Writes, Deletes, DeletesObject),
-                ok = save_committed_transaction(Transaction),
-                {committed, UpdatedVersions};
+                case check_versions(Versions) of
+                    ok ->
+                        _ = apply_deletes(Deletes),
+                        _ = apply_writes(Writes),
+                        _ = apply_deletes_object(DeletesObject),
+                        _ = mnesia:lock({table, versions}, write),
+                        UpdatedVersions = update_table_versions(Writes, Deletes, DeletesObject),
+                        ok = save_committed_transaction(Transaction),
+                        {committed, UpdatedVersions};
+                    {error, {version_mismatch, VM}} ->
+                        mnesia:abort({version_mismatch, VM})
+                end;
             %% Transaction is already committed.
             [{committed_transaction, Transaction, committed}] ->
                 skipped

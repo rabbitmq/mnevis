@@ -214,7 +214,7 @@ transaction0(Fun, Args, Retries, _Err) ->
         exit:{aborted, {version_mismatch, VM}} ->
             mnevis_read:wait_for_versions(VM),
             maybe_cleanup_transaction(),
-            retry_new_transaction(Fun, Args, Retries, version_mismatch);
+            retry_new_transaction(Fun, Args, Retries, {version_mismatch, VM});
         %% We retry the same transaction so the locks will be still in place,
         %% preventing updates. This can cause system to be locked more than
         %% needed. Needs benchmarking.
@@ -242,9 +242,9 @@ retry_new_transaction(Fun, Args, Retries, Error) ->
         infinity -> infinity;
         R when is_integer(R) -> R - 1
     end,
-    % Context = get_transaction_context(),
-    % error_logger:warning_msg("Retrying transaction ~p with error ~p",
-        % [mnevis_context:transaction(Context), Error]),
+    Context = get_transaction_context(),
+    error_logger:warning_msg("Retrying transaction ~p with error ~p",
+        [mnevis_context:transaction(Context), Error]),
     clean_transaction_context(),
 
     transaction0(Fun, Args, NextRetries, Error).
@@ -259,8 +259,8 @@ retry_same_transaction(Fun, Args, Retries, Error) ->
     Context = get_transaction_context(),
     %% The context should have a transaction to be locked
     mnevis_context:assert_transaction(Context),
-    % error_logger:warning_msg("Retrying transaction ~p with error ~p",
-        % [mnevis_context:transaction(Context), Error]),
+    error_logger:warning_msg("Retrying transaction ~p with error ~p",
+        [mnevis_context:transaction(Context), Error]),
     Context1 = mnevis_context:cleanup_changes(Context),
     update_transaction_context(Context1),
     transaction0(Fun, Args, NextRetries, Error).
@@ -402,6 +402,7 @@ execute_local_read_query({Op, Args} = ReadSpec, LockItem, Context) ->
         {ok, CachedRecList} ->
             {CachedRecList, Context};
         {error, not_found} ->
+            % rabbit_log:error("execute_local_read_query ~p~n", [ReadSpec]),
             RecList = try
                 erlang:apply(mnesia, Op, Args)
             catch
@@ -410,10 +411,10 @@ execute_local_read_query({Op, Args} = ReadSpec, LockItem, Context) ->
             end,
             VersionKey = case LockItem of
                 {table, Table} -> Table;
-                {Tab, Item}    -> {Tab, erlang:phash2(Item, 1000)}
+                {Tab, Item}    -> {Tab, erlang:phash2(Item, 10000)}
             end,
-            LocalVersion = case mnevis_machine:get_item_version(VersionKey, none) of
-                {ok, Version} -> Version;
+            LocalVersion = case mnevis_read:get_version(VersionKey) of
+                {ok, Version} -> {VersionKey, Version};
                 {error, no_exists} -> {VersionKey, 0}
             end,
 
