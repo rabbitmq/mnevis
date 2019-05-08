@@ -3,6 +3,8 @@
 
 -include_lib("ra/include/ra.hrl").
 
+-include("mnevis.hrl").
+
 -export([
          init/1,
          apply/3,
@@ -68,7 +70,7 @@ get_item_version(VersionKey, _) ->
                 {table, _} -> {error, no_exists};
                 {Tab, _} ->
                     case mnevis_read:get_version(Tab) of
-                        {ok, Version}    -> {ok, {Tab, Version}};
+                        {ok, _Version}    -> {ok, {Tab, 0}};
                         {error, _} = Err -> Err
                     end;
                 _ -> {error, no_exists}
@@ -255,9 +257,9 @@ commit(Transaction, Writes, Deletes, DeletesObject) ->
 update_table_versions(Writes, Deletes, DeletesObject) ->
     % TODO why commented out?
     % Tabs = lists:usort([Tab || {Tab, _, _} <- Writes ++ Deletes ++ DeletesObject]),
-    TabKeys = lists:usort([{Tab, erlang:phash2(mnevis:record_key(Rec), 1000)}
+    TabKeys = lists:usort([{Tab, erlang:phash2(mnevis:record_key(Rec), ?VERSION_HASH_RESOLUTION)}
                             || {Tab, Rec, _} <- Writes ++ DeletesObject] ++
-                          [{Tab, erlang:phash2(Key, 1000)} || {Tab, Key, _} <- Deletes]),
+                          [{Tab, erlang:phash2(Key, ?VERSION_HASH_RESOLUTION)} || {Tab, Key, _} <- Deletes]),
     Tabs = lists:usort(element(1, lists:unzip(TabKeys))),
     TabUpdates = lists:map(
         fun(Tab) ->

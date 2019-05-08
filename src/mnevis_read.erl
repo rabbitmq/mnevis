@@ -118,8 +118,7 @@ wait_for_versions(TargetVersions) ->
                     wait_for_mnesia_updates(VersionsToWait)
                 after
                     mnesia:unsubscribe({table, versions, simple}),
-                    flush_table_events(),
-                    error_logger:warning_msg("Messages left: ~p~n", [process_info(self(), messages)])
+                    flush_table_events()
                 end
             end),
             receive {'DOWN', MonRef, process, WaitingPid, Reason} ->

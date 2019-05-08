@@ -1,5 +1,7 @@
 -module(mnevis).
 
+-include("mnevis.hrl").
+
 -export([start/1]).
 
 -export([create_table/2, delete_table/1]).
@@ -712,7 +714,7 @@ with_lock_and_version(Context, LockItem, LockKind, Fun) ->
     with_lock(Context, LockItem, LockKind, fun() ->
         VersionKey = case LockItem of
             {table, Table} -> Table;
-            {Tab, Item}    -> {Tab, erlang:phash2(Item, 1000)}
+            {Tab, Item}    -> {Tab, erlang:phash2(Item, ?VERSION_HASH_RESOLUTION)}
         end,
 
         case ra:consistent_query(mnevis_node:node_id(),
