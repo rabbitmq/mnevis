@@ -1,0 +1,3 @@
+
+
+-define(VERSION_HASH_RESOLUTION, 1000).
