@@ -18,6 +18,8 @@
          transaction/1,
          transaction_id/1,
          locker/1,
+         locks/1,
+         set_lock_acquired/3,
 
          has_transaction/1,
          assert_transaction/1,
@@ -110,8 +112,11 @@
 -type transaction() :: {mnevis_lock:transaction_id(),
                         mnevis_lock_proc:locker()}.
 
+-type locks() :: #{term() => lock_kind()}.
+
 -record(context, {
     transaction = undefined :: transaction() | undefined,
+    locks = #{} :: locks(),
     delete = #{} :: #{tabkey() => delete_item()},
     delete_object = #{} :: #{tabkey() => item()},
     write_set = #{} :: #{tabkey() => item()},
@@ -144,6 +149,18 @@ transaction_id(#context{transaction = {Tid, _}}) -> Tid.
 -spec locker(context()) -> mnevis_lock_proc:locker().
 locker(#context{transaction = {_, Locker}}) -> Locker.
 
+-spec locks(context()) -> locks().
+locks(#context{locks = Locks}) -> Locks.
+
+-spec set_lock_acquired(term(), lock_kind(), context()) -> context().
+set_lock_acquired(LockItem, LockKind, #context{locks = Locks} = Context) ->
+    Locks1 = case {LockKind, maps:get(LockItem, Locks, none)} of
+        {_, none}     -> maps:put(LockItem, LockKind, Locks);
+        {write, read} -> maps:put(LockItem, LockKind, Locks);
+        _ -> Locks
+    end,
+    Context#context{locks = Locks1}.
+
 -spec has_transaction(context()) -> boolean().
 has_transaction(#context{transaction = undefined}) -> false;
 has_transaction(#context{transaction = {_, {_, _}}}) -> true.
@@ -174,7 +191,7 @@ assert_no_transaction(Context) ->
 -spec set_transaction(transaction(), context()) -> context().
 set_transaction(Transaction, Context) ->
     assert_no_transaction(Context),
-    Context#context{transaction = Transaction}.
+    Context#context{transaction = Transaction, locks = #{}}.
 
 %% Remove everything except transaction.
 -spec cleanup_changes(context()) -> context().

@@ -123,7 +123,7 @@ For this purpose (similarly to mnesia transactions) there is an internal context
 storage, which stores all the write operations until transaction is committed
 or rolled back.
 
-Each operation have to aquire a lock, which is done by calling the special lock
+Each operation have to acquire a lock, which is done by calling the special lock
 process. More on locks [here](./LOCK_PROCESS.md)
 
 Reads get data from both context and the mnesia database. All reads from mnesia
@@ -175,8 +175,8 @@ When transaction is restarted - all its locks and transaction context is cleared
 but transaction ID stays registered with the lock process.
 
 **Behaviour differences with mnesia**
-Because locks are aquired cluster-wide and not on specific nodes, global locks
-aquired with a `{global, LockTerm :: term(), Nodes :: [node()]}` lock item will
+Because locks are acquired cluster-wide and not on specific nodes, global locks
+acquired with a `{global, LockTerm :: term(), Nodes :: [node()]}` lock item will
 not scope on nodes. It will lock all nodes on `LockTerm`.
 
 ### Snapshotting and log replay
