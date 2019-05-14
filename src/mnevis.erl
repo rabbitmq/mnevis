@@ -705,7 +705,7 @@ cleanup_all_unlock_messages() ->
     end.
 
 with_lock(Context, LockItem, LockKind, Fun) ->
-    case aquire_lock(Context, LockItem, LockKind, lock) of
+    case acquire_lock(Context, LockItem, LockKind, lock) of
         {ok, _}      -> Fun();
         {error, Err} -> mnesia:abort(Err)
     end.
@@ -735,10 +735,10 @@ with_lock_and_version(Context, LockItem, LockKind, Fun) ->
         end
     end).
 
-aquire_lock(Context, LockItem, LockKind, Method) ->
-    case do_aquire_lock(Context, LockItem, LockKind, Method) of
+acquire_lock(Context, LockItem, LockKind, Method) ->
+    case do_acquire_lock(Context, LockItem, LockKind, Method) of
         {ok, Response, Context1} ->
-            Context2 = mnevis_context:set_lock_aquired(LockItem, LockKind, Context1),
+            Context2 = mnevis_context:set_lock_acquired(LockItem, LockKind, Context1),
             update_transaction_context(Context2),
             {ok, Response};
         {error, Err, Context1} ->
@@ -746,18 +746,18 @@ aquire_lock(Context, LockItem, LockKind, Method) ->
             {error, Err}
     end.
 
-do_aquire_lock(Context, LockItem, LockKind, Method) ->
+do_acquire_lock(Context, LockItem, LockKind, Method) ->
     case mnevis_context:has_transaction(Context) of
         true ->
-            do_aquire_lock_with_existing_transaction(Context, LockItem, LockKind, Method);
+            do_acquire_lock_with_existing_transaction(Context, LockItem, LockKind, Method);
         false ->
-            do_aquire_lock_with_new_transaction(Context, LockItem, LockKind, Method, ?AQUIRE_LOCK_ATTEMPTS)
+            do_acquire_lock_with_new_transaction(Context, LockItem, LockKind, Method, ?AQUIRE_LOCK_ATTEMPTS)
     end.
 
-do_aquire_lock_with_existing_transaction(Context, LockItem, LockKind, Method) ->
+do_acquire_lock_with_existing_transaction(Context, LockItem, LockKind, Method) ->
     Tid = mnevis_context:transaction_id(Context),
     Locks = mnevis_context:locks(Context),
-    case lock_already_aquired(LockItem, LockKind, Locks) of
+    case lock_already_acquired(LockItem, LockKind, Locks) of
         true ->
             {ok, ok, Context};
         false ->
@@ -773,16 +773,16 @@ do_aquire_lock_with_existing_transaction(Context, LockItem, LockKind, Method) ->
     end.
 
 %% TODO: maybe merge that with mnevis_lock
-lock_already_aquired({table, _} = LockItem, LockKind, Locks) ->
-    lock_already_aquired_1(LockItem, LockKind, Locks);
-lock_already_aquired({Tab, Key}, LockKind, Locks) ->
-    lock_already_aquired_1({table, Tab}, LockKind, Locks)
+lock_already_acquired({table, _} = LockItem, LockKind, Locks) ->
+    lock_already_acquired_1(LockItem, LockKind, Locks);
+lock_already_acquired({Tab, Key}, LockKind, Locks) ->
+    lock_already_acquired_1({table, Tab}, LockKind, Locks)
     orelse
-    lock_already_aquired_1({Tab, Key}, LockKind, Locks);
-lock_already_aquired({global, _, _} = LockItem, LockKind, Locks) ->
-    lock_already_aquired_1(LockItem, LockKind, Locks).
+    lock_already_acquired_1({Tab, Key}, LockKind, Locks);
+lock_already_acquired({global, _, _} = LockItem, LockKind, Locks) ->
+    lock_already_acquired_1(LockItem, LockKind, Locks).
 
-lock_already_aquired_1(LockItem, LockKind, Locks) ->
+lock_already_acquired_1(LockItem, LockKind, Locks) ->
     case {LockKind, maps:get(LockItem, Locks, none)} of
         {read,  read}  -> true;
         {read,  write} -> true;
@@ -793,9 +793,9 @@ lock_already_aquired_1(LockItem, LockKind, Locks) ->
         {_, none}      -> false
     end.
 
-do_aquire_lock_with_new_transaction(_Context, _LockItem, _LockKind, _Method, 0) ->
-    mnesia:abort({unable_to_aquire_lock, no_promoted_lock_processes});
-do_aquire_lock_with_new_transaction(Context, LockItem, LockKind, Method, Attempts) ->
+do_acquire_lock_with_new_transaction(_Context, _LockItem, _LockKind, _Method, 0) ->
+    mnesia:abort({unable_to_acquire_lock, no_promoted_lock_processes});
+do_acquire_lock_with_new_transaction(Context, LockItem, LockKind, Method, Attempts) ->
     ok = mnevis_context:assert_no_transaction(Context),
     %% TODO: monitor the lock process to make sure there is no disconnect.
     %% If there is a disconnect - the locker process will clean up the locks,
@@ -820,7 +820,7 @@ do_aquire_lock_with_new_transaction(Context, LockItem, LockKind, Method, Attempt
             {error, locked_nowait, NewContext};
         {error, is_not_leader} ->
             %% TODO: notify when leader or timeout
-            do_aquire_lock_with_new_transaction(Context, LockItem, LockKind, Method, Attempts - 1);
+            do_acquire_lock_with_new_transaction(Context, LockItem, LockKind, Method, Attempts - 1);
         {error, Error} ->
             mnesia:abort(Error)
     end.

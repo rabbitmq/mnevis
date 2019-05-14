@@ -19,7 +19,7 @@
          transaction_id/1,
          locker/1,
          locks/1,
-         set_lock_aquired/3,
+         set_lock_acquired/3,
 
          has_transaction/1,
          assert_transaction/1,
@@ -152,8 +152,8 @@ locker(#context{transaction = {_, Locker}}) -> Locker.
 -spec locks(context()) -> locks().
 locks(#context{locks = Locks}) -> Locks.
 
--spec set_lock_aquired(term(), lock_kind(), context()) -> context().
-set_lock_aquired(LockItem, LockKind, #context{locks = Locks} = Context) ->
+-spec set_lock_acquired(term(), lock_kind(), context()) -> context().
+set_lock_acquired(LockItem, LockKind, #context{locks = Locks} = Context) ->
     Locks1 = case {LockKind, maps:get(LockItem, Locks, none)} of
         {_, none}     -> maps:put(LockItem, LockKind, Locks);
         {write, read} -> maps:put(LockItem, LockKind, Locks);
