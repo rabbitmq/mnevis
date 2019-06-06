@@ -1,5 +1,6 @@
 -module(isolation_SUITE).
 
+-compile(nowarn_export_all).
 -compile(export_all).
 
 -include_lib("common_test/include/ct.hrl").
@@ -114,8 +115,7 @@ unlock_on_transaction_exit(_Config) ->
             end
         end)
     end),
-
-    Locked = spawn(fun() ->
+    spawn(fun() ->
         mnevis:transaction(fun() ->
             mnesia:lock({sample, bar}, write),
             Pid ! unlocked

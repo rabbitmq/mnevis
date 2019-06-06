@@ -1,12 +1,10 @@
-
-
 -module(transaction_SUITE).
+
+-compile(nowarn_export_all).
+-compile(export_all).
 
 -include_lib("common_test/include/ct.hrl").
 -include_lib("eunit/include/eunit.hrl").
-
--compile(export_all).
-
 
 all() ->
     [{group, single_node}, {group, two_nodes}].
@@ -73,33 +71,16 @@ init_per_group(single_node, Config) ->
     mnevis:start(PrivDir),
     % mnevis_node:trigger_election(),
     Config;
-init_per_group(two_nodes, Config) ->
-    PrivDir = ?config(priv_dir, Config),
-    filelib:ensure_dir(PrivDir),
-    Nodes = mnevis_test_utils:create_initial_nodes(),
-    mnevis_test_utils:start_cluster(Nodes, PrivDir),
+init_per_group(two_nodes, Config0) ->
+    {ok, Nodes} = mnevis_test_utils:create_initial_nodes(),
+    {ok, Config1} = mnevis_test_utils:start_cluster(Nodes, Config0),
     %% Shift the leader out of the current node.
     %% This allows to run tests on follower without RPCs.
     mnevis_test_utils:ensure_not_leader(),
-    [ {nodes, Nodes} | Config].
+    [{nodes, Nodes} | Config1].
 
-
-end_per_group(single_node, Config) ->
-    ra:stop_server(mnevis_node:node_id()),
-    application:stop(mnevis),
-    application:stop(mnesia),
-    application:stop(ra),
-    % mnesia:delete_table(committed_transaction),
-    Config;
-end_per_group(two_nodes, Config) ->
-    Nodes = ?config(nodes, Config),
-    [slave:stop(Node) || Node <- Nodes, Node =/= node()],
-    ra:stop_server(mnevis_node:node_id()),
-    application:stop(mnevis),
-    application:stop(mnesia),
-    application:stop(ra),
-    Config.
-
+end_per_group(_, Config) ->
+    mnevis_test_utils:stop_all(Config).
 
 init_per_testcase(deletes_aborted, Config) ->
     create_sample_tables(),

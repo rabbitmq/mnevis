@@ -1,4 +1,6 @@
 -module(prop_SUITE).
+
+-compile(nowarn_export_all).
 -compile(export_all).
 
 -include_lib("proper/include/proper.hrl").
@@ -7,25 +9,16 @@
 %% TODO: check transaction state cleanup and machine state cleanup
 %% TOFO: test failure scenarios
 all() ->
-    [
-    mnesia_transaction_yield_same_result_as_mnevis
-    ].
+    [mnesia_transaction_yield_same_result_as_mnevis].
 
 init_per_suite(Config) ->
     PrivDir = ?config(priv_dir, Config),
     ok = filelib:ensure_dir(PrivDir),
-    ct:pal("~nPriv dir ~p~n", [PrivDir]),
     mnevis:start(PrivDir),
-    % mnevis_node:trigger_election(),
     Config.
 
 end_per_suite(Config) ->
-    ra:stop_server(mnevis_node:node_id()),
-    application:stop(mnevis),
-    application:stop(mnesia),
-    application:stop(ra),
-    % mnesia:delete_table(committed_transaction),
-    Config.
+    mnevis_test_util:stop_all(Config).
 
 mnesia_transaction_yield_same_result_as_mnevis(_Config) ->
     ct:timetrap(18000000),
@@ -100,10 +93,8 @@ transaction_equal(Actions0) ->
 
     RamnesiaDB = lists:usort(ets:tab2list(mnesia_table)),
 
-    ct:pal("Res ~p ~n ~p ~n", [MnesiaRes, RamnesiaRes]),
-
-    ct:pal("DB ~p ~n ~p ~n", [MnesiaDB, RamnesiaDB]),
-
-    ct:pal("Ops ~p ~n", [Actions]),
+    % ct:pal("Res ~p ~n ~p ~n", [MnesiaRes, RamnesiaRes]),
+    % ct:pal("DB ~p ~n ~p ~n", [MnesiaDB, RamnesiaDB]),
+    % ct:pal("Ops ~p ~n", [Actions]),
 
     MnesiaRes == RamnesiaRes andalso RamnesiaDB == MnesiaDB.

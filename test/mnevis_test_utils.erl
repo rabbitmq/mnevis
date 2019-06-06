@@ -1,43 +1,72 @@
 -module(mnevis_test_utils).
 
+-compile(nowarn_export_all).
 -compile(export_all).
 
+-include_lib("common_test/include/ct.hrl").
+
+-define(NODE1, mnevis_slave_1).
+-define(NODE2, mnevis_slave_2).
+
 extra_nodes() ->
-    [mnevis_snapshot_SUITE1, mnevis_snapshot_SUITE2].
+    [?NODE1, ?NODE2].
 
 create_initial_nodes() ->
-    [node() | [start_erlang_node(NodeP) || NodeP <- extra_nodes()]].
+    Nodes = [node() | [start_erlang_node(NodeP) || NodeP <- extra_nodes()]],
+    {ok, Nodes}.
 
 start_erlang_node(NodePrefix) ->
     {ok, Host} = inet:gethostname(),
-    LocalPath = code:get_path(),
     {ok, Node} = slave:start(Host, NodePrefix),
-    LocalPath = code:get_path(),
-    add_paths(Node, LocalPath),
+    add_paths(Node),
     Node.
 
-add_paths(Node, LocalPath) ->
-    RemotePath = rpc:call(Node, code, get_path, []),
-    AddPath = LocalPath -- RemotePath,
-    ok = rpc:call(Node, code, add_pathsa, [AddPath]).
+add_paths(Node) ->
+    LocalPath = code:get_path(),
+    ok = rpc:call(Node, code, add_pathsa, [LocalPath]).
 
-start_cluster(Nodes, PrivDir) ->
-    [start_node(Node, Nodes, PrivDir) || Node <- Nodes],
+start_cluster(Nodes, Config0) ->
+    PrivDir = ?config(priv_dir, Config0),
+    filelib:ensure_dir(PrivDir),
+    [start_node(Node, PrivDir) || Node <- Nodes],
     {Name, _} = mnevis_node:node_id(),
     Servers = [{Name, Node} || Node <- Nodes],
-    {ok, _, _} = ra:start_cluster(Name, {module, mnevis_machine, #{}}, Servers).
+    {ok, _, _} = ra:start_cluster(Name, {module, mnevis_machine, #{}}, Servers),
+    Config1 = [{ra, enabled} | Config0],
+    {ok, Config1}.
 
 start_server(Node, Nodes) ->
     {Name, _} = mnevis_node:node_id(),
-    Servers = [{Name, Node} || Node <- Nodes],
+    Servers = [{Name, N} || N <- Nodes],
     ra:start_server(Name, {Name, Node}, {module, mnevis_machine, #{}}, Servers).
 
-start_node(Node, Nodes, PrivDir) ->
+start_node(Node, Config) ->
+    PrivDir = ?config(priv_dir, Config),
     Node = rpc:call(Node, erlang, node, []),
     rpc:call(Node, application, load, [ra]),
     ok = rpc:call(Node, application, set_env, [ra, data_dir, filename:join(PrivDir, Node)]),
     {ok, _} = rpc:call(Node, application, ensure_all_started, [mnevis]),
     ok.
+
+stop_all(Config) ->
+    case ?config(nodes, Config) of
+        undefined ->
+            ok;
+        Nodes ->
+            [slave:stop(Node) || Node <- Nodes, Node =/= node()]
+    end,
+    application:stop(mnevis),
+    application:stop(mnesia),
+    case ?config(ra, Config) of
+        undefined ->
+            ok;
+        enabled ->
+            ra:stop_server(mnevis_node:node_id())
+    end,
+    application:stop(ra),
+    % NB: slaves are temporary, no need to delete schema
+    mnesia:delete_schema([node()]),
+    Config.
 
 ensure_not_leader() ->
     {ok, _, Leader} = ra:members(mnevis_node:node_id()),
