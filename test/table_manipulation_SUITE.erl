@@ -7,10 +7,24 @@
 -define(NODE1, mnevis_snapshot_SUITE1).
 -define(NODE2, mnevis_snapshot_SUITE2).
 
-all() -> [{group, three_nodes}].
+all() ->
+    [{group, three_nodes}].
+    %% TODO
+    %% [
+    %%  {group, three_nodes},
+    %%  {group, three_disc_nodes}
+    %% ].
 
 groups() ->
-    [{three_nodes, [], [
+    [{three_nodes, [], all_tests()}].
+    %% TODO
+    %% [
+    %%  {three_nodes, [], all_tests()},
+    %%  {three_disc_nodes, [], all_tests()}
+    %% ].
+
+all_tests() ->
+    [
         create_table_leader,
         create_table_follower,
 
@@ -28,7 +42,15 @@ groups() ->
 
         transform_table_leader,
         transform_table_follower
-      ]}].
+    ].
+
+init_per_group(three_disc_nodes=_Group, Config) ->
+    [{disc_copies, true}|Config];
+init_per_group(_Group, Config) ->
+    [{disc_copies, false}|Config].
+
+end_per_group(_, Config) ->
+    Config.
 
 init_per_testcase(_, Config) ->
     PrivDir = ?config(priv_dir, Config),
@@ -175,16 +197,16 @@ create_initial_nodes() ->
 
 start_erlang_node(NodePrefix) ->
     {ok, Host} = inet:gethostname(),
-    LocalPath = code:get_path(),
     {ok, Node} = slave:start(Host, NodePrefix),
-    LocalPath = code:get_path(),
-    add_paths(Node, LocalPath),
+    add_local_path(Node),
     Node.
 
-add_paths(Node, LocalPath) ->
-    RemotePath = rpc:call(Node, code, get_path, []),
-    AddPath = LocalPath -- RemotePath,
-    ok = rpc:call(Node, code, add_pathsa, [AddPath]).
+add_local_path(Node) ->
+    LocalPath = code:get_path(),
+    % TODO LRB
+    % RemotePath = rpc:call(Node, code, get_path, []),
+    % AddPath = LocalPath -- RemotePath,
+    ok = rpc:call(Node, code, add_pathsa, [LocalPath]).
 
 start_cluster(Nodes, PrivDir) ->
     [start_node(Node, Nodes, PrivDir) || Node <- Nodes],
