@@ -183,9 +183,16 @@ transaction0(Fun, Args, Retries, _Err) ->
                 try
                     apply(Fun, Args)
                 catch
-                    throw:R:_ST       -> {aborted, {throw, R}};
-                    exit:{aborted, E} -> {aborted, E};
-                    _:R:ST            -> {aborted, {R, ST}}
+                    throw:R:_ST ->
+                        {aborted, {throw, R}};
+                    exit:{aborted, E} ->
+                        {aborted, E};
+                    _:{_, [_|_]}=R ->
+                        % R already has a non-zero length list as part of it,
+                        % assuming that it is a stack trace
+                        {aborted, R};
+                    _:R:ST ->
+                        {aborted, {R, ST}}
                 end
             end,
             [], ?MODULE),
@@ -218,8 +225,7 @@ transaction0(Fun, Args, Retries, _Err) ->
         exit:{aborted, Reason} ->
             ok = maybe_cleanup_transaction(),
             {aborted, Reason};
-        E:R ->
-            ST = erlang:get_stacktrace(),
+        E:R:ST ->
             error_logger:warning_msg("Mnevis transaction error ~p:~p~n Stacktrace ~p~n", [E, R, ST]),
             ok = maybe_cleanup_transaction(),
             {aborted, {R, ST}}

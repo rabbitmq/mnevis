@@ -7,19 +7,9 @@
 
 all() ->
     [{group, three_nodes}].
-    %% TODO
-    %% [
-    %%  {group, three_nodes},
-    %%  {group, three_disc_nodes}
-    %% ].
 
 groups() ->
     [{three_nodes, [], all_tests()}].
-    %% TODO
-    %% [
-    %%  {three_nodes, [], all_tests()},
-    %%  {three_disc_nodes, [], all_tests()}
-    %% ].
 
 all_tests() ->
     [
