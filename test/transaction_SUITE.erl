@@ -82,6 +82,12 @@ init_per_group(two_nodes, Config0) ->
 end_per_group(_, Config) ->
     mnevis_test_utils:stop_all(Config).
 
+init_per_testcase(writes_aborted, Config) ->
+    create_sample_tables(),
+    add_sample({sample, foo, bar}),
+    add_sample({sample_bag, foo, bar}),
+    add_sample({sample_ordered_set, foo, bar}),
+    Config;
 init_per_testcase(deletes_aborted, Config) ->
     create_sample_tables(),
     add_sample({sample, foo, bar}),
@@ -203,16 +209,16 @@ writes_aborted(_Config, Tab) ->
         mnesia:read(Tab, foo)
     end),
     {aborted, {read, ReadAborted}} = mnevis:sync_transaction(fun() ->
-        mnesia:write({Tab, foo, bar}),
+        mnesia:write({Tab, foo, aborted_value}),
         Read = mnesia:read(Tab, foo),
         mnesia:abort({read, Read})
     end),
     %% Data was readable in transaction
-    [{Tab, foo, bar}] = ReadAborted,
+    [{Tab, foo, aborted_value}] = ReadAborted,
     %% Data is not in mnesia
-    [] = mnesia:dirty_read(Tab, foo),
+    [{Tab, foo, bar}] = mnesia:dirty_read(Tab, foo),
     %% Data is not in transaction
-    {atomic, []} = mnesia:transaction(fun() -> mnesia:read(Tab, foo) end),
+    {atomic, [{Tab, foo, bar}]} = mnesia:transaction(fun() -> mnesia:read(Tab, foo) end),
     {aborted, {no_exists, non_existent}} = mnevis:transaction(fun() ->
         mnesia:write({non_existent, foo, bar})
     end).
