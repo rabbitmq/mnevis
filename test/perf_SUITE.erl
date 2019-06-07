@@ -66,13 +66,13 @@ init_per_group(single_node, Config) ->
 init_per_group(three_nodes, Config) ->
     Config;
 init_per_group(three_nodes_mnevis, Config0) ->
-    {ok, Nodes} = mnevis_test_utils:create_initial_nodes(),
+    {ok, Nodes} = mnevis_test_utils:create_initial_nodes(?MODULE),
     % NB: necessary since tests use disc_copies
     ok = mnesia:create_schema(Nodes),
     {ok, Config1} = mnevis_test_utils:start_cluster(Nodes, Config0),
     [{nodes, Nodes} | Config1];
 init_per_group(three_nodes_mnesia, Config) ->
-    {ok, Nodes} = mnevis_test_utils:create_initial_nodes(),
+    {ok, Nodes} = mnevis_test_utils:create_initial_nodes(?MODULE),
     cluster_mnesia(Nodes),
     [{nodes, Nodes}, {mnesia_nodes, Nodes} | Config].
 

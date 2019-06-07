@@ -41,7 +41,7 @@ end_per_group(_, Config) ->
     Config.
 
 init_per_testcase(_, Config0) ->
-    {ok, Nodes} = mnevis_test_utils:create_initial_nodes(),
+    {ok, Nodes} = mnevis_test_utils:create_initial_nodes(?MODULE),
     {ok, Config1} = mnevis_test_utils:start_cluster(Nodes, Config0),
     [{nodes, Nodes} | Config1].
 

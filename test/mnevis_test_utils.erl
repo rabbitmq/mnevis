@@ -5,14 +5,11 @@
 
 -include_lib("common_test/include/ct.hrl").
 
--define(NODE1, mnevis_slave_1).
--define(NODE2, mnevis_slave_2).
-
-extra_nodes() ->
-    [?NODE1, ?NODE2].
-
-create_initial_nodes() ->
-    Nodes = [node() | [start_erlang_node(NodeP) || NodeP <- extra_nodes()]],
+create_initial_nodes(NodePrefix) ->
+    NodePrefixStr = atom_to_list(NodePrefix),
+    NP1 = NodePrefixStr ++ "_slave_01",
+    NP2 = NodePrefixStr ++ "_slave_02",
+    Nodes = [node() | [start_erlang_node(NodeP) || NodeP <- [NP1, NP2]]],
     {ok, Nodes}.
 
 start_erlang_node(NodePrefix) ->

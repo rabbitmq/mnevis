@@ -12,7 +12,7 @@ groups() ->
      {tests, [], [create_snapshot]}].
 
 init_per_suite(Config0) ->
-    {ok, Nodes} = mnevis_test_utils:create_initial_nodes(),
+    {ok, Nodes} = mnevis_test_utils:create_initial_nodes(?MODULE),
     {ok, Config1} = mnevis_test_utils:start_cluster(Nodes, Config0),
     [{nodes, Nodes} | Config1].
 
@@ -39,9 +39,8 @@ delete_sample_table() ->
 
 create_snapshot(Config) ->
     Nodes = ?config(nodes, Config),
-    Node2P = lists:last(mnevis_test_utils:extra_nodes()),
     Node2 = lists:last(Nodes),
-    slave:stop(Node2),
+    Node2 = slave:stop(Node2),
 
     {_Time, _} = timer:tc(fun() ->
         [mnevis:transaction(fun() ->
@@ -51,7 +50,8 @@ create_snapshot(Config) ->
 
     3000 = mnesia:table_info(sample, size),
 
-    Node2 = mnevis_test_utils:start_erlang_node(Node2P),
+    Node2 = slave:start(Node2),
+    ok = mnevis_test_utils:add_paths(Node2),
     mnevis_test_utils:start_node(Node2, Config),
     mnevis_test_utils:start_server(Node2, Nodes),
 

@@ -5,3 +5,4 @@ mnevis.d
 test/*.beam
 _rel/
 _build/
+logs/
