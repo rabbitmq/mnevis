@@ -415,30 +415,6 @@ consistent_error(Reason) when is_tuple(Reason), size(Reason) > 0 ->
 %% Any other error reason is considered inconsistent.
 consistent_error(_Reason) -> false.
 
-
-
-% TODO LRB
-% -spec catch_abort(fun(() -> reply(R, E))) -> reply(R, E | {aborted, term()}).
-% catch_abort(Fun) ->
-%     try
-%         Fun()
-%     catch exit:{aborted, Reason} ->
-%         {error, {aborted, Reason}}
-%     end.
-%
-% -spec with_transaction(transaction(), state(),
-%                        fun(() -> reply(T, E))) -> apply_result(T, E).
-% with_transaction(Transaction, State, Fun) ->
-%     with_valid_locker(Transaction, State,
-%         fun() ->
-%             case transaction_recorded_as_committed(Transaction) of
-%                 %% This is a log replay and the transaction is already committed.
-%                 %% Result will not be received by any client.
-%                 true  -> {State, {error, {transaction_committed, Transaction}}, []};
-%                 false -> {State, Fun(), []}
-%             end
-%         end).
-
 %% ==============================
 
 -ifdef(TEST).
