@@ -132,40 +132,62 @@ apply(Meta, {commit, Transaction, {Writes, Deletes, DeletesObject}}, State)  ->
                     end
             end
         end);
-%% TODO: return type for create_table
+
+%% Table manipulation
 apply(Meta, {create_table, Tab, Opts}, State) ->
-    Result = case mnesia:create_table(Tab, Opts) of
-        {atomic, ok} ->
-            _ = mnevis_read:init_version(Tab, 0),
-            {atomic, ok};
-        Res ->
-            Res
-    end,
+    Result = with_ignore_consistent_error(
+        fun() ->
+            case mnesia:create_table(Tab, Opts) of
+                {atomic, ok} ->
+                    _ = mnevis_read:init_version(Tab, 0),
+                    {atomic, ok};
+                {aborted, _} = Res ->
+                    Res
+            end
+        end),
     {State, {ok, Result}, snapshot_effects(Meta, State)};
 apply(Meta, {delete_table, Tab}, State) ->
-    Result = mnesia:delete_table(Tab),
+    Result = with_ignore_consistent_error(
+        fun() ->
+            mnesia:delete_table(Tab)
+        end),
     {State, {ok, Result}, snapshot_effects(Meta, State)};
 apply(Meta, {add_table_index, Tab, AttrName}, State) ->
-    Result = mnesia:add_table_index(Tab, AttrName),
+    Result = with_ignore_consistent_error(
+        fun() ->
+            mnesia:add_table_index(Tab, AttrName)
+        end),
     {State, {ok, Result}, snapshot_effects(Meta, State)};
 apply(Meta, {del_table_index, Tab, AttrName}, State) ->
-    Result = mnesia:del_table_index(Tab, AttrName),
+    Result = with_ignore_consistent_error(
+        fun() ->
+            mnesia:del_table_index(Tab, AttrName)
+        end),
     {State, {ok, Result}, snapshot_effects(Meta, State)};
 
 apply(Meta, {clear_table, Tab}, State) ->
-    Result = mnesia:clear_table(Tab),
+    Result = with_ignore_consistent_error(
+        fun() ->
+            mnesia:clear_table(Tab)
+        end),
     {State, {ok, Result}, snapshot_effects(Meta, State)};
 
 apply(Meta, {transform_table, Tab, {M, F, A}, NewAttributeList, NewRecordName}, State) ->
     Fun = fun(Record) -> erlang:apply(M, F, [Record | A]) end,
-    Result = mnesia:transform_table(Tab, Fun, NewAttributeList, NewRecordName),
+    Result = with_ignore_consistent_error(
+        fun() ->
+            mnesia:transform_table(Tab, Fun, NewAttributeList, NewRecordName)
+        end),
     {State, {ok, Result}, snapshot_effects(Meta, State)};
 apply(Meta, {transform_table, Tab, {M, F, A}, NewAttributeList}, State) ->
     Fun = fun() -> erlang:apply(M, F, A) end,
-    Result = mnesia:transform_table(Tab, Fun, NewAttributeList),
+    Result = with_ignore_consistent_error(
+        fun() ->
+            mnesia:transform_table(Tab, Fun, NewAttributeList)
+        end),
     {State, {ok, Result}, snapshot_effects(Meta, State)};
 
-
+%% Lock process manipulation
 apply(_Meta, {down, Pid, _Reason}, State = #state{locker = {_Term, LockerPid}}) ->
     case Pid of
         LockerPid ->
@@ -327,6 +349,68 @@ with_valid_locker({_Tid, Locker}, State, Fun) ->
         ok -> Fun();
         {error, Reason} -> {State, {error, {aborted, Reason}}, []}
     end.
+
+-spec with_ignore_consistent_error(fun(() -> {atomic, OK} | {aborted, Err})) ->
+    {atomic, OK} | {aborted, Err}.
+with_ignore_consistent_error(Fun) ->
+    case Fun() of
+        {atomic, _} = OK -> OK;
+        {aborted, Error} ->
+            case consistent_error(Error) of
+                true  ->
+                    {aborted, Error};
+                false ->
+                    error({inconsistent_mnevis_error, Error})
+            end
+        %% Don't expect anything else
+    end.
+
+-spec consistent_error(term()) -> boolean().
+% consistent_error(_) -> true;
+%% Mnesia specific errors, which should be consistent
+consistent_error(nested_transaction) -> true;
+consistent_error(badarg)             -> true;
+consistent_error(no_transaction)     -> true;
+consistent_error(combine_error)      -> true;
+consistent_error(bad_index)          -> true;
+consistent_error(already_exists)     -> true;
+consistent_error(index_exists)       -> true;
+consistent_error(no_exists)          -> true;
+consistent_error(bad_type)           -> true;
+consistent_error(illegal)            -> true;
+consistent_error(active)             -> true;
+consistent_error(not_active)         -> true;
+%% Mnesia specific errors which may be inconsistent across nodes:
+consistent_error(system_limit)          -> false;
+consistent_error(mnesia_down)           -> false;
+consistent_error(truncated_binary_file) -> false;
+
+%% All mnevis nodes should only have local mnesia node
+consistent_error(not_a_db_node)         -> false;
+
+%% Mnesia should run on a mnevis node
+consistent_error(node_not_running)      -> false;
+
+%% Copy from mnesia:error_description/1 code. Expands error tuples.
+consistent_error({'EXIT', Reason}) ->
+    consistent_error(Reason);
+consistent_error({error, Reason}) ->
+    consistent_error(Reason);
+consistent_error({aborted, Reason}) ->
+    consistent_error(Reason);
+consistent_error(Reason) when is_tuple(Reason), size(Reason) > 0 ->
+    case element(1, Reason) of
+        %% Mnesia transform functions return pre-formatted errors
+        %% TODO: a better way to check that
+        String when is_list(String) ->
+            true;
+        Other ->
+            consistent_error(Other)
+    end;
+%% Any other error reason is considered inconsistent.
+consistent_error(Reason) -> false.
+
+
 
 % TODO LRB
 % -spec catch_abort(fun(() -> reply(R, E))) -> reply(R, E | {aborted, term()}).
