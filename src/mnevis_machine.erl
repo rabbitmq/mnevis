@@ -254,21 +254,26 @@ create_committed_transaction_table() ->
     {ok, skipped} |
     {error, {aborted, term()}}.
 commit(Transaction, Writes, Deletes, DeletesObject) ->
-    Res = mnesia:transaction(fun() ->
-        case ets:lookup(committed_transaction, Transaction) of
-            [] ->
-                _ = apply_deletes(Deletes),
-                _ = apply_writes(Writes),
-                _ = apply_deletes_object(DeletesObject),
-                _ = mnesia:lock({table, versions}, write),
-                UpdatedVersions = update_table_versions(Writes, Deletes, DeletesObject),
-                ok = save_committed_transaction(Transaction),
-                {committed, UpdatedVersions};
-            %% Transaction is already committed.
-            [{committed_transaction, Transaction, committed}] ->
-                skipped
-        end
-    end),
+    Res = with_ignore_consistent_error(
+        fun() ->
+            mnesia:transaction(fun() ->
+                case ets:lookup(committed_transaction, Transaction) of
+                    [] ->
+                        _ = apply_deletes(Deletes),
+                        _ = apply_writes(Writes),
+                        _ = apply_deletes_object(DeletesObject),
+                        _ = mnesia:lock({table, versions}, write),
+                        UpdatedVersions = update_table_versions(Writes,
+                                                                Deletes,
+                                                                DeletesObject),
+                        ok = save_committed_transaction(Transaction),
+                        {committed, UpdatedVersions};
+                    %% Transaction is already committed.
+                    [{committed_transaction, Transaction, committed}] ->
+                        skipped
+                end
+            end)
+        end),
     case Res of
         {atomic, Result} ->
             {ok, Result};
@@ -408,7 +413,7 @@ consistent_error(Reason) when is_tuple(Reason), size(Reason) > 0 ->
             consistent_error(Other)
     end;
 %% Any other error reason is considered inconsistent.
-consistent_error(Reason) -> false.
+consistent_error(_Reason) -> false.
 
 
 
