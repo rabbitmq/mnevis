@@ -67,7 +67,6 @@ end_per_suite(Config) ->
 init_per_group(single_node, Config) ->
     PrivDir = ?config(priv_dir, Config),
     ok = filelib:ensure_dir(PrivDir),
-    ct:pal("~nPriv dir ~p~n", [PrivDir]),
     mnevis:start(PrivDir),
     % mnevis_node:trigger_election(),
     Config;

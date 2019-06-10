@@ -20,12 +20,10 @@ start_erlang_node(NodePrefix) ->
 
 add_paths(Node) ->
     LocalPath = code:get_path(),
-    ok = rpc:call(Node, code, add_pathsa, [LocalPath]).
+    ok = ct_rpc:call(Node, code, add_pathsa, [LocalPath]).
 
 start_cluster(Nodes, Config0) ->
-    PrivDir = ?config(priv_dir, Config0),
-    filelib:ensure_dir(PrivDir),
-    [start_node(Node, PrivDir) || Node <- Nodes],
+    [start_node(Node, Config0) || Node <- Nodes],
     {Name, _} = mnevis_node:node_id(),
     Servers = [{Name, Node} || Node <- Nodes],
     {ok, _, _} = ra:start_cluster(Name, {module, mnevis_machine, #{}}, Servers),
@@ -39,18 +37,30 @@ start_server(Node, Nodes) ->
 
 start_node(Node, Config) ->
     PrivDir = ?config(priv_dir, Config),
-    Node = rpc:call(Node, erlang, node, []),
-    rpc:call(Node, application, load, [ra]),
-    ok = rpc:call(Node, application, set_env, [ra, data_dir, filename:join(PrivDir, Node)]),
-    {ok, _} = rpc:call(Node, application, ensure_all_started, [mnevis]),
+    ok = filelib:ensure_dir(PrivDir),
+    Node = ct_rpc:call(Node, erlang, node, []),
+    ok = ct_rpc:call(Node, ?MODULE, node_setup, [PrivDir]),
+    ok = ct_rpc:call(Node, application, set_env, [ra, data_dir, PrivDir]),
+    ok = ct_rpc:call(Node, application, set_env, [mnesia, dir, PrivDir]),
+    {ok, _} = ct_rpc:call(Node, application, ensure_all_started, [mnevis]),
     ok.
+
+restart_slave(Node, Config) when is_atom(Node) ->
+    Name = upto($@, atom_to_list(Node)),
+    {ok, Host} = inet:gethostname(),
+    {ok, Node} = slave:start(Host, Name),
+    ok = add_paths(Node),
+    ok = start_node(Node, Config),
+    Nodes = ?config(nodes, Config),
+    ok = mnevis_test_utils:start_server(Node, Nodes),
+    {ok, Node}.
 
 stop_all(Config) ->
     case ?config(nodes, Config) of
         undefined ->
             ok;
         Nodes ->
-            [slave:stop(Node) || Node <- Nodes, Node =/= node()]
+            ok = stop_nodes(Nodes, Config)
     end,
     application:stop(mnevis),
     application:stop(mnesia),
@@ -58,12 +68,34 @@ stop_all(Config) ->
         undefined ->
             ok;
         enabled ->
-            ra:stop_server(mnevis_node:node_id())
+            NodeId = mnevis_node:node_id(),
+            ra:stop_server(NodeId),
+            ra:force_delete_server(NodeId)
     end,
     application:stop(ra),
     % NB: slaves are temporary, no need to delete schema
-    mnesia:delete_schema([node()]),
+    Node = node(),
+    mnesia:delete_schema([Node]),
+    ok = remove_node_data(Node, Config),
     Config.
+
+stop_nodes([], _Config) ->
+    ok;
+stop_nodes([Node|T], Config) when node() =:= Node ->
+    stop_nodes(T, Config);
+stop_nodes([Node|T], Config) ->
+    ok = stop_slave_node(Node, Config),
+    stop_nodes(T, Config).
+
+stop_slave_node(Node, Config) ->
+    ok = slave:stop(Node),
+    remove_node_data(Node, Config).
+
+remove_node_data(Node, Config) ->
+    NodeStr = atom_to_list(Node),
+    PrivDir = ?config(priv_dir, Config),
+    NodeDir = filename:join(PrivDir, NodeStr),
+    ra_lib:recursive_delete(NodeDir).
 
 ensure_not_leader() ->
     {ok, _, Leader} = ra:members(mnevis_node:node_id()),
@@ -76,3 +108,21 @@ ensure_not_leader() ->
         _ ->
             ok
     end.
+
+node_setup(DataDir) ->
+    Node = atom_to_list(node()),
+    LogFile = filename:join([DataDir, Node, "mnevis.log"]),
+    SaslFile = filename:join([DataDir, Node, "mnevis_sasl.log"]),
+    logger:set_primary_config(level, debug),
+    Config = #{config => #{type => {file, LogFile}}, level => debug},
+    logger:add_handler(ra_handler, logger_std_h, Config),
+    application:set_env(sasl, sasl_error_logger, {file, SaslFile}),
+    application:start(sasl),
+    filelib:ensure_dir(LogFile),
+    _ = error_logger:logfile({open, LogFile}),
+    _ = error_logger:tty(false),
+    ok.
+
+upto(_, []) -> [];
+upto(Char, [Char|_]) -> [];
+upto(Char, [H|T]) -> [H|upto(Char, T)].

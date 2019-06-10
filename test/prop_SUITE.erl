@@ -18,7 +18,7 @@ init_per_suite(Config) ->
     Config.
 
 end_per_suite(Config) ->
-    mnevis_test_util:stop_all(Config).
+    mnevis_test_utils:stop_all(Config).
 
 mnesia_transaction_yield_same_result_as_mnevis(_Config) ->
     ct:timetrap(18000000),

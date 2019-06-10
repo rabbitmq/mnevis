@@ -48,10 +48,15 @@ groups() ->
      ].
 
 init_per_suite(Config) ->
-    PrivDir = ?config(priv_dir, Config),
-    ok = filelib:ensure_dir(PrivDir),
-    application:load(mnesia),
-    Config.
+    case os:getenv("CI") of
+        _ ->
+            {skip, "perf_SUITE is not intended for continuous integration"};
+        false ->
+            PrivDir = ?config(priv_dir, Config),
+            ok = filelib:ensure_dir(PrivDir),
+            application:load(mnesia),
+            Config
+    end.
 
 end_per_suite(Config) ->
     Config.
@@ -67,8 +72,6 @@ init_per_group(three_nodes, Config) ->
     Config;
 init_per_group(three_nodes_mnevis, Config0) ->
     {ok, Nodes} = mnevis_test_utils:create_initial_nodes(?MODULE),
-    % NB: necessary since tests use disc_copies
-    ok = mnesia:create_schema(Nodes),
     {ok, Config1} = mnevis_test_utils:start_cluster(Nodes, Config0),
     [{nodes, Nodes} | Config1];
 init_per_group(three_nodes_mnesia, Config) ->
@@ -90,7 +93,6 @@ init_per_testcase(_Test, Config) ->
         undefined ->
             create_sample_table();
         Nodes ->
-            ct:pal("Nodes ~p~n", [Nodes]),
             create_sample_table_mnesia(Nodes)
     end,
     Config.
@@ -105,17 +107,22 @@ end_per_testcase(_Test, Config) ->
     Config.
 
 create_sample_table_mnesia(Nodes) ->
-    mnesia:create_table(sample, [{disc_copies, Nodes}]),
-    mnesia:create_table(sample1, [{disc_copies, Nodes}]),
-    mnesia:create_table(sample2, [{disc_copies, Nodes}]),
-    mnesia:create_table(sample3, [{disc_copies, Nodes}]),
+    {atomic, ok} = mnesia:create_table(sample, [{disc_copies, Nodes}]),
+    {atomic, ok} = mnesia:create_table(sample1, [{disc_copies, Nodes}]),
+    {atomic, ok} = mnesia:create_table(sample2, [{disc_copies, Nodes}]),
+    {atomic, ok} = mnesia:create_table(sample3, [{disc_copies, Nodes}]),
     ok.
 
 create_sample_table() ->
-    {atomic, ok} = mnevis:create_table(sample, [{disc_copies, [node()]}]),
-    {atomic, ok} = mnevis:create_table(sample1, [{disc_copies, [node()]}]),
-    {atomic, ok} = mnevis:create_table(sample2, [{disc_copies, [node()]}]),
-    {atomic, ok} = mnevis:create_table(sample3, [{disc_copies, [node()]}]),
+    %% TODO mnevis won't use disc_copies tables so add code to ignore it
+    %% {atomic, ok} = mnevis:create_table(sample, [{disc_copies, [node()]}]),
+    %% {atomic, ok} = mnevis:create_table(sample1, [{disc_copies, [node()]}]),
+    %% {atomic, ok} = mnevis:create_table(sample2, [{disc_copies, [node()]}]),
+    %% {atomic, ok} = mnevis:create_table(sample3, [{disc_copies, [node()]}]),
+    {atomic, ok} = mnevis:create_table(sample, []),
+    {atomic, ok} = mnevis:create_table(sample1, []),
+    {atomic, ok} = mnevis:create_table(sample2, []),
+    {atomic, ok} = mnevis:create_table(sample3, []),
     ok.
 
 delete_sample_table() ->

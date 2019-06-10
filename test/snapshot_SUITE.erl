@@ -29,7 +29,6 @@ end_per_testcase(_Test, Config) ->
     Config.
 
 create_sample_table() ->
-    % delete_sample_table(),
     mnevis:create_table(sample, []),
     ok.
 
@@ -40,7 +39,7 @@ delete_sample_table() ->
 create_snapshot(Config) ->
     Nodes = ?config(nodes, Config),
     Node2 = lists:last(Nodes),
-    Node2 = slave:stop(Node2),
+    ok = slave:stop(Node2),
 
     {_Time, _} = timer:tc(fun() ->
         [mnevis:transaction(fun() ->
@@ -50,21 +49,14 @@ create_snapshot(Config) ->
 
     3000 = mnesia:table_info(sample, size),
 
-    Node2 = slave:start(Node2),
-    ok = mnevis_test_utils:add_paths(Node2),
-    mnevis_test_utils:start_node(Node2, Config),
-    mnevis_test_utils:start_server(Node2, Nodes),
+    {ok, Node2} = mnevis_test_utils:restart_slave(Node2, Config),
 
     ct:sleep(1000),
-
-    % Node1 = lists:nth(2, Nodes),
-    % slave:stop(Node1),
-    % ra:members(mnevis_node:node_id()),
 
     {ok, {{LocalIndex, _}, _}, _} = ra:local_query(mnevis_node:node_id(), fun(_) -> ok end, 100000),
     wait_for_index(Node2, LocalIndex),
 
-    3000 = rpc:call(Node2, mnesia, table_info, [sample, size]).
+    3000 = ct_rpc:call(Node2, mnesia, table_info, [sample, size]).
 
 wait_for_index(Node, Index) ->
     wait_for_index(Node, Index, 0).

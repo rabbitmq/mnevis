@@ -7,8 +7,6 @@
 
 all() -> [{group, tests}].
 
-% suite() -> [{timetrap, {seconds, 10}}].
-
 groups() ->
     [
      {tests, [], [
@@ -23,7 +21,6 @@ init_per_suite(Config) ->
     filelib:ensure_dir(PrivDir),
     mnevis:start(PrivDir),
     application:start(sasl),
-    % mnevis_node:trigger_election(),
     Config.
 
 end_per_suite(Config) ->
@@ -33,7 +30,6 @@ end_per_suite(Config) ->
     application:stop(ra),
     Config.
 
-
 init_per_testcase(_Test, Config) ->
     create_sample_table(),
     Config.
@@ -41,7 +37,6 @@ init_per_testcase(_Test, Config) ->
 end_per_testcase(_Test, Config) ->
     delete_sample_table(),
     Config.
-
 
 create_sample_table() ->
     delete_sample_table(),
@@ -132,7 +127,6 @@ unlock_on_transaction_exit(_Config) ->
     after 1000 -> error(should_be_unlocked)
     end.
 
-
 consistent_counter(_Config) ->
     add_sample(counter, 0),
     UpdateCounter = fun() ->
@@ -163,5 +157,3 @@ wait_for_finish([Pid | Pids]) ->
         undefined -> wait_for_finish(Pids);
         _ -> timer:sleep(100), wait_for_finish([Pid | Pids])
     end.
-
-
