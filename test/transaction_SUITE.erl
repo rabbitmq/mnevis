@@ -214,7 +214,7 @@ writes_aborted(_Config, Tab) ->
         mnesia:abort({read, Read})
     end),
     %% Data was readable in transaction
-    [{Tab, foo, aborted_value}] = ReadAborted,
+    true = lists:member({Tab, foo, aborted_value}, ReadAborted),
     %% Data is not in mnesia
     [{Tab, foo, bar}] = mnesia:dirty_read(Tab, foo),
     %% Data is not in transaction
