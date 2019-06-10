@@ -7,7 +7,7 @@ LOCAL_DEPS = mnesia
 TEST_DEPS = proper
 
 dep_map_sets = git https://github.com/k32/map_sets.git master
-dep_ra = git https://github.com/rabbitmq/ra read-only-query
+dep_ra = git https://github.com/rabbitmq/ra master
 
 include $(if $(ERLANG_MK_FILENAME),$(ERLANG_MK_FILENAME),erlang.mk)
 
