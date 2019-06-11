@@ -1,5 +1,6 @@
 -module(perf_SUITE).
 
+-compile(nowarn_export_all).
 -compile(export_all).
 
 -include_lib("common_test/include/ct.hrl").
@@ -47,10 +48,15 @@ groups() ->
      ].
 
 init_per_suite(Config) ->
-    PrivDir = ?config(priv_dir, Config),
-    ok = filelib:ensure_dir(PrivDir),
-    application:load(mnesia),
-    Config.
+    case os:getenv("CI") of
+        _ ->
+            {skip, "perf_SUITE is not intended for continuous integration"};
+        false ->
+            PrivDir = ?config(priv_dir, Config),
+            ok = filelib:ensure_dir(PrivDir),
+            application:load(mnesia),
+            Config
+    end.
 
 end_per_suite(Config) ->
     Config.
@@ -59,121 +65,64 @@ init_per_group(SingleNode, Config) when SingleNode == single_node_parallel; Sing
     PrivDir = ?config(priv_dir, Config),
     mnesia:create_schema([node()]),
     mnevis:start(PrivDir),
-    % mnevis_node:trigger_election(),
     Config;
 init_per_group(single_node, Config) ->
     Config;
 init_per_group(three_nodes, Config) ->
     Config;
-init_per_group(three_nodes_mnevis, Config) ->
-    PrivDir = ?config(priv_dir, Config),
-    Nodes = create_initial_nodes("mnevis"),
-    start_mnevis_cluster(Nodes, PrivDir),
-    [ {nodes, Nodes} | Config];
+init_per_group(three_nodes_mnevis, Config0) ->
+    {ok, Nodes} = mnevis_test_utils:create_initial_nodes(?MODULE),
+    {ok, Config1} = mnevis_test_utils:start_cluster(Nodes, Config0),
+    [{nodes, Nodes} | Config1];
 init_per_group(three_nodes_mnesia, Config) ->
-    PrivDir = ?config(priv_dir, Config),
-    Nodes = create_initial_nodes("mnesia"),
+    {ok, Nodes} = mnevis_test_utils:create_initial_nodes(?MODULE),
     cluster_mnesia(Nodes),
-    [ {nodes, Nodes}, {mnesia_nodes, Nodes} | Config].
-
-create_initial_nodes(Name) ->
-    [node() | [start_erlang_node(NodeP) || NodeP <- [list_to_atom(Name ++ "1"),
-                                                     list_to_atom(Name ++ "2")]]].
-
-start_erlang_node(NodePrefix) ->
-    {ok, Host} = inet:gethostname(),
-    LocalPath = code:get_path(),
-    {ok, Node} = slave:start(Host, NodePrefix),
-    LocalPath = code:get_path(),
-    add_paths(Node, LocalPath),
-    Node.
-
-add_paths(Node, LocalPath) ->
-    RemotePath = rpc:call(Node, code, get_path, []),
-    AddPath = LocalPath -- RemotePath,
-    ok = rpc:call(Node, code, add_pathsa, [AddPath]).
-
-start_mnevis_cluster(Nodes, PrivDir) ->
-    [start_node(Node, Nodes, PrivDir) || Node <- Nodes],
-    {Name, _} = mnevis_node:node_id(),
-    Servers = [{Name, Node} || Node <- Nodes],
-    {ok, _, _} = ra:start_cluster(Name, {module, mnevis_machine, #{}}, Servers).
-
-start_node(Node, Nodes, PrivDir) ->
-    Node = rpc:call(Node, erlang, node, []),
-    rpc:call(Node, application, load, [ra]),
-    rpc:call(Node, application, load, [mnesia]),
-    rpc:call(Node, mnesia, create_schema, [[Node]]),
-    ok = rpc:call(Node, application, set_env, [ra, data_dir, filename:join(PrivDir, Node)]),
-    {ok, _} = rpc:call(Node, application, ensure_all_started, [mnevis]),
-    ok.
+    [{nodes, Nodes}, {mnesia_nodes, Nodes} | Config].
 
 cluster_mnesia(Nodes) ->
-    [rpc:call(Node, mnesia, delete_schema, [[Node]]) || Node <- Nodes],
-
-    mnesia:create_schema(Nodes),
+    ok = mnesia:delete_schema(Nodes),
+    ok = mnesia:create_schema(Nodes),
     [rpc:call(Node, mnesia, start, []) || Node <- Nodes].
 
-end_per_group(SingleNode, Config) when SingleNode == single_node_parallel; SingleNode == single_node_seq  ->
-    ra:stop_server(mnevis_node:node_id()),
-    application:stop(mnevis),
-    application:stop(mnesia),
-    mnesia:delete_schema([node()]),
-    application:stop(ra),
-    Config;
-end_per_group(single_node, Config) ->
-    Config;
-end_per_group(three_nodes, Config) ->
-    Config;
-end_per_group(three_nodes_mnevis, Config) ->
-    Nodes = ?config(nodes, Config),
-    [slave:stop(Node) || Node <- Nodes, Node =/= node()],
-    ra:stop_server(mnevis_node:node_id()),
-    application:stop(mnevis),
-    application:stop(mnesia),
-    mnesia:delete_schema([node()]),
-    application:stop(ra),
-    Config;
-end_per_group(three_nodes_mnesia, Config) ->
-    Nodes = ?config(nodes, Config),
-    [slave:stop(Node) || Node <- Nodes, Node =/= node()],
-    application:stop(mnesia),
-    mnesia:delete_schema(Nodes),
-    Config.
+end_per_group(_, Config) ->
+    mnevis_test_utils:stop_all(Config).
 
-init_per_testcase(Test, Config) ->
+init_per_testcase(_Test, Config) ->
     mnevis:transaction(fun() -> ok end),
     case ?config(mnesia_nodes, Config) of
         undefined ->
             create_sample_table();
         Nodes ->
-            ct:pal("Nodes ~p~n", [Nodes]),
             create_sample_table_mnesia(Nodes)
     end,
-
     Config.
 
 end_per_testcase(_Test, Config) ->
     case ?config(mnesia_nodes, Config) of
         undefined ->
             delete_sample_table();
-        Nodes ->
+        _ ->
             delete_sample_table_mnesia()
     end,
     Config.
 
 create_sample_table_mnesia(Nodes) ->
-    mnesia:create_table(sample, [{disc_copies, Nodes}]),
-    mnesia:create_table(sample1, [{disc_copies, Nodes}]),
-    mnesia:create_table(sample2, [{disc_copies, Nodes}]),
-    mnesia:create_table(sample3, [{disc_copies, Nodes}]),
+    {atomic, ok} = mnesia:create_table(sample, [{disc_copies, Nodes}]),
+    {atomic, ok} = mnesia:create_table(sample1, [{disc_copies, Nodes}]),
+    {atomic, ok} = mnesia:create_table(sample2, [{disc_copies, Nodes}]),
+    {atomic, ok} = mnesia:create_table(sample3, [{disc_copies, Nodes}]),
     ok.
 
 create_sample_table() ->
-    {atomic, ok} = mnevis:create_table(sample, [{disc_copies, [node()]}]),
-    {atomic, ok} = mnevis:create_table(sample1, [{disc_copies, [node()]}]),
-    {atomic, ok} = mnevis:create_table(sample2, [{disc_copies, [node()]}]),
-    {atomic, ok} = mnevis:create_table(sample3, [{disc_copies, [node()]}]),
+    %% TODO mnevis won't use disc_copies tables so add code to ignore it
+    %% {atomic, ok} = mnevis:create_table(sample, [{disc_copies, [node()]}]),
+    %% {atomic, ok} = mnevis:create_table(sample1, [{disc_copies, [node()]}]),
+    %% {atomic, ok} = mnevis:create_table(sample2, [{disc_copies, [node()]}]),
+    %% {atomic, ok} = mnevis:create_table(sample3, [{disc_copies, [node()]}]),
+    {atomic, ok} = mnevis:create_table(sample, []),
+    {atomic, ok} = mnevis:create_table(sample1, []),
+    {atomic, ok} = mnevis:create_table(sample2, []),
+    {atomic, ok} = mnevis:create_table(sample3, []),
     ok.
 
 delete_sample_table() ->
@@ -190,7 +139,6 @@ delete_sample_table_mnesia() ->
     mnesia:delete_table(sample3),
     ok.
 
-
 mnevis_seq(Config) ->
     mnevis_seq_N(1, Config).
 
@@ -203,8 +151,8 @@ mnesia_seq(Config) ->
 mnesia_seq_4(Config) ->
     mnesia_seq_N(4, Config).
 
-mnevis_seq_N(N, _Config) ->
-    TF = case N of
+mnevis_seq_N(N0, _Config) ->
+    TF = case N0 of
         4 ->
             fun(Sample) ->
                 mnesia:write({sample, Sample, Sample}),
@@ -218,22 +166,20 @@ mnevis_seq_N(N, _Config) ->
             end
     end,
     Times = [
-    begin
-        {Time, {atomic, InnerTime}} = timer:tc(mnevis, transaction, [fun() ->
-            {IT, _} = timer:tc(fun() -> TF(N) end),
-            IT
-        end]),
-        {Time, InnerTime}
-    end
-    || N <- lists:seq(1, 1000)
-    ],
+        begin
+            {Time, {atomic, InnerTime}} = timer:tc(mnevis, transaction, [fun() ->
+                {IT, _} = timer:tc(fun() -> TF(N1) end),
+                IT
+            end]),
+            {Time, InnerTime}
+        end || N1 <- lists:seq(1, 1000)],
     {OutTimes, InTimes} = lists:unzip(Times),
     ct:pal("Times for transaction ~p~n", [lists:sum(OutTimes)]),
     ct:pal("Times for write ~p~n", [lists:sum(InTimes)]),
-    {ok, {{LocalIndex, _}, _}, _} = ra:local_query(mnevis_node:node_id(), fun(S) -> ok end),
+    {ok, {{_LocalIndex, _}, _}, _} = ra:local_query(mnevis_node:node_id(), fun(_) -> ok end),
     1000 = mnesia:table_info(sample, size).
 
-mnesia_seq_N(N, Config) ->
+mnesia_seq_N(N0, Config) ->
     Nodes = case ?config(nodes, Config) of
         undefined -> [node()];
         Ns -> Ns
@@ -241,7 +187,7 @@ mnesia_seq_N(N, Config) ->
     [rpc:call(Node, mnesia_sync, start_link, []) || Node <- Nodes],
     % mnesia_sync:start_link(),
     mnesia_sync:sync(),
-    TF = case N of
+    TF = case N0 of
         4 ->
             fun(Sample) ->
                 mnesia:write({sample, Sample, Sample}),
@@ -258,7 +204,7 @@ mnesia_seq_N(N, Config) ->
     begin
     {Time, InnerTime1} = timer:tc(fun() ->
         {atomic, InnerTime} = mnesia:sync_transaction(fun() ->
-            {IT, _} = timer:tc(fun() -> TF(N) end),
+            {IT, _} = timer:tc(fun() -> TF(N1) end),
             IT
         end),
         % timer:sleep(10),
@@ -267,7 +213,7 @@ mnesia_seq_N(N, Config) ->
         InnerTime
     end),
     {Time, InnerTime1}
-    end || N <- lists:seq(1, 1000)
+    end || N1 <- lists:seq(1, 1000)
     ],
     SyncTime = mnesia_sync:get_time(),
     {OutTimes, InTimes} = lists:unzip(Times),
@@ -308,38 +254,38 @@ mnesia_parallel_500(Config) ->
     mnesia_parallel(Config, 500).
 
 
-mnevis_parallel(_Config, N) ->
+mnevis_parallel(_Config, N0) ->
     Self = self(),
     Pids = [spawn_link(fun() ->
         mnevis:transaction(fun() ->
-            mnesia:write({sample, N, N}),
-            mnesia:write({sample1, N, N}),
-            mnesia:write({sample2, N, N}),
-            mnesia:write({sample3, N, N})
+            mnesia:write({sample, N1, N1}),
+            mnesia:write({sample1, N1, N1}),
+            mnesia:write({sample2, N1, N1}),
+            mnesia:write({sample3, N1, N1})
         end),
         Self ! {stop, self()}
-    end) || N <- lists:seq(1, N)],
+    end) || N1 <- lists:seq(1, N0)],
 
     receive_results(Pids),
-    {ok, {{LocalIndex, _}, _}, _} = ra:local_query(mnevis_node:node_id(), fun(S) -> ok end),
+    {ok, {{_LocalIndex, _}, _}, _} = ra:local_query(mnevis_node:node_id(), fun(_) -> ok end),
     % ct:pal("Metrics ~p~n", [lists:ukeysort(1, ets:tab2list(ra_log_wal_metrics))]),
     % ct:pal("Executed commands ~p~n", [LocalIndex]),
     ok.
 
-mnesia_parallel(_Config, N) ->
+mnesia_parallel(_Config, N0) ->
     Self = self(),
     mnesia_sync:start_link(),
     mnesia_sync:sync(),
     Pids = [spawn_link(fun() ->
         mnesia:sync_transaction(fun() ->
-            mnesia:write({sample, N, N}),
-            mnesia:write({sample1, N, N}),
-            mnesia:write({sample2, N, N}),
-            mnesia:write({sample3, N, N})
+            mnesia:write({sample, N1, N1}),
+            mnesia:write({sample1, N1, N1}),
+            mnesia:write({sample2, N1, N1}),
+            mnesia:write({sample3, N1, N1})
         end),
         mnesia_sync:sync(),
         Self ! {stop, self()}
-    end) || N <- lists:seq(1, N)],
+    end) || N1 <- lists:seq(1, N0)],
     receive_results(Pids).
 
 receive_results(Pids) ->

@@ -56,7 +56,7 @@ handle_call(sync, _From, #state{disc_node = false} = State) ->
     {reply, ok, State};
 handle_call(sync, From, #state{waiting = Waiting} = State) ->
     {noreply, State#state{waiting = [From | Waiting]}, 0};
-handle_call(get_time, From, #state{time = Time} = State) ->
+handle_call(get_time, _From, #state{time = Time} = State) ->
     {reply, Time, State#state{time = 0}};
 handle_call(Request, _From, State) ->
     {stop, {unhandled_call, Request}, State}.

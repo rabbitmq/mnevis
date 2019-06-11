@@ -1,16 +1,18 @@
 -module(table_manipulation_SUITE).
 
+-compile(nowarn_export_all).
 -compile(export_all).
 
 -include_lib("common_test/include/ct.hrl").
 
--define(NODE1, mnevis_snapshot_SUITE1).
--define(NODE2, mnevis_snapshot_SUITE2).
-
-all() -> [{group, three_nodes}].
+all() ->
+    [{group, three_nodes}].
 
 groups() ->
-    [{three_nodes, [], [
+    [{three_nodes, [], all_tests()}].
+
+all_tests() ->
+    [
         create_table_leader,
         create_table_follower,
 
@@ -28,28 +30,28 @@ groups() ->
 
         transform_table_leader,
         transform_table_follower
-      ]}].
+    ].
 
-init_per_testcase(_, Config) ->
-    PrivDir = ?config(priv_dir, Config),
-    filelib:ensure_dir(PrivDir),
-    Nodes = create_initial_nodes(),
-    start_cluster(Nodes, PrivDir),
+init_per_group(three_disc_nodes=_Group, Config) ->
+    [{disc_copies, true}|Config];
+init_per_group(_Group, Config) ->
+    [{disc_copies, false}|Config].
 
-    [ {nodes, Nodes} | Config].
-end_per_testcase(_, Config) ->
-    Nodes = ?config(nodes, Config),
-    [slave:stop(Node) || Node <- Nodes, Node =/= node()],
-    ra:stop_server(mnevis_node:node_id()),
-    application:stop(mnevis),
-    application:stop(mnesia),
-    application:stop(ra),
+end_per_group(_, Config) ->
     Config.
 
-create_table_leader(Config) ->
+init_per_testcase(_, Config0) ->
+    {ok, Nodes} = mnevis_test_utils:create_initial_nodes(?MODULE),
+    {ok, Config1} = mnevis_test_utils:start_cluster(Nodes, Config0),
+    [{nodes, Nodes} | Config1].
+
+end_per_testcase(_, Config) ->
+    mnevis_test_utils:stop_all(Config).
+
+create_table_leader(_Config) ->
     on_leader(table_manipulation_SUITE, create_table, []).
 
-create_table_follower(Config) ->
+create_table_follower(_Config) ->
     on_follower(table_manipulation_SUITE, create_table, []).
 
 create_table() ->
@@ -57,10 +59,10 @@ create_table() ->
     0 = mnesia:table_info(foo, size),
     ok.
 
-delete_table_leader(Config) ->
+delete_table_leader(_Config) ->
     on_leader(table_manipulation_SUITE, delete_table, []).
 
-delete_table_follower(Config) ->
+delete_table_follower(_Config) ->
     on_follower(table_manipulation_SUITE, delete_table, []).
 
 delete_table() ->
@@ -70,10 +72,10 @@ delete_table() ->
     false = lists:member(foo, mnesia:system_info(tables)),
     ok.
 
-add_index_leader(Config) ->
+add_index_leader(_Config) ->
     on_leader(table_manipulation_SUITE, add_index, []).
 
-add_index_follower(Config) ->
+add_index_follower(_Config) ->
     on_follower(table_manipulation_SUITE, add_index, []).
 
 add_index() ->
@@ -86,10 +88,10 @@ add_index() ->
     [3] = mnesia:table_info(foo, index),
     ok.
 
-del_index_leader(Config) ->
+del_index_leader(_Config) ->
     on_leader(table_manipulation_SUITE, del_index, []).
 
-del_index_follower(Config) ->
+del_index_follower(_Config) ->
     on_follower(table_manipulation_SUITE, del_index, []).
 
 del_index() ->
@@ -102,10 +104,10 @@ del_index() ->
     {aborted, {no_exists, foo, 3}} = mnevis:del_table_index(foo, val),
     ok.
 
-clear_table_leader(Config) ->
+clear_table_leader(_Config) ->
     on_leader(table_manipulation_SUITE, clear_table, []).
 
-clear_table_follower(Config) ->
+clear_table_follower(_Config) ->
     on_follower(table_manipulation_SUITE, clear_table, []).
 
 clear_table() ->
@@ -124,10 +126,10 @@ clear_table() ->
     ok.
 
 
-transform_table_leader(Config) ->
+transform_table_leader(_Config) ->
     on_leader(table_manipulation_SUITE, transform_table, []).
 
-transform_table_follower(Config) ->
+transform_table_follower(_Config) ->
     on_follower(table_manipulation_SUITE, transform_table, []).
 
 transform_table() ->
@@ -168,41 +170,3 @@ on_follower(M, F, A) ->
     [Follower | _] = RaNodes -- [Leader],
     {_, FollowerNode} = Follower,
     rpc:call(FollowerNode, M, F, A).
-
-
-create_initial_nodes() ->
-    [node() | [start_erlang_node(NodeP) || NodeP <- [?NODE1, ?NODE2]]].
-
-start_erlang_node(NodePrefix) ->
-    {ok, Host} = inet:gethostname(),
-    LocalPath = code:get_path(),
-    {ok, Node} = slave:start(Host, NodePrefix),
-    LocalPath = code:get_path(),
-    add_paths(Node, LocalPath),
-    Node.
-
-add_paths(Node, LocalPath) ->
-    RemotePath = rpc:call(Node, code, get_path, []),
-    AddPath = LocalPath -- RemotePath,
-    ok = rpc:call(Node, code, add_pathsa, [AddPath]).
-
-start_cluster(Nodes, PrivDir) ->
-    [start_node(Node, Nodes, PrivDir) || Node <- Nodes],
-    {Name, _} = mnevis_node:node_id(),
-    Servers = [{Name, Node} || Node <- Nodes],
-    {ok, _, _} = ra:start_cluster(Name, {module, mnevis_machine, #{}}, Servers).
-
-start_server(Node, Nodes) ->
-    {Name, _} = mnevis_node:node_id(),
-    Servers = [{Name, Node} || Node <- Nodes],
-    ra:start_server(Name, {Name, Node}, {module, mnevis_machine, #{}}, Servers).
-
-start_node(Node, Nodes, PrivDir) ->
-    Node = rpc:call(Node, erlang, node, []),
-    rpc:call(Node, application, load, [ra]),
-    ok = rpc:call(Node, application, set_env, [ra, data_dir, filename:join(PrivDir, Node)]),
-    {ok, _} = rpc:call(Node, application, ensure_all_started, [mnevis]),
-    ok.
-
-node_dir(Node, Dir) ->
-    filename:join(Dir, Node).
