@@ -28,7 +28,7 @@ commit_valid_locker_test() ->
     init_mnesia_table(),
     InitState = init_state(),
     Transaction = valid_transaction(InitState),
-    {_, VersionHash} = mnevis_lock:item_version_hash(sample, foo),
+    {_, VersionHash} = mnevis_lock:item_version_key(sample, foo),
     {InitState,
      {ok, {committed, [{sample,1},{{sample,VersionHash},1}]}},
      [{release_cursor, 1, InitState}]} =
