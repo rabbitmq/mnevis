@@ -15,5 +15,4 @@ otp_release:
   - "22.0.2"
 
 script:
-  - make eunit
-  - make check
+  - make tests
