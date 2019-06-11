@@ -5,7 +5,7 @@
 -export([item_version_key/2]).
 
 -record(state, {last_transaction_id :: transaction_id(),
-                transactions = #{} :: #{transaction_id() => pid()},
+                transactions = #{} :: #{pid() => transaction_id()},
                 monitors = #{} :: #{pid() => term()},
                 read_locks = #{} :: #{lock_item() => map_sets:set(transaction_id())},
                 write_locks = #{} :: #{lock_item() => transaction_id()},
@@ -62,13 +62,14 @@ cleanup(Tid, Source, State0) ->
     State1 = cleanup_transaction(Tid, Source, State0),
     demonitor_source(Source, State1).
 
--spec monitor_down(reference(), pid(), term(), state()) -> state().
+-spec monitor_down(reference(), pid(), term(), state()) ->
+    {transaction_id() | none, state()}.
 monitor_down(_MRef, Source, _Info, State) ->
     case transaction_for_source(Source, State) of
         {ok, Tid}               ->
-            cleanup(Tid, Source, State);
+            {Tid, demonitor_source(Source, State)};
         {error, no_transaction} ->
-            State
+            {none, State}
     end.
 
 -spec item_version_key(mnevis:table(), term()) -> lock_item().
@@ -295,7 +296,7 @@ read_locking_transactions({table, Tab}, all, Tid, #state{read_locks = RLocks}) -
 
 -spec cleanup_transaction(transaction_id(), pid(), state()) -> state().
 cleanup_transaction(Tid, Source, State0) ->
-    #state{ transactions = Transactions } = State0,
+    #state{ transactions = Transactions} = State0,
     State1 = cleanup_locks(Tid, State0),
     State2 = cleanup_transaction_locks(Tid, State1),
     State2#state{transactions = maps:remove(Source, Transactions)}.

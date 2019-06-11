@@ -288,10 +288,7 @@ commit_transaction() ->
                     case {Writes, Deletes, DeletesObject} of
                         {[], [], []} ->
                             %% Read-only commits
-                            case read_only_commit(Context) of
-                                ok -> ok;
-                                {error, Err} -> mnesia:abort(Err)
-                            end;
+                            read_only_commit(Context);
                         _ ->
                             {ok, Result, _} =
                                 execute_command_with_retry(Context, commit,

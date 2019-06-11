@@ -13,7 +13,8 @@ create_versions_table() ->
         Other -> error({cannot_create_versions_table, Other})
     end.
 
--spec get_version(mnevis:table()) -> {ok, mnevis_context:version()} | {error, no_exists}.
+-spec get_version({mnevis:table(), term()} | mnevis:table()) ->
+    {ok, mnevis_context:version()} | {error, no_exists}.
 get_version(Tab) ->
     %% TODO: handle error
     MaybeVersion = ets:lookup(versions, Tab),
@@ -117,7 +118,7 @@ wait_for_versions(TargetVersions) ->
                 try
                     wait_for_mnesia_updates(VersionsToWait)
                 after
-                    mnesia:unsubscribe({table, versions, simple}),
+                    _ = mnesia:unsubscribe({table, versions, simple}),
                     flush_table_events()
                 end
             end),

@@ -23,7 +23,13 @@
 
 -include_lib("ra/include/ra.hrl").
 
--record(state, {term, correlation, leader, lock_state}).
+-record(state, {
+    term,
+    correlation,
+    leader,
+    lock_state,
+    waiting_blacklist :: #{reference() => {mnevis_lock:transaction_id(), pid()}},
+    waiting_blacklist_tids :: map_sets:set(mnevis_lock:transaction_id())}).
 
 -define(LOCKER_TIMEOUT, 5000).
 
@@ -35,16 +41,50 @@
 
 -export_type([locker_term/0, locker/0]).
 
+
+%% Locker process for mnevis
+
+%% When the process starts, it will be in a candidate state
+%% In this state it tries to register with the ra cluster
+%% by sending the `locker_up` command
+%% If registered successfully - it changes the state to leader,
+%% if rejected - stops.
+%% Candidate will retry commands until it gets a result from the ra cluster
+
+%% Each new locker process has a term, which is incremented by
+%% the `start_new_locker` function.
+%% If a locker with a lower term tries to register - it will be rejected.
+%% A locker with the same term, but a different PID will also be rejected.
+%% A locker with a higher term will be registered and become a current one.
+%% The ra machine should stop an old locker process when registering a new one
+
+%% In the leader state the process may process lock requests.
+%% All lock requests are processed by the `mnevis_lock` module functions.
+
+%% This process also monitors all transaction processes
+%% (monitor/2 and demonitor/1 are called from `mnevis_lock` module)
+
+%% When the process detects a transaction process to be down, it cannot
+%% clean the transaction locks yet, because it may be disconnected and
+%% transaction process may proceed with committing.
+
+%% To prevent this, the locker process will inform the ra cluster to
+%% blacklist such transaction ID. Commits for this ID will be refused.
+%% When ra cluster respons to the blacklist request - it should be safe
+%% to cleanup the transaction locks, because it's not going to be committed.
+%% The idea is that all transaction locks will stay locked until
+%% the transaction is blacklisted.
+
+%% The ra machine should cleanup blacklisted transaction IDs when a new locker
+%% process is registered. Because transaction ids exist in a context of
+%% a single locker term.
+
 start(Term) ->
     error_logger:info_msg("Start mnevis locker"),
     gen_statem:start(?MODULE, Term, []).
 
--spec start_new_locker(locker()) -> {ok, pid()}.
-start_new_locker({Term, Pid}) ->
-    case is_pid(Pid) of
-        true  -> gen_statem:cast(Pid, stop);
-        false -> ok
-    end,
+-spec start_new_locker(locker_term()) -> {ok, pid()}.
+start_new_locker(Term) ->
     start(Term + 1).
 
 -spec stop(pid()) -> ok.
@@ -92,6 +132,7 @@ get_current_ra_locker(CurrentLocker) ->
         {ok, {ok, Locker}, _}    ->
             update_locker_cache(Locker),
             {ok, Locker};
+        %% TODO: handle locker errors
         {ok, {error, Reason}, _} -> {error, {command_error, Reason}};
         {error, Reason}          -> {error, Reason};
         {timeout, _}             -> {error, timeout}
@@ -136,7 +177,9 @@ init(Term) ->
      #state{term = Term,
             correlation = Correlation,
             leader = NodeId,
-            lock_state = mnevis_lock:init(0)},
+            lock_state = mnevis_lock:init(0),
+            waiting_blacklist = #{},
+            waiting_blacklist_tids = map_sets:new()},
      [1000]}.
 
 callback_mode() -> state_functions.
@@ -159,26 +202,75 @@ candidate(info, _Info, State) ->
 -spec leader(gen_statem:event_type(), term(), state()) ->
     gen_statem:event_handler_result(election_states()).
 leader({call, From},
-       {{lock, TransationId, Source, LockItem, LockKind}, Term},
-       State = #state{lock_state = LockState, term = Term}) ->
-    {LockResult, LockState1} = mnevis_lock:lock(TransationId, Source, LockItem, LockKind, LockState),
-    {keep_state, State#state{lock_state = LockState1}, [{reply, From, LockResult}]};
+       {{lock, Tid, Source, LockItem, LockKind}, Term},
+       State = #state{lock_state = LockState,
+                      term = Term}) ->
+    with_non_blacklisted_transaction(Tid, From, State,
+        fun() ->
+            {LockResult, LockState1} = mnevis_lock:lock(Tid, Source, LockItem, LockKind, LockState),
+            {keep_state, State#state{lock_state = LockState1}, [{reply, From, LockResult}]}
+        end);
 leader({call, From},
        {{lock, _, _, _, _}, _Term},
        State = #state{term = _CurrentTerm}) ->
     % TODO Term and CurrentTerm are unused. This case is for when they don't
     % match, do we want to log an error?
     {keep_state, State, [{reply, From, {error, locker_term_mismatch}}]};
-leader({call, From}, {cleanup, TransationId, Source}, State) ->
-    LockState = mnevis_lock:cleanup(TransationId, Source, State#state.lock_state),
+leader({call, From}, {cleanup, Tid, Source}, State) ->
+    LockState = mnevis_lock:cleanup(Tid, Source, State#state.lock_state),
     {keep_state, State#state{lock_state = LockState}, [{reply, From, ok}]};
 leader(cast, stop, _State) ->
     {stop, {normal, stopped}};
 leader(cast, _, State) ->
     {keep_state, State};
-leader(info, {'DOWN', MRef, process, Pid, Info}, #state{lock_state = LockState0} = State) ->
-    LockState1 = mnevis_lock:monitor_down(MRef, Pid, Info, LockState0),
-    {keep_state, State#state{lock_state = LockState1}};
+leader(info, {'DOWN', MRef, process, Pid, Info}, #state{lock_state = LockState0} = State0) ->
+    %% TODO: maybe batch failed transaction IDs
+    case mnevis_lock:monitor_down(MRef, Pid, Info, LockState0) of
+        {none, LockState1} ->
+            {keep_state, State0#state{lock_state = LockState1}};
+        {Tid, LockState1} ->
+            {keep_state,
+             send_blacklist_command(Tid, Pid,
+                                    State0#state{lock_state = LockState1})}
+    end;
+leader(info, {ra_event, Leader, {applied, Replies}},
+             State0 = #state{waiting_blacklist = WaitingBlacklist,
+                             waiting_blacklist_tids = WaitingBlacklistTids}) ->
+    State1 = State0#state{leader = Leader},
+    {TidWithPids, State2} = lists:foldl(
+        %% Successfully blacklisted
+        fun({Correlation, Result}, {TidWithPidAcc, State}) ->
+            case maps:get(Correlation, WaitingBlacklist, none) of
+                %% Transactions are already cleaned up.
+                %% This can happen when term updated for example
+                %% or when reply is duplicate
+                none ->
+                    {TidWithPidAcc, State};
+                {Tid, _} = TidWithPid ->
+                    case Result of
+                        ok ->
+                            {[TidWithPid | TidWithPidAcc],
+                             State#state{
+                                waiting_blacklist = maps:remove(Correlation, WaitingBlacklist),
+                                waiting_blacklist_tids = map_sets:del_element(Tid, WaitingBlacklistTids)
+                             }};
+                        {error, {aborted, wrong_locker_term}} ->
+                            %% TODO error handling
+                            error({error, {aborted, wrong_locker_term}})
+                    end
+            end
+        end,
+        {[], State1},
+        Replies),
+    {keep_state, cleanup_blacklisted(TidWithPids, State2)};
+leader(info, {ra_event, Leader, {rejected, {not_leader, _Leader, Correlation}}},
+             State = #state{waiting_blacklist = WaitingBlacklist}) ->
+    case maps:get(Correlation, WaitingBlacklist, none) of
+        none ->
+            {keep_state, State};
+        {Tid, Pid} ->
+            {keep_state, send_blacklist_command(Tid, Pid, State#state{leader = Leader})}
+    end;
 leader(info, _Info, State) ->
     {keep_state, State}.
 
@@ -191,6 +283,9 @@ code_change(_OldVsn, OldState, OldData, _Extra) ->
 
 terminate(_Reason, _State, _Data) ->
     ok.
+
+%% Registration with the RA cluster
+%% ================================
 
 -spec notify_up(locker_term(), ra_server_id()) -> reference().
 notify_up(Term, NodeId) ->
@@ -230,3 +325,43 @@ reject(State) ->
 
 confirm(State) ->
     {next_state, leader, State}.
+
+
+%% Handling DOWN from transaction process.
+%% =======================================
+
+-spec send_blacklist_command(mnevis_lock:transaction_id(), pid(), state()) -> state().
+send_blacklist_command(Tid, Pid,
+                       State = #state{waiting_blacklist = WaitingBlacklist,
+                                      waiting_blacklist_tids = WaitingBlacklistTids,
+                                      leader = Leader,
+                                      term = Term}) ->
+    Correlation = make_ref(),
+    ok = ra:pipeline_command(Leader,
+                             {blacklist, {Term, self()}, Tid},
+                             Correlation,
+                             normal),
+    State#state{
+        waiting_blacklist = maps:put(Correlation, {Tid, Pid}, WaitingBlacklist),
+        waiting_blacklist_tids = map_sets:add_element(Tid, WaitingBlacklistTids)
+    }.
+
+-spec cleanup_blacklisted([{mnevis_lock:transaction_id(), pid()}], state()) -> state().
+cleanup_blacklisted(TidWithPids, State = #state{lock_state = LockState0}) ->
+    LockState1 = lists:foldl(
+        fun({Tid, Pid}, LockState) ->
+            mnevis_lock:cleanup(Tid, Pid, LockState)
+        end,
+        LockState0,
+        TidWithPids),
+    State#state{lock_state = LockState1}.
+
+
+with_non_blacklisted_transaction(Tid, From, State, Fun) ->
+    #state{waiting_blacklist_tids = WaitingBlacklistTids} = State,
+    case map_sets:is_element(Tid, WaitingBlacklistTids) of
+        true ->
+            {keep_state, State, [{reply, From, {error, transaction_seen_as_down_by_locker}}]};
+        false ->
+            Fun()
+    end.

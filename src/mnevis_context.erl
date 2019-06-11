@@ -93,7 +93,8 @@
 
 -type read_op() :: dirty_all_keys | dirty_first | dirty_last |
                    dirty_index_match_object | dirty_index_read  |
-                   dirty_match_object | dirty_read.
+                   dirty_match_object | dirty_read | dirty_prev |
+                   dirty_next.
 
 -type read_spec() :: {read_op(), [table() | key()]}.
 -type version() :: non_neg_integer().
