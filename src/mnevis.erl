@@ -1,7 +1,5 @@
 -module(mnevis).
 
--include("mnevis.hrl").
-
 -export([start/1]).
 
 -export([create_table/2, delete_table/1]).
@@ -714,7 +712,7 @@ with_lock_and_version(Context, LockItem, LockKind, Fun) ->
     with_lock(Context, LockItem, LockKind, fun() ->
         VersionKey = case LockItem of
             {table, Table} -> Table;
-            {Tab, Item}    -> {Tab, erlang:phash2(Item, ?VERSION_HASH_RESOLUTION)}
+            {Tab, Item}    -> mnevis_lock:item_version_key(Tab, Item)
         end,
 
         case ra:consistent_query(mnevis_node:node_id(),
@@ -756,8 +754,7 @@ do_acquire_lock(Context, LockItem, LockKind, Method) ->
 
 do_acquire_lock_with_existing_transaction(Context, LockItem, LockKind, Method) ->
     Tid = mnevis_context:transaction_id(Context),
-    Locks = mnevis_context:locks(Context),
-    case lock_already_acquired(LockItem, LockKind, Locks) of
+    case lock_already_acquired(LockItem, LockKind, mnevis_context:locks(Context)) of
         true ->
             {ok, ok, Context};
         false ->
@@ -772,7 +769,6 @@ do_acquire_lock_with_existing_transaction(Context, LockItem, LockKind, Method) -
             end
     end.
 
-%% TODO: maybe merge that with mnevis_lock
 lock_already_acquired({table, _} = LockItem, LockKind, Locks) ->
     lock_already_acquired_1(LockItem, LockKind, Locks);
 lock_already_acquired({Tab, Key}, LockKind, Locks) ->

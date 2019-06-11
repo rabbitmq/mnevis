@@ -2,6 +2,7 @@
 
 -export([init/1, lock/5, cleanup/3, monitor_down/4]).
 
+-export([item_version_key/2]).
 
 -record(state, {last_transaction_id :: transaction_id(),
                 transactions = #{} :: #{transaction_id() => pid()},
@@ -28,6 +29,8 @@
                        {error, {wrong_transaction_id, transaction_id()}}.
 
 -export_type([transaction_id/0, lock_item/0, lock_kind/0, lock_request/0, lock_result/0]).
+
+-define(VERSION_HASH_RESOLUTION, 1000).
 
 -ifdef (TEST).
 -include_lib("eunit/include/eunit.hrl").
@@ -67,6 +70,10 @@ monitor_down(_MRef, Source, _Info, State) ->
         {error, no_transaction} ->
             State
     end.
+
+-spec item_version_key(mnevis:table(), term()) -> lock_item().
+item_version_key(Tab, Key) ->
+    {Tab, erlang:phash2(Key, ?VERSION_HASH_RESOLUTION)}.
 
 -spec demonitor_source(pid(), state()) -> state().
 demonitor_source(Source, State = #state{monitors = Monitors}) ->
