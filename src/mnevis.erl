@@ -73,6 +73,8 @@ start(DataDir) ->
 
 -spec db_nodes() -> [node()].
 db_nodes() ->
+    % TODO mnevis
+    % Take {error, nodedown} return into account
     {ok, Nodes, _L} = ra:members(mnevis_node:node_id()),
     [Node || {_, Node} <- Nodes].
 
