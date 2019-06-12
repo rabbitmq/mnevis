@@ -148,8 +148,9 @@ candidate(info, {ra_event, Leader, Event}, State) ->
 candidate(timeout, _, State = #state{term = Term, leader = Leader}) ->
     Correlation = notify_up(Term, Leader),
     {keep_state, State#state{correlation = Correlation}, [1000]};
-candidate({call, From}, {lock, _TransationId, _Source, _LockItem, _LockKind}, State) ->
-    {keep_state, State, [{reply, From, {error, is_not_leader}}]};
+candidate({call, From}, {lock, _Tid, _Source, _LockItem, _LockKind}, State) ->
+    %% Delay until we're leader
+    {keep_state, State, [postpone]};
 candidate(cast, _, State) ->
     {keep_state, State};
 candidate(info, _Info, State) ->
