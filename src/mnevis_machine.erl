@@ -210,7 +210,7 @@ apply(_Meta, {locker_up, {Term, Pid} = Locker},
         %% Duplicate?
         %% TODO: do we need duplicate monitor? is it safe?
         {CurrentLockerTerm, CurrentLockerPid} ->
-            {State, confirm, [{monitor, process, Pid}]};
+            {State#state{locker_status = up}, confirm, [{monitor, process, Pid}]};
         {HigherTerm, _} when HigherTerm > CurrentLockerTerm ->
             ok = mnevis_lock_proc:update_locker_cache(Locker),
             MaybeStopEffects = case Pid of
