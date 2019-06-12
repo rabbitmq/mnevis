@@ -33,7 +33,7 @@ compare_versions(ReadVersions) ->
                 {ok, OtherVersion} ->
                     {true, {Tab, OtherVersion}};
                 {error, no_exists} ->
-                    {true, {Tab, 0}}
+                    {true, {Tab, -1}}
             end
         end,
         ReadVersions),
