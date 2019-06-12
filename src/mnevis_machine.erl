@@ -12,6 +12,7 @@
 -export([check_locker/2]).
 -export([safe_table_info/3]).
 -export([get_item_version/2]).
+-export([compare_versions/2]).
 
 -record(state, {
     locker_status = down,
@@ -51,6 +52,11 @@ check_locker({LockerTerm, _LockerPid}, #state{locker = {CurrentLockerTerm, _}}) 
         CurrentLockerTerm -> ok;
         _                 -> {error, wrong_locker_term}
     end.
+
+-spec compare_versions([mnevis_context:read_version()], term()) ->
+    ok | {version_mismatch, [mnevis_context:read_version()]}.
+compare_versions(Versions, _State) ->
+    mnevis_read:compare_versions(Versions).
 
 -spec safe_table_info(mnevis:table(), term(), state()) ->
     {ok, term()} | {error, {no_exists, mnevis:table()}}.

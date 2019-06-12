@@ -1,6 +1,8 @@
 -module(mnevis_read).
 
 -export([create_versions_table/0]).
+-export([all_table_versions/0]).
+-export([compare_versions/1]).
 -export([get_version/1, update_version/1, init_version/2]).
 -export([local_read_query/1, local_read_query/2]).
 -export([wait_for_versions/1]).
@@ -12,6 +14,16 @@ create_versions_table() ->
         {aborted,{already_exists,versions}} -> ok;
         Other -> error({cannot_create_versions_table, Other})
     end.
+
+all_table_versions() ->
+    Tables = mnesia:system_info(tables),
+    lists:filtermap(fun(Tab) ->
+        case get_version(Tab) of
+            {ok, Version}      -> {true, {Tab, Version}};
+            {error, no_exists} -> false
+        end
+    end,
+    Tables).
 
 -spec get_version({mnevis:table(), term()} | mnevis:table()) ->
     {ok, mnevis_context:version()} | {error, no_exists}.

@@ -16,6 +16,7 @@
 -export([sync_transaction/1, sync_transaction/2, sync_transaction/3]).
 -export([transaction/4, transaction/3, transaction/2, transaction/1]).
 -export([is_transaction/0]).
+-export([sync/0]).
 
 -compile(nowarn_deprecated_function).
 
@@ -152,6 +153,22 @@ transaction(Fun, Args, Retries, Options) ->
                     {atomic, Result};
                 Other -> Other
             end
+    end.
+
+-spec sync() -> ok | {error, term()} | {timeout, term()}.
+sync() ->
+    sync(?CONSISTENT_QUERY_TIMEOUT).
+
+-spec sync(non_neg_integer()) -> ok | {error, term()} | {timeout, term()}.
+sync(Timeout) ->
+    Versions = mnevis_read:all_table_versions(),
+    case ra:consistent_query(mnevis_node:node_id(),
+                             {mnevis_machine, compare_versions, [Versions]},
+                             Timeout) of
+        {ok, ok, _} -> ok;
+        {ok, {version_mismatch, Mismatch}, _} ->
+            mnevis_read:wait_for_versions(Mismatch);
+        Other -> Other
     end.
 
 wait_for_commit_to_apply(ok) -> ok;

@@ -147,6 +147,7 @@ create_sample_tables() ->
     {atomic, ok} = mnevis:create_table(sample, [{type, set}, {index, [3]}]),
     {atomic, ok} = mnevis:create_table(sample_bag, [{type, bag}, {index, [3]}]),
     {atomic, ok} = mnevis:create_table(sample_ordered_set, [{type, ordered_set}, {index, [3]}]),
+    ok = mnevis:sync(),
     ok.
 
 delete_sample_tables() ->
