@@ -13,7 +13,8 @@ groups() ->
         write_invisible_outside_transaction,
         delete_invisible_outside_transaction,
         unlock_on_transaction_exit,
-        consistent_counter
+        consistent_counter,
+        failed_transaction_cannot_commit
         ]}].
 
 init_per_suite(Config) ->
@@ -126,6 +127,68 @@ unlock_on_transaction_exit(_Config) ->
     receive unlocked -> ok
     after 1000 -> error(should_be_unlocked)
     end.
+
+failed_transaction_cannot_commit(_Config) ->
+    Pid = self(),
+    Locking = spawn(fun() ->
+        try
+            mnevis:transaction(fun() ->
+                mnesia:lock({sample, bar}, write),
+                mnesia:write({sample, locking_t, committed}),
+                Pid ! ready,
+                receive continue -> ok
+                after 10000 -> mnesia:abort(timeout)
+                end
+            end)
+        after
+            Pid ! locking_t_end
+        end
+    end),
+
+    Locked = spawn(fun() ->
+        mnevis:transaction(fun() ->
+            mnesia:lock({sample, bar}, write),
+            mnesia:write({sample, locked_t, committed}),
+            Pid ! unlocked
+        end),
+        Pid ! locked_t_end
+    end),
+    receive ready -> ok
+    after 1000 -> error(background_transaction_not_ready)
+    end,
+    receive unlocked -> error(should_be_locked)
+    after 1000 -> ok
+    end,
+    %% We want the transaction process to continue, but the locker process
+    %% to receive DOWN:
+    {ok, {_, LockerPid}} = mnevis_lock_proc:locate(),
+
+    %% Get monitor ref:
+    {leader, {state, _, _, _, {state, _, _, Monitors, _, _, _, _, _} ,_ ,_}} =
+        sys:get_state(LockerPid),
+    MRef = maps:get(Locking, Monitors),
+
+    %% Fake DOWN message:
+    LockerPid ! {'DOWN', MRef, process, Locking, test},
+
+    receive unlocked -> ok
+    after 1000 -> error(should_be_unlocked)
+    end,
+
+    %% Locking transaction will try to commit
+    Locking ! continue,
+    receive locking_t_end -> ok
+    after 1000 -> error(locking_t_should_finish)
+    end,
+
+    %% Locked transaction committed:
+    receive locked_t_end -> ok
+    after 1000 -> error(locked_t_should_finish)
+    end,
+
+    mnevis:sync(),
+    %% There should be no locking_t
+    [locked_t] = mnesia:dirty_all_keys(sample).
 
 consistent_counter(_Config) ->
     add_sample(counter, 0),
