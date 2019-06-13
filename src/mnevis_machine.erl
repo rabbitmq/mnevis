@@ -218,16 +218,8 @@ apply(_Meta, {locker_up, {Term, Pid} = Locker},
         {CurrentLockerTerm, CurrentLockerPid} ->
             {State#state{locker_status = up}, confirm, [{monitor, process, Pid}]};
         {HigherTerm, _} when HigherTerm > CurrentLockerTerm ->
-            ok = mnevis_lock_proc:update_locker_cache(Locker),
-            MaybeStopEffects = case Pid of
-                CurrentLockerPid -> [];
-                _                -> stop_locker_effects(CurrentLockerPid)
-            end,
-            {State#state{locker = Locker,
-                         locker_status = up,
-                         blacklisted = map_sets:new()},
-             confirm,
-             [{monitor, process, Pid}] ++ MaybeStopEffects};
+            {State1, Effects} = update_locker(Locker, State),
+            {State1, confirm, Effects};
         _ ->
             {State, reject, []}
     end;
@@ -279,6 +271,23 @@ apply(_Meta, Unknown, State) ->
 %% ==========================
 
 %% Top level helpers
+
+update_locker({_, Pid} = Locker, State = #state{locker = {_, CurrentLockerPid}}) ->
+    ok = mnevis_lock_proc:update_locker_cache(Locker),
+    MaybeStopEffects = case Pid of
+        CurrentLockerPid -> [];
+        _                -> stop_locker_effects(CurrentLockerPid)
+    end,
+    %% TODO: move committed transactions to memory after implementing
+    %% term increase in locker.
+    cleanup_committed_transactions(),
+    {State#state{locker = Locker,
+                 locker_status = up,
+                 blacklisted = map_sets:new()},
+     [{monitor, process, Pid}] ++ MaybeStopEffects}.
+
+cleanup_committed_transactions() ->
+    mnesia:clear_table(committed_transaction).
 
 create_committed_transaction_table() ->
     CreateResult = mnesia:create_table(committed_transaction,

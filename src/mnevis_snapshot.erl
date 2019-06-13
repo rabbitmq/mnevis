@@ -257,6 +257,8 @@ state_file(Dir) ->
     filename:join(Dir, "saved_state").
 
 restore_mnesia_backup(BackupFile) ->
+    %% TODO: test recovery. Does it make sense to restart mnesia instead?
+    %% Should we use schema_location = ram ?
     case mnesia:restore(BackupFile, [{default_op, recreate_tables}]) of
         {atomic, _}       -> ok;
         {aborted, Reason} -> {error, {aborted, Reason}}
