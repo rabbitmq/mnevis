@@ -815,9 +815,6 @@ do_acquire_lock_with_new_transaction(_Context, _LockItem, _LockKind, _Method, 0)
     mnesia:abort({unable_to_acquire_lock, no_promoted_lock_processes});
 do_acquire_lock_with_new_transaction(Context, LockItem, LockKind, Method, Attempts) ->
     ok = mnevis_context:assert_no_transaction(Context),
-    %% TODO: monitor the lock process to make sure there is no disconnect.
-    %% If there is a disconnect - the locker process will clean up the locks,
-    %% but transaction may still think it holds them.
     Locker = case mnevis_lock_proc:locate() of
         {ok, L}      -> L;
         {error, Err} -> mnesia:abort(Err)
@@ -836,9 +833,7 @@ do_acquire_lock_with_new_transaction(Context, LockItem, LockKind, Method, Attemp
         {error, {locked_nowait, Tid1}} ->
             NewContext = mnevis_context:set_transaction({Tid1, Locker}, Context),
             {error, locked_nowait, NewContext};
-        {error, is_not_leader} ->
-            %% TODO: notify when leader or timeout
-            do_acquire_lock_with_new_transaction(Context, LockItem, LockKind, Method, Attempts - 1);
+        %% TODO: handle different failures (wait and retry). Monitor that
         {error, Error} ->
             mnesia:abort(Error)
     end.

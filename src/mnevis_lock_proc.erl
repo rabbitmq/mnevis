@@ -142,7 +142,7 @@ get_current_ra_locker(CurrentLocker) ->
     mnevis_lock:lock_result() |
     {ok, mnevis_lock:transaction_id(), term()} |
     {error, locker_not_running} |
-    {error, is_not_leader}.
+    {error, locker_timeout}.
 try_lock_call({Term, Pid}, LockRequest) ->
     try
         gen_statem:call(Pid, {LockRequest, Term}, ?LOCKER_TIMEOUT)
