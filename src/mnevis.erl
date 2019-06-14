@@ -16,6 +16,7 @@
 -export([sync_transaction/1, sync_transaction/2, sync_transaction/3]).
 -export([transaction/4, transaction/3, transaction/2, transaction/1]).
 -export([is_transaction/0]).
+-export([sync/0]).
 
 -compile(nowarn_deprecated_function).
 
@@ -154,6 +155,22 @@ transaction(Fun, Args, Retries, Options) ->
             end
     end.
 
+-spec sync() -> ok | {error, term()} | {timeout, term()}.
+sync() ->
+    sync(?CONSISTENT_QUERY_TIMEOUT).
+
+-spec sync(non_neg_integer()) -> ok | {error, term()} | {timeout, term()}.
+sync(Timeout) ->
+    Versions = mnevis_read:all_table_versions(),
+    case ra:consistent_query(mnevis_node:node_id(),
+                             {mnevis_machine, compare_versions, [Versions]},
+                             Timeout) of
+        {ok, ok, _} -> ok;
+        {ok, {version_mismatch, Mismatch}, _} ->
+            mnevis_read:wait_for_versions(Mismatch);
+        Other -> Other
+    end.
+
 wait_for_commit_to_apply(ok) -> ok;
 wait_for_commit_to_apply({versions, Versions}) ->
     mnevis_read:wait_for_versions(Versions);
@@ -288,10 +305,7 @@ commit_transaction() ->
                     case {Writes, Deletes, DeletesObject} of
                         {[], [], []} ->
                             %% Read-only commits
-                            case read_only_commit(Context) of
-                                ok -> ok;
-                                {error, Err} -> mnesia:abort(Err)
-                            end;
+                            read_only_commit(Context);
                         _ ->
                             {ok, Result, _} =
                                 execute_command_with_retry(Context, commit,
@@ -801,9 +815,6 @@ do_acquire_lock_with_new_transaction(_Context, _LockItem, _LockKind, _Method, 0)
     mnesia:abort({unable_to_acquire_lock, no_promoted_lock_processes});
 do_acquire_lock_with_new_transaction(Context, LockItem, LockKind, Method, Attempts) ->
     ok = mnevis_context:assert_no_transaction(Context),
-    %% TODO: monitor the lock process to make sure there is no disconnect.
-    %% If there is a disconnect - the locker process will clean up the locks,
-    %% but transaction may still think it holds them.
     Locker = case mnevis_lock_proc:locate() of
         {ok, L}      -> L;
         {error, Err} -> mnesia:abort(Err)
@@ -822,9 +833,7 @@ do_acquire_lock_with_new_transaction(Context, LockItem, LockKind, Method, Attemp
         {error, {locked_nowait, Tid1}} ->
             NewContext = mnevis_context:set_transaction({Tid1, Locker}, Context),
             {error, locked_nowait, NewContext};
-        {error, is_not_leader} ->
-            %% TODO: notify when leader or timeout
-            do_acquire_lock_with_new_transaction(Context, LockItem, LockKind, Method, Attempts - 1);
+        %% TODO: handle different failures (wait and retry). Monitor that
         {error, Error} ->
             mnesia:abort(Error)
     end.

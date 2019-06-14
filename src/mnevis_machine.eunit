@@ -77,10 +77,10 @@ commit_write_test() ->
 
 down_creates_new_locker_test() ->
     InitState = init_state(),
-    #state{locker = {_, LockerPid} = Locker} = InitState,
+    #state{locker = {LockerTerm, LockerPid}} = InitState,
     NewState = InitState#state{locker_status = down},
     {NewState, ok,
-     [{mod_call, mnevis_lock_proc, start_new_locker, [Locker]}]} =
+     [{mod_call, mnevis_lock_proc, start_new_locker, [LockerTerm]}]} =
        mnevis_machine:apply(none, {down, LockerPid, reason}, InitState).
 
 down_ignores_not_current_locker_test() ->
@@ -107,7 +107,7 @@ locker_up_registers_same_locker_test() ->
 locker_up_registers_higher_term_test() ->
     InitState = init_state(),
     mnevis_lock_proc:create_locker_cache(),
-    #state{locker = {Term, _}} = InitState,
+    #state{locker = {Term, LockerPid}} = InitState,
     LockerDownState = InitState#state{locker_status = down},
 
     NewPid = spawn(fun() -> ok end),
@@ -117,11 +117,25 @@ locker_up_registers_higher_term_test() ->
     NewState = InitState#state{locker = NewLocker,
                                locker_status = up},
 
-    {NewState, confirm, [{monitor, process, NewPid}]} =
+    {NewState, confirm, [{monitor, process, NewPid},
+                         {mod_call, mnevis_lock_proc, stop, [LockerPid]}]} =
         mnevis_machine:apply(none, {locker_up, NewLocker}, InitState),
 
-    {NewState, confirm, [{monitor, process, NewPid}]} =
+    {NewState, confirm, [{monitor, process, NewPid},
+                         {mod_call, mnevis_lock_proc, stop, [LockerPid]}]} =
         mnevis_machine:apply(none, {locker_up, NewLocker}, LockerDownState).
+
+locker_up_rejects_same_term_different_pid_test() ->
+    InitState = init_state(),
+    mnevis_lock_proc:create_locker_cache(),
+    #state{locker = {Term, Pid}} = InitState,
+    NotSamePid = spawn(fun() -> ok end),
+    LockerDownState = InitState#state{locker_status = down},
+    {InitState, reject, []} =
+        mnevis_machine:apply(none, {locker_up, {Term, NotSamePid}}, InitState),
+
+    {LockerDownState, reject, []} =
+        mnevis_machine:apply(none, {locker_up, {Term, NotSamePid}}, LockerDownState).
 
 locker_up_rejects_lower_term_test() ->
     InitState = init_state(),
@@ -166,10 +180,10 @@ which_locker_old_returns_current_test() ->
 
 which_locker_current_returns_error_and_effect_test() ->
     InitState = init_state(),
-    #state{locker = Locker} = InitState,
+    #state{locker = {LockerTerm, _} = Locker} = InitState,
 
-    {InitState, {error, locker_up_to_date},
-     [{mod_call, mnevis_lock_proc, start_new_locker, [Locker]}]} =
+    {InitState, {error, waiting_for_new_locker},
+     [{mod_call, mnevis_lock_proc, start_new_locker, [LockerTerm]}]} =
         mnevis_machine:apply(none, {which_locker, Locker}, InitState).
 
 which_locker_newer_error_test() ->

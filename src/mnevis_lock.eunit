@@ -310,15 +310,11 @@ cleanup_transaction_test() ->
     after 1000 -> error({unlock_message_lost, notified_is_not_received})
     end.
 
-monitor_down_cleanup_test() ->
+monitor_down_test() ->
     State = init(0),
     Source = self(),
     Self = self(),
-    Source1 = spawn(fun() ->
-        receive {mnevis_unlock, _} ->
-            Self ! notified
-        end
-    end),
+    Source1 = spawn(fun() -> ok end),
 
     flush_notified(),
 
@@ -331,25 +327,16 @@ monitor_down_cleanup_test() ->
 
     {{error, {locked, Tid1}}, State4} = lock(Tid1, Source1, LockItem, write, State3),
 
-    State5 = monitor_down(ref, Source, reason, State4),
+    {Tid, State5} = monitor_down(ref, Source, reason, State4),
 
     #state{
-        transactions = #{Source1 := Tid1},
-        read_locks = #{},
-        reverse_read_locks = #{},
-        write_locks = #{},
-        reverse_write_locks = #{},
-        monitors = Monitors,
-        transaction_locks = TransLocks
+        monitors = Monitors
     } = State5,
 
-    [] = simple_dgraph:out_neighbours(TransLocks, Tid1),
-    [] = simple_dgraph:in_neighbours(TransLocks, Tid1),
-    [Source1] = maps:keys(Monitors),
+    %% monitor_down only changes monitors
+    State5 = State4#state{monitors = Monitors},
 
-    receive notified -> ok
-    after 1000 -> error({unlock_message_lost, notified_is_not_received})
-    end.
+    [Source1] = maps:keys(Monitors).
 
 monitor_down_unknown_test() ->
     State = init(0),
@@ -369,7 +356,7 @@ monitor_down_unknown_test() ->
 
     {{error, {locked, Tid1}}, State4} = lock(Tid1, Source1, LockItem, write, State3),
 
-    State4 = monitor_down(ref, spawn(fun() -> ok end), reason, State4).
+    {none, State4} = monitor_down(ref, spawn(fun() -> ok end), reason, State4).
 
 
 flush_notified() ->

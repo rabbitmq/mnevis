@@ -12,9 +12,13 @@
 -export([check_locker/2]).
 -export([safe_table_info/3]).
 -export([get_item_version/2]).
+-export([compare_versions/2]).
 
--record(state, {locker_status = down,
-                locker = {0, none} :: mnevis_lock_proc:locker() | {0, none}}).
+-record(state, {
+    locker_status = down,
+    locker = {0, none} :: mnevis_lock_proc:locker() | {0, none},
+    blacklisted = map_sets:new() :: map_sets:set(mnevis_lock:transaction_id())
+}).
 
 -type state() :: #state{}.
 
@@ -48,6 +52,11 @@ check_locker({LockerTerm, _LockerPid}, #state{locker = {CurrentLockerTerm, _}}) 
         CurrentLockerTerm -> ok;
         _                 -> {error, wrong_locker_term}
     end.
+
+-spec compare_versions([mnevis_context:read_version()], term()) ->
+    ok | {version_mismatch, [mnevis_context:read_version()]}.
+compare_versions(Versions, _State) ->
+    mnevis_read:compare_versions(Versions).
 
 -spec safe_table_info(mnevis:table(), term(), state()) ->
     {ok, term()} | {error, {no_exists, mnevis:table()}}.
@@ -96,14 +105,18 @@ state_enter(recovered, #state{locker = Locker}) ->
     [];
 state_enter(follower, #state{locker = {_Term, Pid}})
         when is_pid(Pid) andalso node(Pid) == node() ->
-    [{mod_call, mnevis_lock_proc, stop, [Pid]}];
+    stop_locker_effects(Pid);
 state_enter(State, _) ->
     error_logger:info_msg("mnevis machine enter state ~p~n", [State]),
     [].
 
 -spec start_new_locker_effects(state()) -> ra_machine:effects().
-start_new_locker_effects(#state{locker = Locker}) ->
-    [{mod_call, mnevis_lock_proc, start_new_locker, [Locker]}].
+start_new_locker_effects(#state{locker = {Term, _Pid}}) ->
+    [{mod_call, mnevis_lock_proc, start_new_locker, [Term]}].
+
+-spec stop_locker_effects(pid()) -> ra_machine:effects().
+stop_locker_effects(LockerPid) ->
+    [{mod_call, mnevis_lock_proc, stop, [LockerPid]}].
 
 -spec snapshot_module() -> module().
 snapshot_module() ->
@@ -111,8 +124,11 @@ snapshot_module() ->
 
 -spec apply(map(), command(), state()) ->
     {state(), reply(), ra_machine:effects()}.
-apply(Meta, {commit, Transaction, {Writes, Deletes, DeletesObject}}, State)  ->
-    with_valid_locker(Transaction, State,
+apply(Meta, {commit,
+             Transaction,
+             {Writes, Deletes, DeletesObject}},
+            State)  ->
+    with_valid_transaction(Transaction, State,
         fun() ->
             case {Writes, Deletes, DeletesObject} of
                 {[], [], []} ->
@@ -178,7 +194,7 @@ apply(Meta, {transform_table, Tab, {M, F, A}, NewAttributeList, NewRecordName}, 
         end),
     {State, {ok, Result}, snapshot_effects(Meta, State)};
 apply(Meta, {transform_table, Tab, {M, F, A}, NewAttributeList}, State) ->
-    Fun = fun() -> erlang:apply(M, F, A) end,
+    Fun = fun(Record) -> erlang:apply(M, F, [Record | A]) end,
     Result = with_ignore_consistent_error(
         fun() ->
             mnesia:transform_table(Tab, Fun, NewAttributeList)
@@ -189,21 +205,22 @@ apply(Meta, {transform_table, Tab, {M, F, A}, NewAttributeList}, State) ->
 apply(_Meta, {down, Pid, _Reason}, State = #state{locker = {_Term, LockerPid}}) ->
     case Pid of
         LockerPid ->
+            %% Locker pid is down. We need to start a new locker
             {State#state{locker_status = down}, ok, start_new_locker_effects(State)};
         _ ->
             {State, ok, []}
     end;
 apply(_Meta, {locker_up, {Term, Pid} = Locker},
-              State = #state{locker = {CurrentLockerTerm, _CurrentLockerPid}}) ->
-    case Term >= CurrentLockerTerm of
-        true ->
-            %% TODO: change locker status to something more sensible
-            ok = mnevis_lock_proc:update_locker_cache(Locker),
-            {State#state{locker_status = up,
-                         locker = Locker},
-             confirm,
-             [{monitor, process, Pid}]};
-        false ->
+              State = #state{locker = {CurrentLockerTerm, CurrentLockerPid}}) ->
+    case {Term, Pid} of
+        %% Duplicate?
+        %% TODO: do we need duplicate monitor? is it safe?
+        {CurrentLockerTerm, CurrentLockerPid} ->
+            {State#state{locker_status = up}, confirm, [{monitor, process, Pid}]};
+        {HigherTerm, _} when HigherTerm > CurrentLockerTerm ->
+            {State1, Effects} = update_locker(Locker, State),
+            {State1, confirm, Effects};
+        _ ->
             {State, reject, []}
     end;
 apply(_Meta, {which_locker, OldLocker},
@@ -213,8 +230,17 @@ apply(_Meta, {which_locker, OldLocker},
         none ->
             {State, {ok, CurrentLocker}, []};
         CurrentLocker ->
-            %% TODO: monitor that. Maybe remove
-            {State, {error, locker_up_to_date}, start_new_locker_effects(State)};
+            %% Transaction process cannot reach current locker.
+            %% It may be down, but is still current.
+            %% Or transaction node may be disconnected.
+            %% It's hard to check which case is that
+
+            %% We can assume that if transaction process
+            %% can reach the ra cluster - it shoudl be able
+            %% to reach the locker.
+
+            %% TODO: monitor that.
+            {State, {error, waiting_for_new_locker}, start_new_locker_effects(State)};
         {OldTerm, _} when OldTerm < LockerTerm ->
             {State, {ok, CurrentLocker}, []};
         _ ->
@@ -222,7 +248,20 @@ apply(_Meta, {which_locker, OldLocker},
             {State, {error, {invalid_locker, OldLocker, CurrentLocker}}, []}
     end;
 apply(_Meta, {which_locker, _OldLocker}, State = #state{locker_status = down}) ->
-    {State, {error, locker_down}, []};
+    %% The locker process may be down and we don't have a new one yet.
+    {State, {error, waiting_for_new_locker}, []};
+apply(_Meta, {blacklist, Locker, TransactionId},
+             State = #state{blacklisted = BlackListed}) ->
+    %% Locker detected transaction process to be down and wants to clean
+    %% this transaction locks. The transaction should not be committed.
+    %% See mnevis_lock_proc for more details.
+    %% Only for the valid locker.
+    with_valid_locker(Locker, State,
+        fun() ->
+            %% TODO: blacklisted storage. Does it make sense to use mnesia table?
+            BlackListed1 = map_sets:add_element(TransactionId, BlackListed),
+            {State#state{blacklisted = BlackListed1}, ok, []}
+        end);
 %% TODO: flush_locker_transactions request
 %% TODO: cleanup term transactions for previous terms
 apply(_Meta, Unknown, State) ->
@@ -232,6 +271,23 @@ apply(_Meta, Unknown, State) ->
 %% ==========================
 
 %% Top level helpers
+
+update_locker({_, Pid} = Locker, State = #state{locker = {_, CurrentLockerPid}}) ->
+    ok = mnevis_lock_proc:update_locker_cache(Locker),
+    MaybeStopEffects = case Pid of
+        CurrentLockerPid -> [];
+        _                -> stop_locker_effects(CurrentLockerPid)
+    end,
+    %% TODO: move committed transactions to memory after implementing
+    %% term increase in locker.
+    cleanup_committed_transactions(),
+    {State#state{locker = Locker,
+                 locker_status = up,
+                 blacklisted = map_sets:new()},
+     [{monitor, process, Pid}] ++ MaybeStopEffects}.
+
+cleanup_committed_transactions() ->
+    mnesia:clear_table(committed_transaction).
 
 create_committed_transaction_table() ->
     CreateResult = mnesia:create_table(committed_transaction,
@@ -343,13 +399,29 @@ save_committed_transaction(Transaction) ->
 %             true
 %     end.
 
+-spec is_transaction_id_blacklisted(mnevis_lock:transaction_id(), state()) ->
+    boolean().
+is_transaction_id_blacklisted(TransactionId, #state{blacklisted = BlackListed}) ->
+    map_sets:is_element(TransactionId, BlackListed).
+
 %% ==========================
 
 %% Functional helpers to skip ops.
+-spec with_valid_transaction(mnevis_context:transaction(), state(),
+                             fun(() -> apply_result(T, E))) -> apply_result(T, E).
+with_valid_transaction({TransactionId, Locker}, State, Fun) ->
+    case check_locker(Locker, State) of
+        ok ->
+            case is_transaction_id_blacklisted(TransactionId, State) of
+                false -> Fun();
+                true  -> {State, {error, {aborted, transaction_seen_as_down_by_locker}}, []}
+            end;
+        {error, Reason} -> {State, {error, {aborted, Reason}}, []}
+    end.
 
--spec with_valid_locker(transaction(), state(),
+-spec with_valid_locker(mnevis_lock_proc:locker(), state(),
                        fun(() -> apply_result(T, E))) -> apply_result(T, E).
-with_valid_locker({_Tid, Locker}, State, Fun) ->
+with_valid_locker(Locker, State, Fun) ->
     case check_locker(Locker, State) of
         ok -> Fun();
         {error, Reason} -> {State, {error, {aborted, Reason}}, []}
