@@ -610,10 +610,86 @@ local_table_info(ActivityId, Opaque, Tab, InfoItem) ->
 clear_table(_ActivityId, _Opaque, _Tab, _Obj) ->
     mnesia:abort(nested_transaction).
 
-%% TODO: QLC API.
-select(_ActivityId, _Opaque, _Tab, _MatchSpec, _LockKind) ->
-    mnesia:abort(not_implemented).
+select(_ActivityId, _Opaque, Tab, MatchSpec, LockKind) ->
+    Context = get_transaction_context(),
+    LockItem = select_lock_item(Tab, MatchSpec),
+    with_lock_and_version(Context, LockItem, LockKind, fun() ->
+        Context1 = get_transaction_context(),
+        %% Optimisation. If there are no records in the context
+        %% the code is much more simple.
+        case mnevis_context:has_changes_for_table(Tab, Context1) of
+            false ->
+                {RecList, _Context2} =
+                    execute_local_read_query({dirty_select, [Tab, MatchSpec]}, Context1),
+                RecList;
+            true ->
+                select_with_context(Tab, MatchSpec, Context1)
+        end
+    end).
 
+select_with_context(Tab, MatchSpec, Context0) ->
+    case MatchSpec of
+        %% Optimisation. No additional checks required
+        [{_, _, ['$_']}] ->
+            {RecList, Context1} =
+                execute_local_read_query({dirty_select, [Tab, MatchSpec]}, Context0),
+            mnevis_context:filter_match_spec_from_context(Context1, Tab, MatchSpec, RecList);
+        %% A single match expression.
+        %% Select original records and transform them after filete
+        [{H, C, T}] ->
+            RecordMatchSpec = [{H, C, ['$_']}],
+            {RecList, Context1} =
+                execute_local_read_query({dirty_select, [Tab, RecordMatchSpec]}, Context0),
+            FilteredList = mnevis_context:filter_match_spec_from_context(Context1, Tab, RecordMatchSpec, RecList),
+            %% Transform records to final values
+            %% using a match spec without conditions
+            Compiled = ets:match_spec_compile([{H, [], T}]),
+            ets:match_spec_run(FilteredList, Compiled);
+        _ ->
+            %% Complex match spec.
+            %% Need to associate each expression with its own set of results
+            %% Each match spec result is a tagged record,
+            %% which is transformed to the final form by running the match
+            %% spec again without conditions.
+            %% This is exreemely inefficient, but mnesia also does not recommend
+            %% to run select with continuation after write/delete.
+            {ReversedRecordMatchSpec, TransformsMap} =
+                lists:foldl(fun({H, C, T}, {I, Spec, Transforms}) ->
+                    %% Index
+                    {I + 1,
+                    %% Each expression result record will be tagged with the index
+                     [{H, C, [{{I, '$_'}}]} | Spec],
+                    %% Mapping from index to result type
+                     maps:put(I, ets:match_spec_compile([{H, [], T}]), Transforms)}
+                end),
+            %% Keep original order
+            RecordMatchSpec = lists:reverse(ReversedRecordMatchSpec),
+            {TaggedRecList0, Context1} =
+                execute_local_read_query({dirty_select, [Tab, RecordMatchSpec]}, Context0),
+            TaggedRecList =
+                mnevis_context:filter_tagged_match_spec_from_context(Context1, Tab, RecordMatchSpec, TaggedRecList0),
+            %% TODO: this should be possible to do with a single match spec.
+            lists:map(fun({Tag, Rec}) ->
+                Transform = maps:get(Tag, TransformsMap),
+                %% Transform should always match
+                [Res] = ets:match_spec_run([Rec], Transform),
+                Res
+            end,
+            TaggedRecList)
+    end.
+
+select_lock_item(Tab, MatchSpec) ->
+    case MatchSpec of
+        [{HeadPat,_, _}] when is_tuple(HeadPat), tuple_size(HeadPat) > 2 ->
+            Key = element(2, HeadPat),
+            case mnesia:has_var(Key) of
+                false -> {Tab, Key};
+                true  -> {table, Tab}
+            end;
+        _ -> {table, Tab}
+    end.
+
+%% TODO: QLC API.
 select(_ActivityId, _Opaque, _Tab, _MatchSpec, _Limit, _LockKind) ->
     mnesia:abort(not_implemented).
 
@@ -817,16 +893,14 @@ lock_already_acquired_1(LockItem, LockKind, Locks) ->
         {_, none}      -> false
     end.
 
-do_acquire_lock_with_new_transaction(_Context, _LockItem, _LockKind, _Method, 0) ->
-    mnesia:abort({unable_to_acquire_lock, no_promoted_lock_processes});
-do_acquire_lock_with_new_transaction(Context, LockItem, LockKind, Method, _Attempts) ->
+do_acquire_lock_with_new_transaction(Context, LockItem, LockKind, Method, Attempts) ->
     ok = mnevis_context:assert_no_transaction(Context),
     Locker = case mnevis_lock_proc:locate() of
         {ok, L}      -> L;
         {error, Err} -> mnesia:abort(Err)
     end,
     LockRequest = {Method, undefined, self(), LockItem, LockKind},
-    case retry_lock_call(Locker, LockRequest) of
+    case retry_lock_call(Locker, LockRequest, Attempts) of
         {ok, Tid1} ->
             NewContext = mnevis_context:set_transaction({Tid1, Locker}, Context),
             {ok, ok, NewContext};
@@ -844,13 +918,15 @@ do_acquire_lock_with_new_transaction(Context, LockItem, LockKind, Method, _Attem
             mnesia:abort(Error)
     end.
 
-retry_lock_call(Locker, LockRequest) ->
+retry_lock_call(_Locker, _LockRequest, 0) ->
+    mnesia:abort({unable_to_acquire_lock, no_promoted_lock_processes});
+retry_lock_call(Locker, LockRequest, Attempts) ->
     case mnevis_lock_proc:try_lock_call(Locker, LockRequest) of
         {error, locker_not_running} ->
             %% This function should block, so it's safe to recursively call
             case mnevis_lock_proc:ensure_lock_proc(Locker) of
                 {ok, NewLocker} ->
-                    retry_lock_call(NewLocker, LockRequest);
+                    retry_lock_call(NewLocker, LockRequest, Attempts);
                 {error, {command_error, Reason}} ->
                     mnesia:abort({lock_proc_not_found, Reason});
                 {error, Reason} ->
