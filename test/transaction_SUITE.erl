@@ -5,6 +5,7 @@
 
 -include_lib("common_test/include/ct.hrl").
 -include_lib("eunit/include/eunit.hrl").
+-include_lib("stdlib/include/qlc.hrl").
 
 all() ->
     [{group, single_node}, {group, two_nodes}].
@@ -44,7 +45,8 @@ groups() ->
         write_delete_converge,
         write_delete_object_converge,
         write_bag_delete_converge,
-        write_bag_delete_object_converge
+        write_bag_delete_object_converge,
+        qlc
      ],
     [
      {two_nodes, [], Tests},
@@ -484,6 +486,30 @@ match_object_cached_state(_Config) ->
         [{sample_bag, foo, bar}] = mnesia:match_object({sample_bag, foo, bar}),
         [{sample_ordered_set, foo, bar}] = mnesia:match_object({sample_ordered_set, foo, bar})
     end).
+
+qlc(Config) ->
+    add_sample({sample, foo, bar}),
+    add_sample({sample, bar, baz}),
+    {atomic, [{sample, bar, baz}]} = mnevis:transaction(fun() ->
+        qlc:e(qlc:q([S || S = {_, _, baz} <- mnesia:table(sample)]))
+    end),
+    {aborted, foo} = mnevis:transaction(fun() ->
+        ok = mnesia:write({sample, foo, baz}),
+        Result = qlc:e(qlc:q([S || S = {_, _, baz} <- mnesia:table(sample)])),
+        [{sample, bar, baz}, {sample, foo, baz}] = lists:usort(Result),
+
+        ok = mnesia:delete({sample, foo}),
+        [baz] = qlc:e(qlc:q([element(3, S) || S = {_, _, baz} <- mnesia:table(sample)])),
+
+        ok = mnesia:delete_object({sample, bar, baz}),
+        [] = qlc:e(qlc:q([element(3, S) || S = {_, _, baz} <- mnesia:table(sample)])),
+        [] = qlc:e(qlc:q([S || S <- mnesia:table(sample)])),
+        mnesia:abort(foo)
+    end),
+    {atomic, Old} = mnevis:transaction(fun() ->
+        qlc:e(qlc:q([S || S <- mnesia:table(sample)]))
+    end),
+    [{sample, bar, baz}, {sample, foo, bar}] = lists:usort(Old).
 
 select_cached_state(_Config) ->
     {aborted, foo} = mnevis:transaction(fun() ->

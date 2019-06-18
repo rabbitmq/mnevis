@@ -689,10 +689,16 @@ select_lock_item(Tab, MatchSpec) ->
         _ -> {table, Tab}
     end.
 
-%% TODO: QLC API.
-select(_ActivityId, _Opaque, _Tab, _MatchSpec, _Limit, _LockKind) ->
-    mnesia:abort(not_implemented).
+%% TODO: Implement limit. This may require using undocumented APIs
+select(ActivityId, Opaque, Tab, MatchSpec, _Limit, LockKind) ->
+    %% Get all the messages in the first batch.
+    %% Mnesia docs mention that the Limit here is not a requirement
+    %% This should be enough to support (inefficient) QLC API
+    Result = select(ActivityId, Opaque, Tab, MatchSpec, LockKind),
+    {Result, '$end_of_table'}.
 
+select_cont(_ActivityId, _Opaque, '$end_of_table') ->
+    '$end_of_table';
 select_cont(_ActivityId, _Opaque, _Cont) ->
     mnesia:abort(not_implemented).
 
