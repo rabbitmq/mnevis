@@ -400,9 +400,9 @@ delete_object(_ActivityId, _Opaque, Tab, Rec, LockKind) ->
 
 read(_ActivityId, _Opaque, Tab, Key, LockKind) ->
     Context0 = get_transaction_context(),
-    case mnevis_context:read_from_context(Context0, Tab, Key) of
+    case mnevis_context:read(Context0, Tab, Key) of
         {written, set, Record} ->
-            mnevis_context:filter_read_from_context(Context0, Tab, Key, [Record]);
+            mnevis_context:filter_read(Context0, Tab, Key, [Record]);
         deleted -> [];
         {deleted_and_written, bag, Recs} -> Recs;
         _ ->
@@ -414,7 +414,7 @@ read(_ActivityId, _Opaque, Tab, Key, LockKind) ->
                 %% We use dirty operations here because we want to call them
                 %% directly via erlang:apply/3
                 {RecList, Context2} = execute_local_read_query(ReadQuery, Context1),
-                mnevis_context:filter_read_from_context(Context2, Tab, Key, RecList)
+                mnevis_context:filter_read(Context2, Tab, Key, RecList)
             end)
     end.
 
@@ -435,7 +435,7 @@ match_object(_ActivityId, _Opaque, Tab, Pattern, LockKind) ->
     with_lock_and_version(Context0, {table, Tab}, LockKind, fun() ->
         Context1 = get_transaction_context(),
         {RecList, Context2} = execute_local_read_query({dirty_match_object, [Tab, Pattern]}, Context1),
-        mnevis_context:filter_match_from_context(Context2, Tab, Pattern, RecList)
+        mnevis_context:filter_match(Context2, Tab, Pattern, RecList)
     end).
 
 all_keys(ActivityId, Opaque, Tab, LockKind) ->
@@ -446,7 +446,7 @@ all_keys(ActivityId, Opaque, Tab, LockKind) ->
 
         case mnevis_context:deletes_object(Context2, Tab) of
             [] ->
-                mnevis_context:filter_all_keys_from_context(Context2, Tab, AllKeys);
+                mnevis_context:filter_all_keys(Context2, Tab, AllKeys);
             Deletes ->
                 DeletedKeys = lists:filtermap(fun({_, Rec, _}) ->
                     Key = record_key(Rec),
@@ -456,7 +456,7 @@ all_keys(ActivityId, Opaque, Tab, LockKind) ->
                     end
                 end,
                 Deletes),
-                mnevis_context:filter_all_keys_from_context(Context2, Tab, AllKeys -- DeletedKeys)
+                mnevis_context:filter_all_keys(Context2, Tab, AllKeys -- DeletedKeys)
         end
     end).
 
@@ -575,7 +575,7 @@ index_match_object(_ActivityId, _Opaque, Tab, Pattern, Pos, LockKind) ->
     with_lock_and_version(Context, {table, Tab}, LockKind, fun() ->
         Context1 = get_transaction_context(),
         {RecList, Context2} = execute_local_read_query({dirty_index_match_object, [Tab, Pattern, Pos]}, Context1),
-        mnevis_context:filter_match_from_context(Context2, Tab, Pattern, RecList)
+        mnevis_context:filter_match(Context2, Tab, Pattern, RecList)
     end).
 
 index_read(_ActivityId, _Opaque, Tab, SecondaryKey, Pos, LockKind) ->
@@ -583,7 +583,7 @@ index_read(_ActivityId, _Opaque, Tab, SecondaryKey, Pos, LockKind) ->
     with_lock_and_version(Context, {table, Tab}, LockKind, fun() ->
         Context1 = get_transaction_context(),
         {RecList, Context2} = execute_local_read_query({dirty_index_read, [Tab, SecondaryKey, Pos]}, Context1),
-        mnevis_context:filter_index_from_context(Context2, Tab, SecondaryKey, Pos, RecList)
+        mnevis_context:filter_index(Context2, Tab, SecondaryKey, Pos, RecList)
     end).
 
 table_info(_ActivityId, _Opaque, Tab, InfoItem) ->
@@ -633,14 +633,14 @@ select_with_context(Tab, MatchSpec, Context0) ->
         [{_, _, ['$_']}] ->
             {RecList, Context1} =
                 execute_local_read_query({dirty_select, [Tab, MatchSpec]}, Context0),
-            mnevis_context:filter_match_spec_from_context(Context1, Tab, MatchSpec, RecList);
+            mnevis_context:filter_match_spec(Context1, Tab, MatchSpec, RecList);
         %% A single match expression.
         %% Select original records and transform them after filete
         [{H, C, T}] ->
             RecordMatchSpec = [{H, C, ['$_']}],
             {RecList, Context1} =
                 execute_local_read_query({dirty_select, [Tab, RecordMatchSpec]}, Context0),
-            FilteredList = mnevis_context:filter_match_spec_from_context(Context1, Tab, RecordMatchSpec, RecList),
+            FilteredList = mnevis_context:filter_match_spec(Context1, Tab, RecordMatchSpec, RecList),
             %% Transform records to final values
             %% using a match spec without conditions
             Compiled = ets:match_spec_compile([{H, [], T}]),
@@ -667,7 +667,7 @@ select_with_context(Tab, MatchSpec, Context0) ->
             {TaggedRecList0, Context1} =
                 execute_local_read_query({dirty_select, [Tab, RecordMatchSpec]}, Context0),
             TaggedRecList =
-                mnevis_context:filter_tagged_match_spec_from_context(Context1, Tab, RecordMatchSpec, TaggedRecList0),
+                mnevis_context:filter_tagged_match_spec(Context1, Tab, RecordMatchSpec, TaggedRecList0),
             %% TODO: this should be possible to do with a single match spec.
             lists:map(fun({Tag, Rec}) ->
                 Transform = maps:get(Tag, TransformsMap),

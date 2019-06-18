@@ -11,13 +11,13 @@
 
          has_changes_for_table/2,
 
-         read_from_context/3,
-         filter_read_from_context/4,
-         filter_match_from_context/4,
-         filter_index_from_context/5,
-         filter_all_keys_from_context/3,
-         filter_match_spec_from_context/4,
-         filter_tagged_match_spec_from_context/4,
+         read/3,
+         filter_read/4,
+         filter_match/4,
+         filter_index/5,
+         filter_all_keys/3,
+         filter_match_spec/4,
+         filter_tagged_match_spec/4,
 
          transaction/1,
          transaction_id/1,
@@ -340,12 +340,12 @@ add_delete_object_1(#context{delete_object = DeleteObject,
     Context#context{delete_object = maps:put({Tab, Key}, [Item | OldDeleteItems], DeleteObject),
                     write_bag = maps:put({Tab, Key}, WriteBagItems, WriteBag)}.
 
--spec read_from_context(context(), table(), key()) ->
+-spec read(context(), table(), key()) ->
     not_found |
     deleted |
     {written, set, record()} |
     {deleted_and_written, bag, [record()]}.
-read_from_context(#context{write_set = WriteSet,
+read(#context{write_set = WriteSet,
                            delete = Delete,
                            write_bag = WriteBag},
                   Tab, Key) ->
@@ -362,18 +362,18 @@ read_from_context(#context{write_set = WriteSet,
             end
     end.
 
--spec filter_read_from_context(context(), table(), key(), [record()]) -> [record()].
-filter_read_from_context(Context, Tab, Key, RecList) ->
+-spec filter_read(context(), table(), key(), [record()]) -> [record()].
+filter_read(Context, Tab, Key, RecList) ->
     #context{write_bag = WriteBag,
              delete_object = DeleteObject} = Context,
     Deleted = get_records(maps:get({Tab, Key}, DeleteObject, [])),
     Added = get_records(maps:get({Tab, Key}, WriteBag, [])),
     lists:usort(RecList ++ Added) -- Deleted.
 
--spec filter_from_context(context(), table(), [Record],
+-spec filter(context(), table(), [Record],
                           fun((Record) -> boolean()),
                           fun((Record) -> term())) -> [Record].
-filter_from_context(Context, Tab, RecList, Predicate, KeyFun) ->
+filter(Context, Tab, RecList, Predicate, KeyFun) ->
     #context{write_set = WriteSet,
              write_bag = WriteBag,
              delete_object = DeleteObject,
@@ -415,35 +415,35 @@ filter_from_context(Context, Tab, RecList, Predicate, KeyFun) ->
 record_deleted_object(Rec, Table, DeleteObject) ->
     lists:member(Rec, get_records(maps:get({Table, mnevis:record_key(Rec)}, DeleteObject, []))).
 
--spec filter_match_from_context(context(), table(), term(), [record()]) -> [record()].
-filter_match_from_context(Context, Tab, Pattern, RecList) ->
+-spec filter_match(context(), table(), term(), [record()]) -> [record()].
+filter_match(Context, Tab, Pattern, RecList) ->
     MatchSpec = [{Pattern, [], ['$_']}],
-    filter_match_spec_from_context(Context, Tab, MatchSpec, RecList).
+    filter_match_spec(Context, Tab, MatchSpec, RecList).
 
--spec filter_match_spec_from_context(context(), table(), ets:match_spec(), [record()]) ->
+-spec filter_match_spec(context(), table(), ets:match_spec(), [record()]) ->
     [record()].
-filter_match_spec_from_context(Context, Tab, MatchSpec, RecList) ->
+filter_match_spec(Context, Tab, MatchSpec, RecList) ->
     %% TODO: we can filer a whole list with a match spec, not one-by-one.
     %% this could be more efficient, but I'm not sure
     Compiled = ets:match_spec_compile(MatchSpec),
     Predicate = fun(Rec) -> match_compiled(Compiled, Rec) end,
-    filter_from_context(Context, Tab, RecList, Predicate, fun mnevis:record_key/1).
+    filter(Context, Tab, RecList, Predicate, fun mnevis:record_key/1).
 
--spec filter_tagged_match_spec_from_context(context(), table(), ets:match_spec(), [{integer(), record()}]) ->
+-spec filter_tagged_match_spec(context(), table(), ets:match_spec(), [{integer(), record()}]) ->
     [{integer(), record()}].
-filter_tagged_match_spec_from_context(Context, Tab, MatchSpec, TaggedRecList) ->
+filter_tagged_match_spec(Context, Tab, MatchSpec, TaggedRecList) ->
     Compiled = ets:match_spec_compile(MatchSpec),
     Predicate = fun(Rec) -> match_compiled(Compiled, Rec) end,
     KeyFun = fun({_Teg, Rec}) -> mnevis:record_key(Rec) end,
-    filter_from_context(Context, Tab, TaggedRecList, Predicate, KeyFun).
+    filter(Context, Tab, TaggedRecList, Predicate, KeyFun).
 
--spec filter_index_from_context(context(), table(), term(), integer(), [record()]) -> [record()].
-filter_index_from_context(Context, Tab, SecondaryKey, Pos, RecList) ->
+-spec filter_index(context(), table(), term(), integer(), [record()]) -> [record()].
+filter_index(Context, Tab, SecondaryKey, Pos, RecList) ->
     Predicate = fun(Rec) -> element(Pos, Rec) == SecondaryKey end,
-    filter_from_context(Context, Tab, RecList, Predicate, fun mnevis:record_key/1).
+    filter(Context, Tab, RecList, Predicate, fun mnevis:record_key/1).
 
--spec filter_all_keys_from_context(context(), table(), [key()]) -> [key()].
-filter_all_keys_from_context(Context, Tab, Keys) ->
+-spec filter_all_keys(context(), table(), [key()]) -> [key()].
+filter_all_keys(Context, Tab, Keys) ->
     #context{delete_object = DeleteObject} = Context,
     DeleteKeys = [ Key || {_, Key, _} <- deletes(Context, Tab) ],
     WriteKeys = [ mnevis:record_key(Rec) || {_, Rec, _} <- writes(Context, Tab),
