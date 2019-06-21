@@ -4,8 +4,8 @@
 
 -export([create_table/2, delete_table/1]).
 -export([add_table_index/2, del_table_index/2]).
-
 -export([clear_table/1]).
+-export([table_info/2]).
 
 %% TODO: invetigate safety of transform.
 -export([transform_table/3, transform_table/4]).
@@ -108,6 +108,12 @@ del_table_index(Tab, AttrName) ->
 clear_table(Tab) ->
     {ok, R} = run_ra_command({clear_table, Tab}),
     R.
+
+table_info(Tab, Info) ->
+    case consistent_table_info(Tab, Info) of
+        {ok, Res}    -> Res;
+        {error, Err} -> mnesia:abort({aborted, Err})
+    end.
 
 %% NOTE: transform table does not support closures
 %% because transform is persisted to the raft log
@@ -581,19 +587,19 @@ index_read(_ActivityId, _Opaque, Tab, SecondaryKey, Pos, LockKind) ->
     end).
 
 table_info(ActivityId, Opaque, Tab, InfoItem) ->
-    case consistent_table_info(ActivityId, Opaque, Tab, InfoItem) of
+    case consistent_table_info(Tab, InfoItem) of
         {ok, Result}              -> Result;
         {error, {no_exists, Tab}} -> mnesia:abort({no_exists, Tab, InfoItem})
     end.
 
 % TODO first two args are unused
-consistent_table_info(_ActivityId, _Opaque, Tab, InfoItem) ->
+consistent_table_info(Tab, InfoItem) ->
     case ra:consistent_query(mnevis_node:node_id(),
                              {mnevis_machine, safe_table_info, [Tab, InfoItem]}) of
         {ok, Result, _} ->
             Result;
         {error, Err} ->
-            mnesia:abort({error, Err});
+            mnesia:abort(Err);
         {timeout, Timeout} ->
             mnesia:abort({table_info_timeout, Timeout})
     end.
@@ -869,7 +875,7 @@ wait_for_transaction(Transaction, Attempts) ->
 maybe_safe_table_info(ActivityId, Opaque, Tab, Key) ->
     case catch local_table_info(ActivityId, Opaque, Tab, Key) of
         {'EXIT', {aborted, {no_exists, Tab, Key}}} ->
-            case consistent_table_info(ActivityId, Opaque, Tab, Key) of
+            case consistent_table_info(Tab, Key) of
                 {ok, Result}              -> Result;
                 {error, {no_exists, Tab}} -> mnesia:abort({no_exists, Tab})
             end;
