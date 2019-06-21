@@ -4,6 +4,8 @@
 -export([add_node/1, remove_node/1]).
 -export([make_initial_nodes/1]).
 
+-export([process_command/1, members/0, consistent_query/2]).
+
 -define(START_TIMEOUT, 100000).
 
 node_id() ->
@@ -68,3 +70,92 @@ add_node(Node) ->
 
 remove_node(Node) ->
     ra:remove_member(node_id(), node_id(Node)).
+
+process_command(Command) ->
+    NodeId = case persistent_term:get(mnevis_node, undefined) of
+        undefined -> node_id();
+        Other -> Other
+    end,
+    case ra:process_command(NodeId, Command) of
+        {ok, _, Leader} = Response ->
+            maybe_update_leader(NodeId, Leader),
+            Response;
+        {error, Unreachable} when Unreachable =:= noproc;
+                                  Unreachable =:= nodedown ->
+            case NodeId == node_id() of
+                true  -> {error, Unreachable};
+                false ->
+                    maybe_update_leader(NodeId, node_id()),
+                    %% Retry only once.
+                    %% TODO: refactor
+                    case ra:process_command(node_id(), Command) of
+                        {ok, _, Leader} = Response ->
+                            maybe_update_leader(node_id(), Leader),
+                            Response;
+                        Error -> Error
+                    end
+            end;
+        Error ->
+            Error
+    end.
+
+members() ->
+    NodeId = case persistent_term:get(mnevis_node, undefined) of
+        undefined -> node_id();
+        Other -> Other
+    end,
+    case ra:members(NodeId) of
+        {ok, _, Leader} = Response ->
+            maybe_update_leader(NodeId, Leader),
+            Response;
+        {error, Unreachable} when Unreachable =:= noproc;
+                                  Unreachable =:= nodedown ->
+            case NodeId == node_id() of
+                true  -> {error, Unreachable};
+                false ->
+                    maybe_update_leader(NodeId, node_id()),
+                    %% Retry only once.
+                    %% TODO: refactor
+                    case ra:members(node_id()) of
+                        {ok, _, Leader} = Response ->
+                            maybe_update_leader(node_id(), Leader),
+                            Response;
+                        Error -> Error
+                    end
+            end;
+        Error ->
+            Error
+    end.
+
+consistent_query(Query, Timeout) ->
+    NodeId = case persistent_term:get(mnevis_node, undefined) of
+        undefined -> node_id();
+        Other -> Other
+    end,
+    case ra:consistent_query(NodeId, Query, Timeout) of
+        {ok, _, Leader} = Response ->
+            maybe_update_leader(NodeId, Leader),
+            Response;
+        {error, Unreachable} when Unreachable =:= noproc;
+                                  Unreachable =:= nodedown ->
+            case NodeId == node_id() of
+                true  -> {error, Unreachable};
+                false ->
+                    maybe_update_leader(NodeId, node_id()),
+                    %% Retry only once.
+                    %% TODO: refactor
+                    case ra:consistent_query(node_id(), Query, Timeout) of
+                        {ok, _, Leader} = Response ->
+                            maybe_update_leader(node_id(), Leader),
+                            Response;
+                        Error -> Error
+                    end
+            end;
+        Error ->
+            Error
+    end.
+
+maybe_update_leader(NodeId, NodeId) -> ok;
+maybe_update_leader(_NodeId, Leader) ->
+    persistent_term:put(mnevis_node, Leader).
+

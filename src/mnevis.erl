@@ -76,12 +76,12 @@ start(DataDir) ->
 db_nodes() ->
     % TODO mnevis
     % Take {error, nodedown} return into account
-    {ok, Nodes, _L} = ra:members(mnevis_node:node_id()),
+    {ok, Nodes, _L} = mnevis_node:members(),
     [Node || {_, Node} <- Nodes].
 
 -spec running_db_nodes() -> [node()].
 running_db_nodes() ->
-    {ok, Nodes, _L} = ra:members(mnevis_node:node_id()),
+    {ok, Nodes, _L} = mnevis_node:members(),
     [Node || {Name, Node} <- Nodes,
              pong == net_adm:ping(Node)
              andalso
@@ -168,7 +168,7 @@ sync() ->
 -spec sync(non_neg_integer()) -> ok | {error, term()} | {timeout, term()}.
 sync(Timeout) ->
     Versions = mnevis_read:all_table_versions(),
-    case ra:consistent_query(mnevis_node:node_id(),
+    case mnevis_node:consistent_query(
                              {mnevis_machine, compare_versions, [Versions]},
                              Timeout) of
         {ok, ok, _} -> ok;
@@ -313,7 +313,7 @@ commit_transaction() ->
                             %% Read-only commits
                             read_only_commit(Context);
                         _ ->
-                            {ok, Result, _} =
+                            {ok, Result} =
                                 execute_command_with_retry(Context, commit,
                                                            {Writes,
                                                             Deletes,
@@ -332,8 +332,9 @@ commit_transaction() ->
 
 read_only_commit(Context) ->
     Locker = mnevis_context:locker(Context),
-    case ra:consistent_query(mnevis_node:node_id(),
-                             {mnevis_machine, check_locker, [Locker]}) of
+    case mnevis_node:consistent_query(
+                             {mnevis_machine, check_locker, [Locker]},
+                             ?CONSISTENT_QUERY_TIMEOUT) of
         {ok, ok, _}              -> ok;
         {ok, {error, Reason}, _} -> mnesia:abort(Reason);
         {error, Reason} -> mnesia:abort(Reason);
@@ -594,8 +595,9 @@ table_info(_ActivityId, _Opaque, Tab, InfoItem) ->
 
 % TODO first two args are unused
 consistent_table_info(Tab, InfoItem) ->
-    case ra:consistent_query(mnevis_node:node_id(),
-                             {mnevis_machine, safe_table_info, [Tab, InfoItem]}) of
+    case mnevis_node:consistent_query(
+                             {mnevis_machine, safe_table_info, [Tab, InfoItem]},
+                             ?CONSISTENT_QUERY_TIMEOUT) of
         {ok, Result, _} ->
             Result;
         {error, Err} ->
@@ -634,8 +636,7 @@ select_cont(_ActivityId, _Opaque, _Cont) ->
 
 -spec run_ra_command(term()) -> {ok, term()} | {error, term()}.
 run_ra_command(RaCommand) ->
-    NodeId = mnevis_node:node_id(),
-    case ra:process_command(NodeId, RaCommand) of
+    case mnevis_node:process_command(RaCommand) of
         {ok, {ok, Result}, _}                    -> {ok, Result};
         {ok, {error, {aborted, Reason}}, _}      -> mnesia:abort(Reason);
         {ok, {error, Reason}, _}                 -> {error, Reason};
@@ -647,19 +648,17 @@ execute_command_with_retry(Context, Command, Args) ->
     mnevis_context:assert_transaction(Context),
     Transaction = mnevis_context:transaction(Context),
     RaCommand = {Command, Transaction, Args},
-    NodeId = mnevis_node:node_id(),
-    {ok, Result, Leader} = retry_ra_command(NodeId, RaCommand),
-    {ok, Result, Leader}.
+    retry_ra_command(RaCommand).
 
-retry_ra_command(NodeId, RaCommand) ->
+retry_ra_command(RaCommand) ->
     %% TODO: better timeout value?
-    case ra:process_command(NodeId, RaCommand) of
-        {ok, {ok, Result}, Leader}          -> {ok, Result, Leader};
+    case mnevis_node:process_command(RaCommand) of
+        {ok, {ok, Result}, _}               -> {ok, Result};
         {ok, {error, {aborted, Reason}}, _} -> mnesia:abort(Reason);
         {ok, {error, Reason}, _}            -> mnesia:abort({apply_error, Reason});
         {error, _Reason}                    -> timer:sleep(100),
-                                               retry_ra_command(NodeId, RaCommand);
-        {timeout, _}                        -> retry_ra_command(NodeId, RaCommand)
+                                               retry_ra_command(RaCommand);
+        {timeout, _}                        -> retry_ra_command(RaCommand)
     end.
 
 record_key(Record) ->
@@ -743,7 +742,7 @@ with_lock_and_version(Context, LockItem, LockKind, Fun) ->
             {Tab, Item}    -> mnevis_lock:item_version_key(Tab, Item)
         end,
 
-        case ra:consistent_query(mnevis_node:node_id(),
+        case mnevis_node:consistent_query(
                                  {mnevis_machine, get_item_version, [VersionKey]},
                                  ?CONSISTENT_QUERY_TIMEOUT) of
             {ok, Result, _} ->
