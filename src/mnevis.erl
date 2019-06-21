@@ -586,7 +586,7 @@ index_read(_ActivityId, _Opaque, Tab, SecondaryKey, Pos, LockKind) ->
         mnevis_context:filter_index_from_context(Context2, Tab, SecondaryKey, Pos, RecList)
     end).
 
-table_info(ActivityId, Opaque, Tab, InfoItem) ->
+table_info(_ActivityId, _Opaque, Tab, InfoItem) ->
     case consistent_table_info(Tab, InfoItem) of
         {ok, Result}              -> Result;
         {error, {no_exists, Tab}} -> mnesia:abort({no_exists, Tab, InfoItem})
@@ -819,7 +819,7 @@ lock_already_acquired_1(LockItem, LockKind, Locks) ->
 
 do_acquire_lock_with_new_transaction(_Context, _LockItem, _LockKind, _Method, 0) ->
     mnesia:abort({unable_to_acquire_lock, no_promoted_lock_processes});
-do_acquire_lock_with_new_transaction(Context, LockItem, LockKind, Method, Attempts) ->
+do_acquire_lock_with_new_transaction(Context, LockItem, LockKind, Method, _Attempts) ->
     ok = mnevis_context:assert_no_transaction(Context),
     Locker = case mnevis_lock_proc:locate() of
         {ok, L}      -> L;
