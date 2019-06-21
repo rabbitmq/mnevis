@@ -122,25 +122,7 @@ wait_for_versions(TargetVersions) ->
         [] ->
             ok;
         _ ->
-            %% NOTE: create a one-off process to wait for mnesia events.
-            %% If we subscribe in the main process - events may be delivered
-            %% after we unsubscribe and mess up gen servers.
-            {WaitingPid, MonRef} = spawn_monitor(fun() ->
-                {ok, _} = mnesia:subscribe({table, versions, simple}),
-                try
-                    wait_for_mnesia_updates(VersionsToWait)
-                after
-                    _ = mnesia:unsubscribe({table, versions, simple}),
-                    flush_table_events()
-                end
-            end),
-            receive {'DOWN', MonRef, process, WaitingPid, Reason} ->
-                case Reason of
-                    normal -> ok;
-                    Error  -> error({mnevis_error_waitnig_for_versions,
-                                     Error, TargetVersions})
-                end
-            end
+            wait_for_mnesia_updates(VersionsToWait)
     end.
 
 -spec wait_for_mnesia_updates([mnevis_context:read_version()]) -> ok.
@@ -148,22 +130,9 @@ wait_for_mnesia_updates([]) ->
     ok;
 wait_for_mnesia_updates(WaitForVersions) ->
     %% TODO: should we wait forever for a follower to catch up with the cluster?
-    receive {mnesia_table_event, {write, {versions, Tab, Version}, _}} ->
-        case proplists:get_value(Tab, WaitForVersions) of
-            undefined ->
-                wait_for_mnesia_updates(WaitForVersions);
-            WaitingFor ->
-                case WaitingFor =< Version of
-                    true ->
-                        wait_for_mnesia_updates(lists:keydelete(Tab, 1, WaitForVersions));
-                    false ->
-                        wait_for_mnesia_updates(WaitForVersions)
-                end
-        end
     %% TODO: better timeout value?
-    after 100 ->
-        wait_for_mnesia_updates(filter_versions_to_wait(WaitForVersions))
-    end.
+    timer:sleep(100),
+    wait_for_mnesia_updates(filter_versions_to_wait(WaitForVersions)).
 
 filter_versions_to_wait(TargetVersions) ->
     case compare_versions(TargetVersions) of
@@ -179,9 +148,4 @@ filter_versions_to_wait(TargetVersions) ->
                     end
                 end,
                 CurrentVersions)
-    end.
-
-flush_table_events() ->
-    receive {mnesia_table_event, _} -> flush_table_events()
-    after 0 -> ok
     end.
