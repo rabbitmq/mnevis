@@ -794,46 +794,46 @@ cleanup_all_unlock_messages() ->
         ok
     end.
 
-with_lock(Context, LockItem, LockKind, Fun) ->
-    case acquire_lock(Context, LockItem, LockKind, lock) of
-        {ok, _}      -> Fun();
-        {error, Err} -> mnesia:abort(Err)
-    end.
-
 with_lock_and_version(Context, LockItem, LockKind, Fun) ->
-    with_lock(Context, LockItem, LockKind, fun() ->
-        VersionKey = case LockItem of
-            {table, Table} -> Table;
-            {Tab, Item}    -> mnevis_lock:item_version_key(Tab, Item)
-        end,
-
-        case ra:consistent_query(mnevis_node:node_id(),
-                                 {mnevis_machine, get_item_version, [VersionKey]},
-                                 ?CONSISTENT_QUERY_TIMEOUT) of
-            {ok, Result, _} ->
+    %% Assume LockItem cannot be global
+    with_lock(Context, LockItem, LockKind, fun(Result) ->
+        % case ra:consistent_query(mnevis_node:node_id(),
+        %                          {mnevis_machine, get_item_version, [VersionKey]},
+        %                          ?CONSISTENT_QUERY_TIMEOUT) of
+        %     {ok, Result, _} ->
                 case Result of
                     {ok, Version} ->
                         mnevis_read:wait_for_versions([Version]),
                         Fun();
                     {error, no_exists} ->
-                        Fun()
-                end;
-            {error, Err} ->
-                mnesia:abort(Err);
-            {timeout, TO} ->
-                mnesia:abort({timeout, TO})
-        end
-    end).
+                        Fun();
+                    {error, Err} ->
+                        mnesia:abort(Err)
+                end
+                % ;
+        %     {error, Err} ->
+        %         mnesia:abort(Err);
+        %     {timeout, TO} ->
+        %         mnesia:abort({timeout, TO})
+        % end
+    end,
+    lock_and_version).
 
-acquire_lock(Context, LockItem, LockKind, Method) ->
+with_lock(Context, LockItem, LockKind, Fun) ->
+    with_lock(Context, LockItem, LockKind, Fun, lock).
+
+with_lock(Context, LockItem, LockKind, Fun, Method) ->
     case do_acquire_lock(Context, LockItem, LockKind, Method) of
         {ok, Response, Context1} ->
             Context2 = mnevis_context:set_lock_acquired(LockItem, LockKind, Context1),
             update_transaction_context(Context2),
-            {ok, Response};
+            case erlang:fun_info(Fun, arity) of
+                {arity, 0} -> Fun();
+                {arity, 1} -> Fun(Response)
+            end;
         {error, Err, Context1} ->
             update_transaction_context(Context1),
-            {error, Err}
+            mnesia:abort(Err)
     end.
 
 do_acquire_lock(Context, LockItem, LockKind, Method) ->
@@ -848,13 +848,21 @@ do_acquire_lock_with_existing_transaction(Context, LockItem, LockKind, Method) -
     Tid = mnevis_context:transaction_id(Context),
     case lock_already_acquired(LockItem, LockKind, mnevis_context:locks(Context)) of
         true ->
-            {ok, ok, Context};
+            case Method of
+                lock -> {ok, ok, Context};
+                lock_and_version ->
+                    {ok, mnevis_lock_proc:get_version(LockItem), Context}
+            end;
         false ->
             Locker = mnevis_context:locker(Context),
             LockRequest = {Method, Tid, self(), LockItem, LockKind},
             case mnevis_lock_proc:try_lock_call(Locker, LockRequest) of
-                {ok, Tid, Response}           -> {ok, Response, Context};
-                {ok, Tid}                     -> {ok, ok, Context};
+                {ok, Tid, Response}           ->
+
+                    {ok, Response, Context};
+                {ok, Tid}                     ->
+
+                    {ok, ok, Context};
                 {error, {locked, Tid}}        -> {error, locked, Context};
                 {error, {locked_nowait, Tid}} -> {error, locked_nowait, Context};
                 {error, Err}                  -> mnesia:abort(Err)
@@ -890,9 +898,11 @@ do_acquire_lock_with_new_transaction(Context, LockItem, LockKind, Method, Attemp
     LockRequest = {Method, undefined, self(), LockItem, LockKind},
     case retry_lock_call(Locker, LockRequest, Attempts) of
         {ok, Tid1} ->
+
             NewContext = mnevis_context:set_transaction({Tid1, Locker}, Context),
             {ok, ok, NewContext};
         {ok, Tid1, Response} ->
+
             NewContext = mnevis_context:set_transaction({Tid1, Locker}, Context),
             {ok, Response, NewContext};
         {error, {locked, Tid1}} ->

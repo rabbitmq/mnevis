@@ -20,6 +20,7 @@
          candidate/3,
          callback_mode/0
          ]).
+-export([get_version/1]).
 
 -include_lib("ra/include/ra.hrl").
 
@@ -40,6 +41,9 @@
 -type locker() :: {locker_term(), pid()}.
 
 -export_type([locker_term/0, locker/0]).
+
+%% TODO: share with mnevis.erl
+-define(CONSISTENT_QUERY_TIMEOUT, 60000).
 
 
 %% Locker process for mnevis
@@ -194,6 +198,9 @@ candidate(timeout, _, State = #state{term = Term, leader = Leader}) ->
 candidate({call, _From}, {lock, _Tid, _Source, _LockItem, _LockKind}, State) ->
     %% Delay until we're leader
     {keep_state, State, [postpone]};
+candidate({call, _From}, {lock_and_version, _Tid, _Source, _LockItem, _LockKind}, State) ->
+    %% Delay until we're leader
+    {keep_state, State, [postpone]};
 candidate(cast, _, State) ->
     {keep_state, State};
 candidate(info, _Info, State) ->
@@ -211,7 +218,32 @@ leader({call, From},
             {keep_state, State#state{lock_state = LockState1}, [{reply, From, LockResult}]}
         end);
 leader({call, From},
+       {{lock_and_version, Tid, Source, LockItem, LockKind}, Term},
+       State = #state{lock_state = LockState,
+                      term = Term}) ->
+    with_non_blacklisted_transaction(Tid, From, State,
+        fun() ->
+            {LockResult, LockState1} = mnevis_lock:lock(Tid, Source, LockItem, LockKind, LockState),
+            State1 = State#state{lock_state = LockState1},
+            case LockResult of
+                {ok, RealTid} ->
+                    spawn_link(fun() ->
+                        VersionResult = get_version(LockItem),
+                        gen_statem:reply(From, {ok, RealTid, VersionResult})
+                    end),
+                    {keep_state, State1, []};
+                {error, _} ->
+                    {keep_state, State1, [{reply, From, LockResult}]}
+            end
+        end);
+leader({call, From},
        {{lock, _, _, _, _}, _Term},
+       State = #state{term = _CurrentTerm}) ->
+    % TODO Term and CurrentTerm are unused. This case is for when they don't
+    % match, do we want to log an error?
+    {keep_state, State, [{reply, From, {error, locker_term_mismatch}}]};
+leader({call, From},
+       {{lock_and_version, _, _, _, _}, _Term},
        State = #state{term = _CurrentTerm}) ->
     % TODO Term and CurrentTerm are unused. This case is for when they don't
     % match, do we want to log an error?
@@ -283,6 +315,22 @@ code_change(_OldVsn, OldState, OldData, _Extra) ->
 
 terminate(_Reason, _State, _Data) ->
     ok.
+
+get_version(LockItem) ->
+    VersionKey = case LockItem of
+        {table, Table} -> Table;
+        {Tab, Item}    -> mnevis_lock:item_version_key(Tab, Item)
+    end,
+    case ra:consistent_query(mnevis_node:node_id(),
+                             {mnevis_machine, get_item_version, [VersionKey]},
+                             ?CONSISTENT_QUERY_TIMEOUT) of
+        {ok, Result, _} ->
+            Result;
+        {error, Err} ->
+            {error, Err};
+        {timeout, TO} ->
+            {error, {timeout, TO}}
+    end.
 
 %% Registration with the RA cluster
 %% ================================
