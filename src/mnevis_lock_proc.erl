@@ -195,10 +195,7 @@ candidate(info, {ra_event, Leader, Event}, State) ->
 candidate(timeout, _, State = #state{term = Term, leader = Leader}) ->
     Correlation = notify_up(Term, Leader),
     {keep_state, State#state{correlation = Correlation}, [1000]};
-candidate({call, _From}, {lock, _Tid, _Source, _LockItem, _LockKind}, State) ->
-    %% Delay until we're leader
-    {keep_state, State, [postpone]};
-candidate({call, _From}, {lock_and_version, _Tid, _Source, _LockItem, _LockKind}, State) ->
+candidate({call, _From}, {lock, _Tid, _Source, _LockItem, _LockKind, _Mode}, State) ->
     %% Delay until we're leader
     {keep_state, State, [postpone]};
 candidate(cast, _, State) ->
@@ -209,16 +206,7 @@ candidate(info, _Info, State) ->
 -spec leader(gen_statem:event_type(), term(), state()) ->
     gen_statem:event_handler_result(election_states()).
 leader({call, From},
-       {{lock, Tid, Source, LockItem, LockKind}, Term},
-       State = #state{lock_state = LockState,
-                      term = Term}) ->
-    with_non_blacklisted_transaction(Tid, From, State,
-        fun() ->
-            {LockResult, LockState1} = mnevis_lock:lock(Tid, Source, LockItem, LockKind, LockState),
-            {keep_state, State#state{lock_state = LockState1}, [{reply, From, LockResult}]}
-        end);
-leader({call, From},
-       {{lock_and_version, Tid, Source, LockItem, LockKind}, Term},
+       {{lock, Tid, Source, LockItem, LockKind, Mode}, Term},
        State = #state{lock_state = LockState,
                       term = Term}) ->
     with_non_blacklisted_transaction(Tid, From, State,
@@ -227,23 +215,23 @@ leader({call, From},
             State1 = State#state{lock_state = LockState1},
             case LockResult of
                 {ok, RealTid} ->
-                    spawn_link(fun() ->
-                        VersionResult = get_version(LockItem),
-                        gen_statem:reply(From, {ok, RealTid, VersionResult})
-                    end),
-                    {keep_state, State1, []};
-                {error, _} ->
+                    case Mode of
+                        lock ->
+                            Reply = {ok, RealTid, ok},
+                            {keep_state, State1, [{reply, From, Reply}]};
+                        lock_and_version ->
+                            spawn_link(fun() ->
+                                VersionReply = get_version(LockItem),
+                                gen_statem:reply(From, {ok, RealTid, VersionReply})
+                            end),
+                            {keep_state, State1, []}
+                    end;
+                _Other ->
                     {keep_state, State1, [{reply, From, LockResult}]}
             end
         end);
 leader({call, From},
-       {{lock, _, _, _, _}, _Term},
-       State = #state{term = _CurrentTerm}) ->
-    % TODO Term and CurrentTerm are unused. This case is for when they don't
-    % match, do we want to log an error?
-    {keep_state, State, [{reply, From, {error, locker_term_mismatch}}]};
-leader({call, From},
-       {{lock_and_version, _, _, _, _}, _Term},
+       {{lock, _, _, _, _, _}, _Term},
        State = #state{term = _CurrentTerm}) ->
     % TODO Term and CurrentTerm are unused. This case is for when they don't
     % match, do we want to log an error?

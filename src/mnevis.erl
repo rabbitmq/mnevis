@@ -346,11 +346,11 @@ get_transaction_context() ->
 %% Mnesia activity API
 
 lock(_ActivityId, _Opaque, LockItem, LockKind) ->
-    with_lock(get_transaction_context(), LockItem, LockKind, fun() -> ok end).
+    with_lock(get_transaction_context(), LockItem, LockKind, fun(_) -> ok end).
 
 write(ActivityId, Opaque, Tab, Rec, LockKind) ->
     Context = get_transaction_context(),
-    with_lock(Context, {Tab, record_key(Rec)}, LockKind, fun() ->
+    with_lock(Context, {Tab, record_key(Rec)}, LockKind, fun(_) ->
         Context1 = get_transaction_context(),
         Context2 = case maybe_safe_table_info(ActivityId, Opaque, Tab, type) of
             bag ->
@@ -364,7 +364,7 @@ write(ActivityId, Opaque, Tab, Rec, LockKind) ->
 
 delete(_ActivityId, _Opaque, Tab, Key, LockKind) ->
     Context = get_transaction_context(),
-    with_lock(Context, {Tab, Key}, LockKind, fun() ->
+    with_lock(Context, {Tab, Key}, LockKind, fun(_) ->
         Context1 = get_transaction_context(),
         Context2 = mnevis_context:add_delete(Context1, Tab, Key, LockKind),
         update_transaction_context(Context2),
@@ -373,7 +373,7 @@ delete(_ActivityId, _Opaque, Tab, Key, LockKind) ->
 
 delete_object(_ActivityId, _Opaque, Tab, Rec, LockKind) ->
     Context = get_transaction_context(),
-    with_lock(Context, {Tab, record_key(Rec)}, LockKind, fun() ->
+    with_lock(Context, {Tab, record_key(Rec)}, LockKind, fun(_) ->
         Context1 = get_transaction_context(),
         Context2 = mnevis_context:add_delete_object(Context1, Tab, Rec, LockKind),
         update_transaction_context(Context2),
@@ -824,15 +824,12 @@ mark_version_up_to_date(LockItem) ->
 with_lock(Context, LockItem, LockKind, Fun) ->
     with_lock(Context, LockItem, LockKind, Fun, lock).
 
-with_lock(Context, LockItem, LockKind, Fun, Method) ->
-    case do_acquire_lock(Context, LockItem, LockKind, Method) of
+with_lock(Context, LockItem, LockKind, Fun, Mode) ->
+    case do_acquire_lock(Context, LockItem, LockKind, Mode) of
         {ok, Response, Context1} ->
             Context2 = mnevis_context:set_lock_acquired(LockItem, LockKind, Context1),
             update_transaction_context(Context2),
-            case erlang:fun_info(Fun, arity) of
-                {arity, 0} -> Fun();
-                {arity, 1} -> Fun(Response)
-            end;
+            Fun(Response);
         {error, Err, Context1} ->
             update_transaction_context(Context1),
             mnesia:abort(Err)
@@ -845,26 +842,27 @@ with_lock(Context, LockItem, LockKind, Fun, Method) ->
     {ok, term(), context()} |
     {error, locked, context()} |
     {error, locked_nowait, context()}.
-do_acquire_lock(Context, LockItem, LockKind, Method) ->
+do_acquire_lock(Context, LockItem, LockKind, Mode) ->
     case mnevis_context:has_transaction(Context) of
         true ->
-            do_acquire_lock_with_existing_transaction(Context, LockItem, LockKind, Method);
+            do_acquire_lock_with_existing_transaction(Context, LockItem, LockKind, Mode);
         false ->
-            do_acquire_lock_with_new_transaction(Context, LockItem, LockKind, Method, ?AQUIRE_LOCK_ATTEMPTS)
+            do_acquire_lock_with_new_transaction(Context, LockItem, LockKind, Mode, ?AQUIRE_LOCK_ATTEMPTS)
     end.
 
 -spec do_acquire_lock_with_existing_transaction(mnevis_context:context(),
                                                 mnevis_lock:lock_item(),
                                                 mnevis_lock:lock_kind(),
                                                 mnevis_lock_proc:lock_method()) ->
+    {ok, context()} |
     {ok, term(), context()} |
     {error, locked, context()} |
     {error, locked_nowait, context()}.
-do_acquire_lock_with_existing_transaction(Context, LockItem, LockKind, Method) ->
+do_acquire_lock_with_existing_transaction(Context, LockItem, LockKind, Mode) ->
     Tid = mnevis_context:transaction_id(Context),
     case lock_already_acquired(LockItem, LockKind, mnevis_context:locks(Context)) of
         true ->
-            case Method of
+            case Mode of
                 lock ->
                     {ok, ok, Context};
                 lock_and_version ->
@@ -877,10 +875,9 @@ do_acquire_lock_with_existing_transaction(Context, LockItem, LockKind, Method) -
             end;
         false ->
             Locker = mnevis_context:locker(Context),
-            LockRequest = {Method, Tid, self(), LockItem, LockKind},
+            LockRequest = {lock, Tid, self(), LockItem, LockKind, Mode},
             case mnevis_lock_proc:try_lock_call(Locker, LockRequest) of
                 {ok, Tid, Response}           -> {ok, Response, Context};
-                {ok, Tid}                     -> {ok, ok, Context};
                 {error, {locked, Tid}}        -> {error, locked, Context};
                 {error, {locked_nowait, Tid}} -> {error, locked_nowait, Context};
                 {error, Err}                  -> mnesia:abort(Err)
@@ -907,17 +904,16 @@ lock_already_acquired_1(LockItem, LockKind, Locks) ->
         {_, none}      -> false
     end.
 
-do_acquire_lock_with_new_transaction(Context, LockItem, LockKind, Method, Attempts) ->
+do_acquire_lock_with_new_transaction(_Context, _LockItem, _LockKind, _Mode, 0) ->
+    mnesia:abort({unable_to_acquire_lock, no_promoted_lock_processes});
+do_acquire_lock_with_new_transaction(Context, LockItem, LockKind, Mode, _Attempts) ->
     ok = mnevis_context:assert_no_transaction(Context),
     Locker = case mnevis_lock_proc:locate() of
         {ok, L}      -> L;
         {error, Err} -> mnesia:abort(Err)
     end,
-    LockRequest = {Method, undefined, self(), LockItem, LockKind},
-    case retry_lock_call(Locker, LockRequest, Attempts) of
-        {ok, Tid1} ->
-            NewContext = mnevis_context:set_transaction({Tid1, Locker}, Context),
-            {ok, ok, NewContext};
+    LockRequest = {lock, undefined, self(), LockItem, LockKind, Mode},
+    case retry_lock_call(Locker, LockRequest) of
         {ok, Tid1, Response} ->
             NewContext = mnevis_context:set_transaction({Tid1, Locker}, Context),
             {ok, Response, NewContext};
