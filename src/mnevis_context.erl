@@ -8,17 +8,21 @@
          add_delete_object/4,
          add_read/3,
          get_read/2,
-
-         has_changes_for_table/2,
-
-         read/3,
-         filter_read/4,
-         filter_match/4,
-         filter_index/5,
          filter_all_keys/3,
+         filter_all_keys_from_context/3,
+         filter_index/5,
+         filter_index_from_context/5,
+         filter_match/4,
+         filter_match_from_context/4,
          filter_match_spec/4,
+         filter_read/4,
+         filter_read_from_context/4,
          filter_tagged_match_spec/4,
-
+         has_changes_for_table/2,
+         is_version_up_to_date/2,
+         mark_version_up_to_date/2,
+         read/3,
+         read_from_context/3,
          transaction/1,
          transaction_id/1,
          locker/1,
@@ -126,7 +130,8 @@
     delete_object = #{} :: #{tabkey() => item()},
     write_set = #{} :: #{tabkey() => item()},
     write_bag = #{} :: #{tabkey() => [item()]},
-    read = #{} :: #{read_spec() => [record()]}}).
+    read = #{} :: #{read_spec() => [record()]},
+    versions = map_sets:new() :: map_sets:set()}).
 
 -type context() :: #context{}.
 
@@ -165,6 +170,14 @@ set_lock_acquired(LockItem, LockKind, #context{locks = Locks} = Context) ->
         _ -> Locks
     end,
     Context#context{locks = Locks1}.
+
+-spec mark_version_up_to_date(term(), context()) -> context().
+mark_version_up_to_date(LockItem, #context{versions = Versions} = Context) ->
+    Context#context{versions = map_sets:add_element(LockItem, Versions)}.
+
+-spec is_version_up_to_date(term(), context()) -> boolean().
+is_version_up_to_date(LockItem, #context{versions = Versions}) ->
+    map_sets:is_element(LockItem, Versions).
 
 -spec has_transaction(context()) -> boolean().
 has_transaction(#context{transaction = undefined}) -> false;

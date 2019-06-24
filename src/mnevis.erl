@@ -802,8 +802,16 @@ with_lock_and_version(Context, LockItem, LockKind, Fun) ->
         %                          ?CONSISTENT_QUERY_TIMEOUT) of
         %     {ok, Result, _} ->
                 case Result of
+                    cached ->
+                        Fun();
                     {ok, Version} ->
                         mnevis_read:wait_for_versions([Version]),
+                        case LockItem of
+                            {_, _} ->
+                                mark_version_up_to_date(LockItem);
+                            {global, _, _} ->
+                                ok
+                        end,
                         Fun();
                     {error, no_exists} ->
                         Fun();
@@ -818,6 +826,11 @@ with_lock_and_version(Context, LockItem, LockKind, Fun) ->
         % end
     end,
     lock_and_version).
+
+mark_version_up_to_date(LockItem) ->
+    Context0 = get_transaction_context(),
+    Context1 = mnevis_context:mark_version_up_to_date(LockItem, Context0),
+    update_transaction_context(Context1).
 
 with_lock(Context, LockItem, LockKind, Fun) ->
     with_lock(Context, LockItem, LockKind, Fun, lock).
@@ -849,9 +862,15 @@ do_acquire_lock_with_existing_transaction(Context, LockItem, LockKind, Method) -
     case lock_already_acquired(LockItem, LockKind, mnevis_context:locks(Context)) of
         true ->
             case Method of
-                lock -> {ok, ok, Context};
+                lock             ->
+                    {ok, ok, Context};
                 lock_and_version ->
-                    {ok, mnevis_lock_proc:get_version(LockItem), Context}
+                    case mnevis_context:is_version_up_to_date(LockItem, Context) of
+                        true  ->
+                            {ok, cached, Context};
+                        false ->
+                            {ok, mnevis_lock_proc:get_version(LockItem), Context}
+                    end
             end;
         false ->
             Locker = mnevis_context:locker(Context),
