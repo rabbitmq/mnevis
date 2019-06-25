@@ -5,6 +5,7 @@
 
 -include_lib("common_test/include/ct.hrl").
 -include_lib("eunit/include/eunit.hrl").
+-include_lib("stdlib/include/qlc.hrl").
 
 all() ->
     [{group, single_node}, {group, two_nodes}].
@@ -32,6 +33,7 @@ groups() ->
         index_read_cached_state,
         match_object_cached_state,
         index_match_object_cached_state,
+        select_cached_state,
         all_keys_cached_state,
         first_cached_state,
         last_cached_state,
@@ -43,7 +45,8 @@ groups() ->
         write_delete_converge,
         write_delete_object_converge,
         write_bag_delete_converge,
-        write_bag_delete_object_converge
+        write_bag_delete_object_converge,
+        qlc
      ],
     [
      {two_nodes, [], Tests},
@@ -112,6 +115,14 @@ init_per_testcase(index_read_cached_state, Config) ->
     add_sample({sample_ordered_set, foo, bar}),
     Config;
 init_per_testcase(match_object_cached_state, Config) ->
+    create_sample_tables(),
+    add_sample({sample, foo, bar}),
+    add_sample({sample_bag, foo, bar}),
+    add_sample({sample_bag, foo, baz}),
+    add_sample({sample_bag, foo, baj}),
+    add_sample({sample_ordered_set, foo, bar}),
+    Config;
+init_per_testcase(select_cached_state, Config) ->
     create_sample_tables(),
     add_sample({sample, foo, bar}),
     add_sample({sample_bag, foo, bar}),
@@ -474,6 +485,107 @@ match_object_cached_state(_Config) ->
         [{sample, foo, bar}] = mnesia:match_object({sample, foo, bar}),
         [{sample_bag, foo, bar}] = mnesia:match_object({sample_bag, foo, bar}),
         [{sample_ordered_set, foo, bar}] = mnesia:match_object({sample_ordered_set, foo, bar})
+    end).
+
+qlc(_Config) ->
+    add_sample({sample, foo, bar}),
+    add_sample({sample, bar, baz}),
+    {atomic, [{sample, bar, baz}]} = mnevis:transaction(fun() ->
+        qlc:e(qlc:q([S || S = {_, _, baz} <- mnesia:table(sample)]))
+    end),
+    {aborted, foo} = mnevis:transaction(fun() ->
+        ok = mnesia:write({sample, foo, baz}),
+        Result = qlc:e(qlc:q([S || S = {_, _, baz} <- mnesia:table(sample)])),
+        [{sample, bar, baz}, {sample, foo, baz}] = lists:usort(Result),
+
+        ok = mnesia:delete({sample, foo}),
+        [baz] = qlc:e(qlc:q([element(3, S) || S = {_, _, baz} <- mnesia:table(sample)])),
+
+        ok = mnesia:delete_object({sample, bar, baz}),
+        [] = qlc:e(qlc:q([element(3, S) || S = {_, _, baz} <- mnesia:table(sample)])),
+        [] = qlc:e(qlc:q([S || S <- mnesia:table(sample)])),
+        mnesia:abort(foo)
+    end),
+    {atomic, Old} = mnevis:transaction(fun() ->
+        qlc:e(qlc:q([S || S <- mnesia:table(sample)]))
+    end),
+    [{sample, bar, baz}, {sample, foo, bar}] = lists:usort(Old).
+
+select_cached_state(_Config) ->
+    {aborted, foo} = mnevis:transaction(fun() ->
+        %% Initial data
+        [{sample, foo, bar}] = mnesia:select(sample, [{{sample, foo, bar}, [], ['$_']}]),
+        [{sample, foo, bar}] = mnesia:select(sample, [{{sample, foo, '$1'}, [{'=:=', '$1', bar}], ['$_']}]),
+        [bar] = mnesia:select(sample, [{{sample, foo, '$1'}, [{'=:=', '$1', bar}], ['$1']}]),
+
+        [{sample_bag, foo, bar}] = mnesia:select(sample_bag, [{{sample_bag, foo, bar}, [], ['$_']}]),
+        [{sample_bag, foo, bar}] = mnesia:select(sample_bag, [{{sample_bag, foo, '$1'}, [{'=:=', '$1', bar}], ['$_']}]),
+        [bar] = mnesia:select(sample_bag, [{{sample_bag, foo, '$1'}, [{'=:=', '$1', bar}], ['$1']}]),
+
+        [{sample_ordered_set, foo, bar}] = mnesia:select(sample_ordered_set, [{{sample_ordered_set, foo, bar}, [], ['$_']}]),
+        [{sample_ordered_set, foo, bar}] = mnesia:select(sample_ordered_set, [{{sample_ordered_set, foo, '$1'}, [{'=:=', '$1', bar}], ['$_']}]),
+        [bar] = mnesia:select(sample_ordered_set, [{{sample_ordered_set, foo, '$1'}, [{'=:=', '$1', bar}], ['$1']}]),
+        %% Do some changes
+        %% Overwrite existing
+        ok = mnesia:write({sample, foo, baz}),
+        ok = mnesia:write({sample_ordered_set, foo, baz}),
+        %% Add new
+        ok = mnesia:write({sample, bar, baz}),
+        ok = mnesia:write({sample_ordered_set, bar, baz}),
+        [] = mnesia:select(sample, [{{sample, foo, bar}, [], ['$_']}]),
+        [] = mnesia:select(sample, [{{sample, foo, '$1'}, [{'=:=', '$1', bar}], ['$_']}]),
+
+        [{sample, foo, baz}] = mnesia:select(sample, [{{sample, foo, baz}, [], ['$_']}]),
+        [{sample, foo, baz}] = mnesia:select(sample, [{{sample, foo, '$1'}, [{'=:=', '$1', baz}], ['$_']}]),
+
+        [{sample, bar, baz}] = mnesia:select(sample, [{{sample, bar, '_'}, [], ['$_']}]),
+        [baz] = mnesia:select(sample, [{{sample, bar, '$1'}, [], ['$1']}]),
+
+        [bar, foo] = lists:usort(mnesia:select(sample, [{{sample, '$1', baz}, [], ['$1']}])),
+
+        [] = mnesia:select(sample_ordered_set, [{{sample_ordered_set, '_', bar}, [], ['$_']}]),
+        [{sample_ordered_set, bar, baz}, {sample_ordered_set, foo, baz}] =
+            lists:usort(mnesia:select(sample_ordered_set, [{{sample_ordered_set, '_', baz}, [], ['$_']}])),
+
+        %% Add new to bag
+        ok = mnesia:write({sample_bag, foo, baq}),
+        [{sample_bag, foo, baq}] = mnesia:select(sample_bag, [{{sample_bag, '_', baq}, [], ['$_']}]),
+        [foo] = mnesia:select(sample_bag, [{{sample_bag, '$1', '$2'}, [{'=:=', '$2', baq}], ['$1']}]),
+
+        %% Delete from set
+        ok = mnesia:delete({sample, foo}),
+        [{sample, bar, baz}] = mnesia:select(sample, [{{sample, '_', baz}, [], ['$_']}]),
+        ok = mnesia:delete({sample_ordered_set, bar}),
+        [{sample_ordered_set, foo, baz}] = mnesia:select(sample_ordered_set, [{{sample_ordered_set, '_', baz}, [], ['$_']}]),
+
+        %% Delete object from set
+        ok = mnesia:delete_object({sample, bar, bazz}),
+        [{sample, bar, baz}] = mnesia:select(sample, [{{sample, '_', baz}, [], ['$_']}]),
+        ok = mnesia:delete_object({sample, bar, baz}),
+        [] = mnesia:select(sample, [{{sample, '_', baz}, [], ['$_']}]),
+
+        ok = mnesia:delete_object({sample_ordered_set, foo, bazz}),
+        [{sample_ordered_set, foo, baz}] = mnesia:select(sample_ordered_set, [{{sample_ordered_set, '_', baz}, [], ['$_']}]),
+        ok = mnesia:delete_object({sample_ordered_set, foo, baz}),
+        [] = mnesia:select(sample_ordered_set, [{{sample_ordered_set, '_', baz}, [], ['$_']}]),
+
+        %% Delete object from bag
+        ok = mnesia:delete_object({sample_bag, foo, bar}),
+        [] = mnesia:select(sample_bag, [{{sample_bag, '_', bar}, [], ['$_']}]),
+
+        ok = mnesia:delete_object({sample_bag, foo, baq}),
+        [] = mnesia:select(sample_bag, [{{sample_bag, '_', baq}, [], ['$_']}]),
+
+        %% Delete from bag
+        mnesia:delete({sample_bag, foo}),
+        [] = mnesia:select(sample_bag, [{{sample_bag, '_', baz}, [], ['$_']}]),
+        mnesia:abort(foo)
+    end),
+    mnevis:transaction(fun() ->
+        %% Initial data
+        [{sample, foo, bar}] = mnesia:select(sample, [{{sample, foo, bar}, [], ['$_']}]),
+        [{sample_bag, foo, bar}] = mnesia:select(sample_bag, [{{sample_bag, foo, bar}, [], ['$_']}]),
+        [{sample_ordered_set, foo, bar}] = mnesia:select(sample_ordered_set, [{{sample_ordered_set, foo, bar}, [], ['$_']}])
     end).
 
 index_match_object_cached_state(_Config) ->
@@ -951,5 +1063,3 @@ write_bag_delete_object_converge(_Config) ->
         [{sample_bag, baz, bar}, {sample_bag, baz, baz}] = mnesia:read(sample_bag, baz)
     end),
     [{sample_bag, baz, bar}, {sample_bag, baz, baz}] = mnesia:dirty_read(sample_bag, baz).
-
-

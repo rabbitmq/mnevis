@@ -49,13 +49,13 @@ groups() ->
 
 init_per_suite(Config) ->
     case os:getenv("CI") of
-        _ ->
-            {skip, "perf_SUITE is not intended for continuous integration"};
         false ->
             PrivDir = ?config(priv_dir, Config),
             ok = filelib:ensure_dir(PrivDir),
             application:load(mnesia),
-            Config
+            Config;
+        _ ->
+            {skip, "perf_SUITE is not intended for continuous integration"}
     end.
 
 end_per_suite(Config) ->

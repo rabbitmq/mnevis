@@ -313,7 +313,6 @@ cleanup_transaction_test() ->
 monitor_down_test() ->
     State = init(0),
     Source = self(),
-    Self = self(),
     Source1 = spawn(fun() -> ok end),
 
     flush_notified(),

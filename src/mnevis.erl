@@ -400,9 +400,9 @@ delete_object(_ActivityId, _Opaque, Tab, Rec, LockKind) ->
 
 read(_ActivityId, _Opaque, Tab, Key, LockKind) ->
     Context0 = get_transaction_context(),
-    case mnevis_context:read_from_context(Context0, Tab, Key) of
+    case mnevis_context:read(Context0, Tab, Key) of
         {written, set, Record} ->
-            mnevis_context:filter_read_from_context(Context0, Tab, Key, [Record]);
+            mnevis_context:filter_read(Context0, Tab, Key, [Record]);
         deleted -> [];
         {deleted_and_written, bag, Recs} -> Recs;
         _ ->
@@ -414,7 +414,7 @@ read(_ActivityId, _Opaque, Tab, Key, LockKind) ->
                 %% We use dirty operations here because we want to call them
                 %% directly via erlang:apply/3
                 {RecList, Context2} = execute_local_read_query(ReadQuery, Context1),
-                mnevis_context:filter_read_from_context(Context2, Tab, Key, RecList)
+                mnevis_context:filter_read(Context2, Tab, Key, RecList)
             end)
     end.
 
@@ -435,7 +435,7 @@ match_object(_ActivityId, _Opaque, Tab, Pattern, LockKind) ->
     with_lock_and_version(Context0, {table, Tab}, LockKind, fun() ->
         Context1 = get_transaction_context(),
         {RecList, Context2} = execute_local_read_query({dirty_match_object, [Tab, Pattern]}, Context1),
-        mnevis_context:filter_match_from_context(Context2, Tab, Pattern, RecList)
+        mnevis_context:filter_match(Context2, Tab, Pattern, RecList)
     end).
 
 all_keys(ActivityId, Opaque, Tab, LockKind) ->
@@ -446,7 +446,7 @@ all_keys(ActivityId, Opaque, Tab, LockKind) ->
 
         case mnevis_context:deletes_object(Context2, Tab) of
             [] ->
-                mnevis_context:filter_all_keys_from_context(Context2, Tab, AllKeys);
+                mnevis_context:filter_all_keys(Context2, Tab, AllKeys);
             Deletes ->
                 DeletedKeys = lists:filtermap(fun({_, Rec, _}) ->
                     Key = record_key(Rec),
@@ -456,7 +456,7 @@ all_keys(ActivityId, Opaque, Tab, LockKind) ->
                     end
                 end,
                 Deletes),
-                mnevis_context:filter_all_keys_from_context(Context2, Tab, AllKeys -- DeletedKeys)
+                mnevis_context:filter_all_keys(Context2, Tab, AllKeys -- DeletedKeys)
         end
     end).
 
@@ -575,7 +575,7 @@ index_match_object(_ActivityId, _Opaque, Tab, Pattern, Pos, LockKind) ->
     with_lock_and_version(Context, {table, Tab}, LockKind, fun() ->
         Context1 = get_transaction_context(),
         {RecList, Context2} = execute_local_read_query({dirty_index_match_object, [Tab, Pattern, Pos]}, Context1),
-        mnevis_context:filter_match_from_context(Context2, Tab, Pattern, RecList)
+        mnevis_context:filter_match(Context2, Tab, Pattern, RecList)
     end).
 
 index_read(_ActivityId, _Opaque, Tab, SecondaryKey, Pos, LockKind) ->
@@ -583,7 +583,7 @@ index_read(_ActivityId, _Opaque, Tab, SecondaryKey, Pos, LockKind) ->
     with_lock_and_version(Context, {table, Tab}, LockKind, fun() ->
         Context1 = get_transaction_context(),
         {RecList, Context2} = execute_local_read_query({dirty_index_read, [Tab, SecondaryKey, Pos]}, Context1),
-        mnevis_context:filter_index_from_context(Context2, Tab, SecondaryKey, Pos, RecList)
+        mnevis_context:filter_index(Context2, Tab, SecondaryKey, Pos, RecList)
     end).
 
 table_info(_ActivityId, _Opaque, Tab, InfoItem) ->
@@ -610,13 +610,95 @@ local_table_info(ActivityId, Opaque, Tab, InfoItem) ->
 clear_table(_ActivityId, _Opaque, _Tab, _Obj) ->
     mnesia:abort(nested_transaction).
 
-%% TODO: QLC API.
-select(_ActivityId, _Opaque, _Tab, _MatchSpec, _LockKind) ->
-    mnesia:abort(not_implemented).
+select(_ActivityId, _Opaque, Tab, MatchSpec, LockKind) ->
+    Context = get_transaction_context(),
+    LockItem = select_lock_item(Tab, MatchSpec),
+    with_lock_and_version(Context, LockItem, LockKind, fun() ->
+        Context1 = get_transaction_context(),
+        %% Optimisation. If there are no records in the context
+        %% the code is much more simple.
+        case mnevis_context:has_changes_for_table(Tab, Context1) of
+            false ->
+                {RecList, _Context2} =
+                    execute_local_read_query({dirty_select, [Tab, MatchSpec]}, Context1),
+                RecList;
+            true ->
+                select_with_context(Tab, MatchSpec, Context1)
+        end
+    end).
 
-select(_ActivityId, _Opaque, _Tab, _MatchSpec, _Limit, _LockKind) ->
-    mnesia:abort(not_implemented).
+select_with_context(Tab, MatchSpec, Context0) ->
+    case MatchSpec of
+        %% Optimisation. No additional checks required
+        [{_, _, ['$_']}] ->
+            {RecList, Context1} =
+                execute_local_read_query({dirty_select, [Tab, MatchSpec]}, Context0),
+            mnevis_context:filter_match_spec(Context1, Tab, MatchSpec, RecList);
+        %% A single match expression.
+        %% Select original records and transform them after filete
+        [{H, C, T}] ->
+            RecordMatchSpec = [{H, C, ['$_']}],
+            {RecList, Context1} =
+                execute_local_read_query({dirty_select, [Tab, RecordMatchSpec]}, Context0),
+            FilteredList = mnevis_context:filter_match_spec(Context1, Tab, RecordMatchSpec, RecList),
+            %% Transform records to final values
+            %% using a match spec without conditions
+            Compiled = ets:match_spec_compile([{H, [], T}]),
+            ets:match_spec_run(FilteredList, Compiled);
+        _ ->
+            %% Complex match spec.
+            %% Need to associate each expression with its own set of results
+            %% Each match spec result is a tagged record,
+            %% which is transformed to the final form by running the match
+            %% spec again without conditions.
+            %% This is exreemely inefficient, but mnesia also does not recommend
+            %% to run select with continuation after write/delete.
+            {ReversedRecordMatchSpec, TransformsMap} =
+                lists:foldl(fun({H, C, T}, {I, Spec, Transforms}) ->
+                    %% Index
+                    {I + 1,
+                    %% Each expression result record will be tagged with the index
+                     [{H, C, [{{I, '$_'}}]} | Spec],
+                    %% Mapping from index to result type
+                     maps:put(I, ets:match_spec_compile([{H, [], T}]), Transforms)}
+                end),
+            %% Keep original order
+            RecordMatchSpec = lists:reverse(ReversedRecordMatchSpec),
+            {TaggedRecList0, Context1} =
+                execute_local_read_query({dirty_select, [Tab, RecordMatchSpec]}, Context0),
+            TaggedRecList =
+                mnevis_context:filter_tagged_match_spec(Context1, Tab, RecordMatchSpec, TaggedRecList0),
+            %% TODO: this should be possible to do with a single match spec.
+            lists:map(fun({Tag, Rec}) ->
+                Transform = maps:get(Tag, TransformsMap),
+                %% Transform should always match
+                [Res] = ets:match_spec_run([Rec], Transform),
+                Res
+            end,
+            TaggedRecList)
+    end.
 
+select_lock_item(Tab, MatchSpec) ->
+    case MatchSpec of
+        [{HeadPat,_, _}] when is_tuple(HeadPat), tuple_size(HeadPat) > 2 ->
+            Key = element(2, HeadPat),
+            case mnesia:has_var(Key) of
+                false -> {Tab, Key};
+                true  -> {table, Tab}
+            end;
+        _ -> {table, Tab}
+    end.
+
+%% TODO: Implement limit. This may require using undocumented APIs
+select(ActivityId, Opaque, Tab, MatchSpec, _Limit, LockKind) ->
+    %% Get all the messages in the first batch.
+    %% Mnesia docs mention that the Limit here is not a requirement
+    %% This should be enough to support (inefficient) QLC API
+    Result = select(ActivityId, Opaque, Tab, MatchSpec, LockKind),
+    {Result, '$end_of_table'}.
+
+select_cont(_ActivityId, _Opaque, '$end_of_table') ->
+    '$end_of_table';
 select_cont(_ActivityId, _Opaque, _Cont) ->
     mnesia:abort(not_implemented).
 
@@ -817,16 +899,14 @@ lock_already_acquired_1(LockItem, LockKind, Locks) ->
         {_, none}      -> false
     end.
 
-do_acquire_lock_with_new_transaction(_Context, _LockItem, _LockKind, _Method, 0) ->
-    mnesia:abort({unable_to_acquire_lock, no_promoted_lock_processes});
-do_acquire_lock_with_new_transaction(Context, LockItem, LockKind, Method, _Attempts) ->
+do_acquire_lock_with_new_transaction(Context, LockItem, LockKind, Method, Attempts) ->
     ok = mnevis_context:assert_no_transaction(Context),
     Locker = case mnevis_lock_proc:locate() of
         {ok, L}      -> L;
         {error, Err} -> mnesia:abort(Err)
     end,
     LockRequest = {Method, undefined, self(), LockItem, LockKind},
-    case retry_lock_call(Locker, LockRequest) of
+    case retry_lock_call(Locker, LockRequest, Attempts) of
         {ok, Tid1} ->
             NewContext = mnevis_context:set_transaction({Tid1, Locker}, Context),
             {ok, ok, NewContext};
@@ -844,13 +924,15 @@ do_acquire_lock_with_new_transaction(Context, LockItem, LockKind, Method, _Attem
             mnesia:abort(Error)
     end.
 
-retry_lock_call(Locker, LockRequest) ->
+retry_lock_call(_Locker, _LockRequest, 0) ->
+    mnesia:abort({unable_to_acquire_lock, no_promoted_lock_processes});
+retry_lock_call(Locker, LockRequest, Attempts) ->
     case mnevis_lock_proc:try_lock_call(Locker, LockRequest) of
         {error, locker_not_running} ->
             %% This function should block, so it's safe to recursively call
             case mnevis_lock_proc:ensure_lock_proc(Locker) of
                 {ok, NewLocker} ->
-                    retry_lock_call(NewLocker, LockRequest);
+                    retry_lock_call(NewLocker, LockRequest, Attempts);
                 {error, {command_error, Reason}} ->
                     mnesia:abort({lock_proc_not_found, Reason});
                 {error, Reason} ->
