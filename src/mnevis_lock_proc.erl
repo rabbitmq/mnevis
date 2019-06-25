@@ -41,10 +41,6 @@
 
 -export_type([locker_term/0, locker/0]).
 
-%% TODO: share with mnevis.erl
--define(CONSISTENT_QUERY_TIMEOUT, 60000).
-
-
 %% Locker process for mnevis
 
 %% When the process starts, it will be in a candidate state

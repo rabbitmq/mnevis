@@ -9,20 +9,15 @@
          add_read/3,
          get_read/2,
          filter_all_keys/3,
-         filter_all_keys_from_context/3,
          filter_index/5,
-         filter_index_from_context/5,
          filter_match/4,
-         filter_match_from_context/4,
          filter_match_spec/4,
          filter_read/4,
-         filter_read_from_context/4,
          filter_tagged_match_spec/4,
          has_changes_for_table/2,
          is_version_up_to_date/2,
          mark_version_up_to_date/2,
          read/3,
-         read_from_context/3,
          transaction/1,
          transaction_id/1,
          locker/1,
@@ -124,13 +119,21 @@
 -type locks() :: #{term() => lock_kind()}.
 
 -record(context, {
+    %% Set once. Transaction id and locker
     transaction = undefined :: transaction() | undefined,
+    %% Add and rewrite map. Lock items and their respective lock kinds
+    %% already aquired by the current transaction
     locks = #{} :: locks(),
+    %% Read cache. Entries already read from the database
+    %% in the current transaction.
+    read = #{} :: #{read_spec() => [record()]},
+    %% Write/delete cache.
     delete = #{} :: #{tabkey() => delete_item()},
     delete_object = #{} :: #{tabkey() => item()},
     write_set = #{} :: #{tabkey() => item()},
     write_bag = #{} :: #{tabkey() => [item()]},
-    read = #{} :: #{read_spec() => [record()]},
+    %% Mapset of lock items, for which transaction
+    %% already waited for the version. No need to wait again.
     versions = map_sets:new() :: map_sets:set()}).
 
 -type context() :: #context{}.

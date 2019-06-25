@@ -203,6 +203,8 @@ transaction0(Fun, Args, Retries, _Err) ->
                 update_transaction_context(InitContext);
             _ -> ok
         end,
+        %% Note:
+        %% OK since this PR merged: https://github.com/erlang/otp/pull/2216
         Res = mnesia:activity(ets, Fun, Args, ?MODULE),
         CommitResult = commit_transaction(),
         {atomic, Res, CommitResult}
@@ -577,7 +579,6 @@ table_info(_ActivityId, _Opaque, Tab, InfoItem) ->
         {error, {no_exists, Tab}} -> mnesia:abort({no_exists, Tab, InfoItem})
     end.
 
-% TODO first two args are unused
 consistent_table_info(Tab, InfoItem) ->
     case ra:consistent_query(mnevis_node:node_id(),
                              {mnevis_machine, safe_table_info, [Tab, InfoItem]}) of
@@ -930,14 +931,14 @@ lock_already_acquired_1(LockItem, LockKind, Locks) ->
 
 do_acquire_lock_with_new_transaction(_Context, _LockItem, _LockKind, _Mode, 0) ->
     mnesia:abort({unable_to_acquire_lock, no_promoted_lock_processes});
-do_acquire_lock_with_new_transaction(Context, LockItem, LockKind, Mode, _Attempts) ->
+do_acquire_lock_with_new_transaction(Context, LockItem, LockKind, Mode, Attempts) ->
     ok = mnevis_context:assert_no_transaction(Context),
     Locker = case mnevis_lock_proc:locate() of
         {ok, L}      -> L;
         {error, Err} -> mnesia:abort(Err)
     end,
     LockRequest = {lock, undefined, self(), LockItem, LockKind, Mode},
-    case retry_lock_call(Locker, LockRequest) of
+    case retry_lock_call(Locker, LockRequest, Attempts) of
         {ok, Tid1, Response} ->
             NewContext = mnevis_context:set_transaction({Tid1, Locker}, Context),
             {ok, Response, NewContext};
@@ -975,7 +976,6 @@ wait_for_transaction(Transaction) ->
 wait_for_transaction(Transaction, 0) ->
     error({no_more_attempts_waiting_for_transaction_to_apply_locally, Transaction});
 wait_for_transaction(Transaction, Attempts) ->
-    %% TODO: mnesia subscribe.
     case ets:lookup(committed_transaction, Transaction) of
         [] -> timer:sleep(100),
               wait_for_transaction(Transaction, Attempts - 1);

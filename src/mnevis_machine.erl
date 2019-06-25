@@ -265,8 +265,6 @@ apply(_Meta, {blacklist, Locker, TransactionId},
             BlackListed1 = map_sets:add_element(TransactionId, BlackListed),
             {State#state{blacklisted = BlackListed1}, ok, []}
         end);
-%% TODO: flush_locker_transactions request
-%% TODO: cleanup term transactions for previous terms
 apply(_Meta, Unknown, State) ->
     error_logger:error_msg("Unknown command ~p~n", [Unknown]),
     {State, {error, {unknown_command, Unknown}}, []}.
@@ -385,7 +383,6 @@ apply_writes(Writes) ->
     [ok = mnesia:write(Tab, Rec, write)
      || {Tab, Rec, _LockKind} <- Writes].
 
-%% TODO: optimise transaction numbers
 -spec save_committed_transaction(transaction()) -> ok.
 save_committed_transaction(Transaction) ->
     ok = mnesia:write({committed_transaction, Transaction, committed}).
