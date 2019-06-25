@@ -98,7 +98,7 @@ Mnevis is designed to support (most of) mnesia transaction functions as is.
 #### Key facts
 
 - Locks are coordinated using a lock process during a transaction
-- Reads are always performed in the Raft cluster (with some optimisations).
+- Reads are performed locally after aquiring a lock. More on read synchronisation below.
 - Writes are preformed on mnesia DB on commit.
 - Commits are coordinated with the Raft cluster
 - Commit runs a mnesia transaction, which can abort and it aborts a mnevis transaction.
@@ -126,8 +126,12 @@ or rolled back.
 Each operation have to acquire a lock, which is done by calling the special lock
 process. More on locks [here](./LOCK_PROCESS.md)
 
-Reads get data from both context and the mnesia database. All reads from mnesia
-database are commands to the Raft cluster.
+Reads get data from both context and the mnesia database. Reads from the database
+require the record to be synchronised with consistent changes. This is done with
+versions: each table/record has a version assigned (multiple records per version),
+which is read from the ra cluster using consistent_query.
+If version read from the cluster is higher than the local version - the transaction
+process will wait for them to synchronise before performing a local read.
 
 Locked transactions can be restarted.
 
@@ -174,10 +178,41 @@ instantly.
 When transaction is restarted - all its locks and transaction context is cleared
 but transaction ID stays registered with the lock process.
 
+When lock process changes - transaction IDs start from 1 and committed transaction
+table is cleaned up.
+
 **Behaviour differences with mnesia**
 Because locks are acquired cluster-wide and not on specific nodes, global locks
 acquired with a `{global, LockTerm :: term(), Nodes :: [node()]}` lock item will
 not scope on nodes. It will lock all nodes on `LockTerm`.
+
+### Consistent reads
+
+When transaction reads data it should first lock the responsive record.
+After record is locked no other transaction can change the data locked.
+
+This means that local database needs to progress only to the lock point to have
+most up-to-date data for the read. Also reads may be cached.
+
+To wait for local database to progress to the lock point versions are used.
+Version is a key-value pair. Version key is either a table or a tuple with table
+and a hash of the record key. Hash is used to limit the version key scope.
+Version value is a monotonically increasing integer.
+
+Versions are updated on commits. A change in commit will update both the table
+version and each record hash version.
+
+If a local record version is up-to-date with the cluster - it has all the latest
+changes for the record.
+
+After aquiring a lock, reads will request a consistent view of the version
+(via consistent query) and wait for the local version to become equal or greater
+than the consistent view.
+NOTE: multiple records may use the same version key, so it can be greater.
+After waiting for version sync the transaction process will continue with reading
+the local data.
+
+**This approach relies on lock items to correspond with the record keys.**
 
 ### Snapshotting and log replay
 
@@ -197,11 +232,6 @@ The snapshot consists of the mnesia backup and the server state saved by `ra_log
 
 ## TODO
 
-`select` operations are not implementing, which means that `qlc` quieries will not work.
-
-Table manipulation functions are not fully implemented and tables should be pre-created
-on all nodes with all the indexes for mnevis to work.
-
 Startup of ra currently requires a global `data_dir` setting, which is not nice.
 
 Startup configuration can be improved.
@@ -215,7 +245,3 @@ There is a demo rabbitmq integration in the `mnevis-experimental` branch
 More unit tests are needed for the context module.
 
 More property tests are needed for multi-node setup.
-
-Committed transactions table may be size optimised to have
-"all committed before" value and remove old IDs.
-

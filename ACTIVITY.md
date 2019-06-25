@@ -113,8 +113,7 @@ transaction function returns `{aborted, Reason}`.
 In many ways access module works the same way as mnesia access module, keeping
 track of local writes and deletes.
 
-It's also performs reads from the leader database for consistency reasons,
-but it may be optimised in future.
+Reads are performed locally after aquiring a lock and synchronising the version.
 
 If transaction is aborted, its locks are removed.
 
