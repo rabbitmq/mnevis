@@ -67,20 +67,23 @@ safe_table_info(Tab, Key, _State) ->
         false -> {error, {no_exists, Tab}}
     end.
 
--type version_key() :: {mnevis:table(), term()} | mnevis:table().
-
--spec get_item_version(version_key(), state()) -> {ok, {version_key(), mnevis_context:version()}} | {error, no_exists}.
-get_item_version(VersionKey, _) ->
+-spec get_item_version(mnevis_lock:lock_item(), state()) ->
+    {ok, mnevis_context:read_version()} |
+    {error, no_exists}.
+get_item_version({Tab, Item}, _) ->
+    VersionKey = case Tab of
+        table -> Item;
+        _     -> mnevis_lock:item_version_key(Tab, Item)
+    end,
     case mnevis_read:get_version(VersionKey) of
         {error, no_exists} ->
-            case VersionKey of
-                {table, _} -> {error, no_exists};
-                {Tab, _} ->
+            case Tab of
+                table -> {error, no_exists};
+                _     ->
                     case mnevis_read:get_version(Tab) of
                         {ok, _Version}    -> {ok, {Tab, 0}};
                         {error, _} = Err -> Err
-                    end;
-                _ -> {error, no_exists}
+                    end
             end;
         {ok, Version} ->
             {ok, {VersionKey, Version}}

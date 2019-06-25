@@ -18,6 +18,9 @@
 -export([is_transaction/0]).
 -export([sync/0]).
 
+%% Internal API.
+-export([get_consistent_version/1]).
+
 -compile(nowarn_deprecated_function).
 
 -define(AQUIRE_LOCK_ATTEMPTS, 10).
@@ -687,6 +690,27 @@ select_cont(_ActivityId, _Opaque, _Cont) ->
 
 %% ==========================
 
+%% Internal public functions
+
+-spec get_consistent_version(mnevis_lock:lock_item()) ->
+    {ok, mnevis_context:read_version()} |
+    {error, term()}.
+get_consistent_version(LockItem) ->
+    case ra:consistent_query(mnevis_node:node_id(),
+                             {mnevis_machine, get_item_version, [LockItem]},
+                             ?CONSISTENT_QUERY_TIMEOUT) of
+        {ok, Result, _} ->
+            Result;
+        {error, Err} ->
+            {error, Err};
+        {timeout, TO} ->
+            {error, {timeout, TO}}
+    end.
+
+%% ==========================
+
+%% Internal functions
+
 % TODO
 % -spec execute_command(context(), atom(), term()) -> {ok, term()} | {error, term()}.
 % execute_command(Context, Command, Args) ->
@@ -870,7 +894,7 @@ do_acquire_lock_with_existing_transaction(Context, LockItem, LockKind, Mode) ->
                         true  ->
                             {ok, cached, Context};
                         false ->
-                            {ok, mnevis_lock_proc:get_version(LockItem), Context}
+                            {ok, get_consistent_version(LockItem), Context}
                     end
             end;
         false ->

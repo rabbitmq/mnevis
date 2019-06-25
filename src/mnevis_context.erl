@@ -106,7 +106,7 @@
 
 -type read_spec() :: {read_op(), [table() | key()]}.
 -type version() :: non_neg_integer().
--type read_version() :: {table(), version()}.
+-type read_version() :: {table(), version()} | {{table(), integer()}, version()}.
 
 -type record() :: tuple().
 -type lock_kind() :: read | write.

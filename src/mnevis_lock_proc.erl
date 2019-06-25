@@ -20,7 +20,6 @@
          candidate/3,
          callback_mode/0
          ]).
--export([get_version/1]).
 
 -include_lib("ra/include/ra.hrl").
 
@@ -64,6 +63,12 @@
 
 %% In the leader state the process may process lock requests.
 %% All lock requests are processed by the `mnevis_lock` module functions.
+
+%% Lock request can also request a version of the lock item.
+%% In this case the locker process spawns a new process to call ra query
+%% and reply to the caller.
+%% This is an optimisation, because most of the time locker process will
+%% be on the same node as the ra leader.
 
 %% This process also monitors all transaction processes
 %% (monitor/2 and demonitor/1 are called from `mnevis_lock` module)
@@ -220,8 +225,10 @@ leader({call, From},
                             Reply = {ok, RealTid, ok},
                             {keep_state, State1, [{reply, From, Reply}]};
                         lock_and_version ->
+                            %% Assert lock item can have a version
+                            {_, _} = LockItem,
                             spawn_link(fun() ->
-                                VersionReply = get_version(LockItem),
+                                VersionReply = mnevis:get_consistent_version(LockItem),
                                 gen_statem:reply(From, {ok, RealTid, VersionReply})
                             end),
                             {keep_state, State1, []}
@@ -303,22 +310,6 @@ code_change(_OldVsn, OldState, OldData, _Extra) ->
 
 terminate(_Reason, _State, _Data) ->
     ok.
-
-get_version(LockItem) ->
-    VersionKey = case LockItem of
-        {table, Table} -> Table;
-        {Tab, Item}    -> mnevis_lock:item_version_key(Tab, Item)
-    end,
-    case ra:consistent_query(mnevis_node:node_id(),
-                             {mnevis_machine, get_item_version, [VersionKey]},
-                             ?CONSISTENT_QUERY_TIMEOUT) of
-        {ok, Result, _} ->
-            Result;
-        {error, Err} ->
-            {error, Err};
-        {timeout, TO} ->
-            {error, {timeout, TO}}
-    end.
 
 %% Registration with the RA cluster
 %% ================================
