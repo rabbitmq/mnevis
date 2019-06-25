@@ -487,7 +487,7 @@ match_object_cached_state(_Config) ->
         [{sample_ordered_set, foo, bar}] = mnesia:match_object({sample_ordered_set, foo, bar})
     end).
 
-qlc(Config) ->
+qlc(_Config) ->
     add_sample({sample, foo, bar}),
     add_sample({sample, bar, baz}),
     {atomic, [{sample, bar, baz}]} = mnevis:transaction(fun() ->
@@ -588,7 +588,6 @@ select_cached_state(_Config) ->
         [{sample_ordered_set, foo, bar}] = mnesia:select(sample_ordered_set, [{{sample_ordered_set, foo, bar}, [], ['$_']}])
     end).
 
-
 index_match_object_cached_state(_Config) ->
     {aborted, foo} = mnevis:transaction(fun() ->
         %% Initial data
@@ -656,8 +655,6 @@ index_match_object_cached_state(_Config) ->
         [{sample_bag, foo, bar}] = mnesia:index_match_object({sample_bag, foo, bar}, 3),
         [{sample_ordered_set, foo, bar}] = mnesia:index_match_object({sample_ordered_set, foo, bar}, 3)
     end).
-
-
 
 all_keys_cached_state(_Config) ->
     {aborted, foo} = mnevis:transaction(fun() ->
@@ -1066,5 +1063,3 @@ write_bag_delete_object_converge(_Config) ->
         [{sample_bag, baz, bar}, {sample_bag, baz, baz}] = mnesia:read(sample_bag, baz)
     end),
     [{sample_bag, baz, bar}, {sample_bag, baz, baz}] = mnesia:dirty_read(sample_bag, baz).
-
-

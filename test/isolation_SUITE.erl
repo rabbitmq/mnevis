@@ -145,7 +145,7 @@ failed_transaction_cannot_commit(_Config) ->
         end
     end),
 
-    Locked = spawn(fun() ->
+    _Locked = spawn(fun() ->
         mnevis:transaction(fun() ->
             mnesia:lock({sample, bar}, write),
             mnesia:write({sample, locked_t, committed}),

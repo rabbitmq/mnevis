@@ -128,7 +128,7 @@ locker_up_registers_higher_term_test() ->
 locker_up_rejects_same_term_different_pid_test() ->
     InitState = init_state(),
     mnevis_lock_proc:create_locker_cache(),
-    #state{locker = {Term, Pid}} = InitState,
+    #state{locker = {Term, _Pid}} = InitState,
     NotSamePid = spawn(fun() -> ok end),
     LockerDownState = InitState#state{locker_status = down},
     {InitState, reject, []} =
