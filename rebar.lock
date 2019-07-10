@@ -7,7 +7,7 @@
   0},
  {<<"ra">>,
   {git,"https://github.com/rabbitmq/ra",
-       {ref,"839b816f1b5679d70916b6aeba8c02c8fd951bb4"}},
+       {ref,"70a2e79a3c9b482757afc4bf56ae78e15b3d778a"}},
   0}]}.
 [
 {pkg_hash,[
