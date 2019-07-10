@@ -159,7 +159,11 @@ apply(Meta, {create_table, Tab, Opts}, State) ->
                     _ = mnevis_read:init_version(Tab, 0),
                     {atomic, ok};
                 {aborted, _} = Res ->
-                    Res
+                    Res;
+                % TODO: clause not necessary in the future
+                % https://github.com/erlang/otp/pull/2320
+                {aborted, Err0, Err1, Err2} ->
+                    {aborted, {Err0, Err1, Err2}}
             end
         end),
     {State, {ok, Result}, snapshot_effects(Meta, State)};

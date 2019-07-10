@@ -223,6 +223,7 @@ leader({call, From},
                         lock_and_version ->
                             %% Assert lock item can have a version
                             {_, _} = LockItem,
+                            % TODO: EXIT is not handled
                             spawn_link(fun() ->
                                 VersionReply = mnevis:get_consistent_version(LockItem),
                                 gen_statem:reply(From, {ok, RealTid, VersionReply})
