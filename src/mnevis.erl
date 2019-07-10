@@ -353,11 +353,11 @@ get_transaction_context() ->
 lock(_ActivityId, _Opaque, LockItem, LockKind) ->
     with_lock(get_transaction_context(), LockItem, LockKind, fun(_) -> ok end).
 
-write(ActivityId, Opaque, Tab, Rec, LockKind) ->
+write(_ActivityId, _Opaque, Tab, Rec, LockKind) ->
     Context = get_transaction_context(),
     with_lock(Context, {Tab, record_key(Rec)}, LockKind, fun(_) ->
         Context1 = get_transaction_context(),
-        Context2 = case maybe_safe_table_info(ActivityId, Opaque, Tab, type) of
+        Context2 = case maybe_safe_table_info(Tab, type) of
             bag ->
                 mnevis_context:add_write_bag(Context1, Tab, Rec, LockKind);
             Set when Set =:= set; Set =:= ordered_set ->
@@ -590,8 +590,8 @@ consistent_table_info(Tab, InfoItem) ->
             mnesia:abort({table_info_timeout, Timeout})
     end.
 
-local_table_info(ActivityId, Opaque, Tab, InfoItem) ->
-    mnesia:table_info(ActivityId, Opaque, Tab, InfoItem).
+local_table_info(Tab, InfoKey) ->
+    mnesia:table_info(Tab, InfoKey).
 
 clear_table(_ActivityId, _Opaque, _Tab, _Obj) ->
     mnesia:abort(nested_transaction).
@@ -982,10 +982,10 @@ wait_for_transaction(Transaction, Attempts) ->
         _  -> ok
     end.
 
-maybe_safe_table_info(ActivityId, Opaque, Tab, Key) ->
-    case catch local_table_info(ActivityId, Opaque, Tab, Key) of
-        {'EXIT', {aborted, {no_exists, Tab, Key}}} ->
-            case consistent_table_info(Tab, Key) of
+maybe_safe_table_info(Tab, InfoKey) ->
+    case catch local_table_info(Tab, InfoKey) of
+        {'EXIT', {aborted, {no_exists, Tab, InfoKey}}} ->
+            case consistent_table_info(Tab, InfoKey) of
                 {ok, Result}              -> Result;
                 {error, {no_exists, Tab}} -> mnesia:abort({no_exists, Tab})
             end;
