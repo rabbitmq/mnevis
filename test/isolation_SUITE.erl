@@ -111,7 +111,7 @@ unlock_on_transaction_exit(_Config) ->
             end
         end)
     end),
-    spawn(fun() ->
+    Locked = spawn(fun() ->
         mnevis:transaction(fun() ->
             mnesia:lock({sample, bar}, write),
             Pid ! unlocked
@@ -120,7 +120,8 @@ unlock_on_transaction_exit(_Config) ->
     receive ready -> ok
     after 1000 -> error(background_transaction_not_ready)
     end,
-    receive unlocked -> error(should_be_locked)
+    receive unlocked ->
+        error({should_be_locked, process_info(Locking), process_info(Locked)})
     after 1000 -> ok
     end,
     exit(Locking, die),

@@ -19,6 +19,8 @@
          filter_match_spec/4,
          filter_tagged_match_spec/4,
 
+         is_version_up_to_date/2,
+         mark_version_up_to_date/2,
          transaction/1,
          transaction_id/1,
          locker/1,
@@ -102,7 +104,7 @@
 
 -type read_spec() :: {read_op(), [table() | key()]}.
 -type version() :: non_neg_integer().
--type read_version() :: {table(), version()}.
+-type read_version() :: {table(), version()} | {{table(), integer()}, version()}.
 
 -type record() :: tuple().
 -type lock_kind() :: read | write.
@@ -120,13 +122,22 @@
 -type locks() :: #{term() => lock_kind()}.
 
 -record(context, {
+    %% Set once. Transaction id and locker
     transaction = undefined :: transaction() | undefined,
+    %% Add and rewrite map. Lock items and their respective lock kinds
+    %% already aquired by the current transaction
     locks = #{} :: locks(),
+    %% Read cache. Entries already read from the database
+    %% in the current transaction.
+    read = #{} :: #{read_spec() => [record()]},
+    %% Write/delete cache.
     delete = #{} :: #{tabkey() => delete_item()},
     delete_object = #{} :: #{tabkey() => item()},
     write_set = #{} :: #{tabkey() => item()},
     write_bag = #{} :: #{tabkey() => [item()]},
-    read = #{} :: #{read_spec() => [record()]}}).
+    %% Mapset of lock items, for which transaction
+    %% already waited for the version. No need to wait again.
+    versions = map_sets:new() :: map_sets:set()}).
 
 -type context() :: #context{}.
 
@@ -165,6 +176,14 @@ set_lock_acquired(LockItem, LockKind, #context{locks = Locks} = Context) ->
         _ -> Locks
     end,
     Context#context{locks = Locks1}.
+
+-spec mark_version_up_to_date(term(), context()) -> context().
+mark_version_up_to_date(LockItem, #context{versions = Versions} = Context) ->
+    Context#context{versions = map_sets:add_element(LockItem, Versions)}.
+
+-spec is_version_up_to_date(term(), context()) -> boolean().
+is_version_up_to_date(LockItem, #context{versions = Versions}) ->
+    map_sets:is_element(LockItem, Versions).
 
 -spec has_transaction(context()) -> boolean().
 has_transaction(#context{transaction = undefined}) -> false;

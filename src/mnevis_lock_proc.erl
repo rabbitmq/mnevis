@@ -38,9 +38,9 @@
 
 -type locker_term() :: integer().
 -type locker() :: {locker_term(), pid()}.
+-type lock_method() :: lock | lock_and_version.
 
--export_type([locker_term/0, locker/0]).
-
+-export_type([locker_term/0, locker/0, lock_method/0]).
 
 %% Locker process for mnevis
 
@@ -60,6 +60,12 @@
 
 %% In the leader state the process may process lock requests.
 %% All lock requests are processed by the `mnevis_lock` module functions.
+
+%% Lock request can also request a version of the lock item.
+%% In this case the locker process spawns a new process to call ra query
+%% and reply to the caller.
+%% This is an optimisation, because most of the time locker process will
+%% be on the same node as the ra leader.
 
 %% This process also monitors all transaction processes
 %% (monitor/2 and demonitor/1 are called from `mnevis_lock` module)
@@ -191,7 +197,7 @@ candidate(info, {ra_event, Leader, Event}, State) ->
 candidate(timeout, _, State = #state{term = Term, leader = Leader}) ->
     Correlation = notify_up(Term, Leader),
     {keep_state, State#state{correlation = Correlation}, [1000]};
-candidate({call, _From}, {lock, _Tid, _Source, _LockItem, _LockKind}, State) ->
+candidate({call, _From}, {lock, _Tid, _Source, _LockItem, _LockKind, _Mode}, State) ->
     %% Delay until we're leader
     {keep_state, State, [postpone]};
 candidate(cast, _, State) ->
@@ -202,16 +208,35 @@ candidate(info, _Info, State) ->
 -spec leader(gen_statem:event_type(), term(), state()) ->
     gen_statem:event_handler_result(election_states()).
 leader({call, From},
-       {{lock, Tid, Source, LockItem, LockKind}, Term},
+       {{lock, Tid, Source, LockItem, LockKind, Mode}, Term},
        State = #state{lock_state = LockState,
                       term = Term}) ->
     with_non_blacklisted_transaction(Tid, From, State,
         fun() ->
             {LockResult, LockState1} = mnevis_lock:lock(Tid, Source, LockItem, LockKind, LockState),
-            {keep_state, State#state{lock_state = LockState1}, [{reply, From, LockResult}]}
+            State1 = State#state{lock_state = LockState1},
+            case LockResult of
+                {ok, RealTid} ->
+                    case Mode of
+                        lock ->
+                            Reply = {ok, RealTid, ok},
+                            {keep_state, State1, [{reply, From, Reply}]};
+                        lock_and_version ->
+                            %% Assert lock item can have a version
+                            {_, _} = LockItem,
+                            % TODO: EXIT is not handled
+                            spawn_link(fun() ->
+                                VersionReply = mnevis:get_consistent_version(LockItem),
+                                gen_statem:reply(From, {ok, RealTid, VersionReply})
+                            end),
+                            {keep_state, State1, []}
+                    end;
+                _Other ->
+                    {keep_state, State1, [{reply, From, LockResult}]}
+            end
         end);
 leader({call, From},
-       {{lock, _, _, _, _}, _Term},
+       {{lock, _, _, _, _, _}, _Term},
        State = #state{term = _CurrentTerm}) ->
     % TODO Term and CurrentTerm are unused. This case is for when they don't
     % match, do we want to log an error?

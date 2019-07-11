@@ -67,20 +67,23 @@ safe_table_info(Tab, Key, _State) ->
         false -> {error, {no_exists, Tab}}
     end.
 
--type version_key() :: {mnevis:table(), term()} | mnevis:table().
-
--spec get_item_version(version_key(), state()) -> {ok, {version_key(), mnevis_context:version()}} | {error, no_exists}.
-get_item_version(VersionKey, _) ->
+-spec get_item_version(mnevis_lock:lock_item(), state()) ->
+    {ok, mnevis_context:read_version()} |
+    {error, no_exists}.
+get_item_version({Tab, Item}, _) ->
+    VersionKey = case Tab of
+        table -> Item;
+        _     -> mnevis_lock:item_version_key(Tab, Item)
+    end,
     case mnevis_read:get_version(VersionKey) of
         {error, no_exists} ->
-            case VersionKey of
-                {table, _} -> {error, no_exists};
-                {Tab, _} ->
+            case Tab of
+                table -> {error, no_exists};
+                _     ->
                     case mnevis_read:get_version(Tab) of
                         {ok, _Version}    -> {ok, {Tab, 0}};
                         {error, _} = Err -> Err
-                    end;
-                _ -> {error, no_exists}
+                    end
             end;
         {ok, Version} ->
             {ok, {VersionKey, Version}}
@@ -156,7 +159,11 @@ apply(Meta, {create_table, Tab, Opts}, State) ->
                     _ = mnevis_read:init_version(Tab, 0),
                     {atomic, ok};
                 {aborted, _} = Res ->
-                    Res
+                    Res;
+                % TODO: clause not necessary in the future
+                % https://github.com/erlang/otp/pull/2320
+                {aborted, Err0, Err1, Err2} ->
+                    {aborted, {Err0, Err1, Err2}}
             end
         end),
     {State, {ok, Result}, snapshot_effects(Meta, State)};
@@ -262,8 +269,6 @@ apply(_Meta, {blacklist, Locker, TransactionId},
             BlackListed1 = map_sets:add_element(TransactionId, BlackListed),
             {State#state{blacklisted = BlackListed1}, ok, []}
         end);
-%% TODO: flush_locker_transactions request
-%% TODO: cleanup term transactions for previous terms
 apply(_Meta, Unknown, State) ->
     error_logger:error_msg("Unknown command ~p~n", [Unknown]),
     {State, {error, {unknown_command, Unknown}}, []}.
@@ -382,7 +387,6 @@ apply_writes(Writes) ->
     [ok = mnesia:write(Tab, Rec, write)
      || {Tab, Rec, _LockKind} <- Writes].
 
-%% TODO: optimise transaction numbers
 -spec save_committed_transaction(transaction()) -> ok.
 save_committed_transaction(Transaction) ->
     ok = mnesia:write({committed_transaction, Transaction, committed}).

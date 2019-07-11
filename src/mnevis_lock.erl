@@ -72,7 +72,7 @@ monitor_down(_MRef, Source, _Info, State) ->
             {none, State}
     end.
 
--spec item_version_key(mnevis:table(), term()) -> lock_item().
+-spec item_version_key(mnevis:table(), term()) -> {mnevis:table(), integer()}.
 item_version_key(Tab, Key) ->
     {Tab, erlang:phash2(Key, ?VERSION_HASH_RESOLUTION)}.
 
