@@ -38,8 +38,9 @@
 
 -type locker_term() :: integer().
 -type locker() :: {locker_term(), pid()}.
+-type lock_method() :: lock | lock_and_version.
 
--export_type([locker_term/0, locker/0]).
+-export_type([locker_term/0, locker/0, lock_method/0]).
 
 %% Locker process for mnevis
 
