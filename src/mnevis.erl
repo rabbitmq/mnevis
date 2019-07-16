@@ -112,11 +112,10 @@ clear_table(Tab) ->
     {ok, R} = run_ra_command({clear_table, Tab}),
     R.
 
+-spec table_info(term(), term()) -> term().
 table_info(Tab, Info) ->
-    case consistent_table_info(Tab, Info) of
-        {ok, Res}    -> Res;
-        {error, Err} -> mnesia:abort({aborted, Err})
-    end.
+    {ok, Res} = consistent_table_info(Tab, Info),
+    Res.
 
 %% NOTE: transform table does not support closures
 %% because transform is persisted to the raft log
@@ -317,6 +316,7 @@ commit_transaction() ->
             CommitResult
     end.
 
+-spec read_only_commit(term()) -> ok | no_return().
 read_only_commit(Context) ->
     Locker = mnevis_context:locker(Context),
     Server = mnevis_node:node_id(),
@@ -573,26 +573,34 @@ index_read(_ActivityId, _Opaque, Tab, SecondaryKey, Pos, LockKind) ->
         mnevis_context:filter_index(Context2, Tab, SecondaryKey, Pos, RecList)
     end).
 
+-spec table_info(term(), term(), term(), term()) -> term() | no_return().
 table_info(_ActivityId, _Opaque, Tab, InfoItem) ->
-    case consistent_table_info(Tab, InfoItem) of
-        {ok, Result}              -> Result;
-        {error, {no_exists, Tab}} -> mnesia:abort({no_exists, Tab, InfoItem})
+    {ok, Result} = consistent_table_info(Tab, InfoItem),
+    Result.
+
+-spec consistent_table_info(mnevis:table(), term()) ->
+    {ok, term()} | no_return().
+consistent_table_info(Tab, Item) ->
+    Server = mnevis_node:node_id(),
+    QueryFun = {mnevis_machine, safe_table_info, [Tab, Item]},
+    case ra:consistent_query(Server, QueryFun) of
+        {ok, _, not_known} ->
+            mnesia:abort(not_known);
+        {ok, {error, {timeout, Timeout}}, _} ->
+            mnesia:abort({table_info_timeout, Timeout});
+        {ok, {error, {no_exists, Tab}}, _} ->
+            mnesia:abort({no_exists, Tab, Item});
+        {ok, {error, Reason}, _} ->
+            mnesia:abort(Reason);
+        {ok, {ok, _}=Result, _} ->
+            Result
     end.
 
-consistent_table_info(Tab, InfoItem) ->
-    case ra:consistent_query(mnevis_node:node_id(),
-                             {mnevis_machine, safe_table_info, [Tab, InfoItem]}) of
-        {ok, Result, _} ->
-            Result;
-        {error, Err} ->
-            mnesia:abort(Err);
-        {timeout, Timeout} ->
-            mnesia:abort({table_info_timeout, Timeout})
-    end.
+-spec local_table_info(term(), atom()) -> term() | no_return().
+local_table_info(Tab, Item) ->
+    mnesia:table_info(undefined, undefined, Tab, Item).
 
-local_table_info(Tab, InfoKey) ->
-    mnesia:table_info(Tab, InfoKey).
-
+-spec clear_table(term(), term(), term(), term()) -> no_return().
 clear_table(_ActivityId, _Opaque, _Tab, _Obj) ->
     mnesia:abort(nested_transaction).
 
@@ -985,10 +993,12 @@ wait_for_transaction(Transaction, Attempts) ->
 maybe_safe_table_info(Tab, InfoKey) ->
     case catch local_table_info(Tab, InfoKey) of
         {'EXIT', {aborted, {no_exists, Tab, InfoKey}}} ->
-            case consistent_table_info(Tab, InfoKey) of
-                {ok, Result}              -> Result;
-                {error, {no_exists, Tab}} -> mnesia:abort({no_exists, Tab})
+            case catch consistent_table_info(Tab, InfoKey) of
+                {'EXIT', {aborted, {no_exists, Tab, InfoKey}}} ->
+                    mnesia:abort({no_exists, Tab});
+                {ok, Result} ->
+                    Result
             end;
-        Res -> Res
+        Res ->
+            Res
     end.
-
