@@ -319,12 +319,12 @@ commit_transaction() ->
 
 read_only_commit(Context) ->
     Locker = mnevis_context:locker(Context),
-    case ra:consistent_query(mnevis_node:node_id(),
-                             {mnevis_machine, check_locker, [Locker]}) of
+    Server = mnevis_node:node_id(),
+    QueryFun = {mnevis_machine, check_locker, [Locker]},
+    case ra:consistent_query(Server, QueryFun) of
         {ok, ok, _}              -> ok;
-        {ok, {error, Reason}, _} -> mnesia:abort(Reason);
-        {error, Reason} -> mnesia:abort(Reason);
-        {timeout, _}    -> mnesia:abort(timeout)
+        {ok, _, not_known}       -> mnesia:abort(not_known);
+        {ok, {error, Reason}, _} -> mnesia:abort(Reason)
     end.
 
 maybe_cleanup_transaction() ->
