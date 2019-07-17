@@ -714,12 +714,14 @@ get_consistent_version(LockItem) ->
     case ra:consistent_query(mnevis_node:node_id(),
                              {mnevis_machine, get_item_version, [LockItem]},
                              ?CONSISTENT_QUERY_TIMEOUT) of
-        {ok, Result, _} ->
-            Result;
-        {error, Err} ->
-            {error, Err};
-        {timeout, TO} ->
-            {error, {timeout, TO}}
+        {ok, _, not_known} ->
+            mnesia:abort(not_known);
+        {ok, {error, {timeout, Timeout}}, _} ->
+            {error, {timeout, Timeout}};
+        {ok, {error, Reason}, _} ->
+            {error, Reason};
+        {ok, {ok, _}=Result, _} ->
+            Result
     end.
 
 %% ==========================
