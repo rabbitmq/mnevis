@@ -639,22 +639,29 @@ select_with_context(Tab, MatchSpec, Context0) ->
             Compiled = ets:match_spec_compile([{H, [], T}]),
             ets:match_spec_run(FilteredList, Compiled);
         _ ->
+            %% TODO LRB test this case
             %% Complex match spec.
             %% Need to associate each expression with its own set of results
             %% Each match spec result is a tagged record,
             %% which is transformed to the final form by running the match
             %% spec again without conditions.
-            %% This is exreemely inefficient, but mnesia also does not recommend
+            %% This is extremely inefficient, but mnesia also does not recommend
             %% to run select with continuation after write/delete.
-            {ReversedRecordMatchSpec, TransformsMap} =
-                lists:map(fun({H, C, T}, {I, Spec, Transforms}) ->
-                    %% Index
-                    {I + 1,
-                    %% Each expression result record will be tagged with the index
-                     [{H, C, [{{I, '$_'}}]} | Spec],
-                    %% Mapping from index to result type
-                     maps:put(I, ets:match_spec_compile([{H, [], T}]), Transforms)}
-                end, MatchSpec),
+            %% H = MatchHead
+            %% C = MatchConditions
+            %% B = MatchBody
+            F = fun({H, C, B}, {Idx0, Spec0, Transforms0}) ->
+                        %% Each expression result record will be tagged with the index
+                        %% TODO LRB not sure about the body part of the new spec
+                        Spec1 = [{H, C, [{{Idx0, '$_'}}]} | Spec0],
+                        %% Mapping from index to result type
+                        CompiledSpec = ets:match_spec_compile([{H, [], B}]),
+                        Transforms1 = maps:put(Idx0, CompiledSpec, Transforms0),
+                        Idx1 = Idx0 + 1,
+                        {Idx1, Spec1, Transforms1}
+                end,
+            Acc0 = {0, [], maps:new()},
+            {_, ReversedRecordMatchSpec, TransformsMap} = lists:foldl(F, Acc0, MatchSpec),
             %% Keep original order
             RecordMatchSpec = lists:reverse(ReversedRecordMatchSpec),
             {TaggedRecList0, Context1} =
