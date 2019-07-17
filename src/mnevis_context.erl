@@ -97,10 +97,10 @@
 %         Run index filter on write_set cache
 %         Run index filter on write_bag cache
 
--type read_op() :: dirty_all_keys | dirty_first | dirty_last |
-                   dirty_index_match_object | dirty_index_read  |
-                   dirty_match_object | dirty_read | dirty_prev |
-                   dirty_next.
+-type read_op() :: dirty_all_keys | dirty_first |
+                   dirty_index_match_object | dirty_index_read |
+                   dirty_last | dirty_match_object |
+                   dirty_next | dirty_prev | dirty_read | dirty_select.
 
 -type read_spec() :: {read_op(), [table() | key()]}.
 -type version() :: non_neg_integer().

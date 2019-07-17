@@ -416,7 +416,6 @@ execute_local_read_query({Op, Args} = ReadSpec, Context) ->
             {RecList, NewContext}
     end.
 
-
 match_object(_ActivityId, _Opaque, Tab, Pattern, LockKind) ->
     Context0 = get_transaction_context(),
     with_lock_and_version(Context0, {table, Tab}, LockKind, fun() ->
@@ -648,14 +647,14 @@ select_with_context(Tab, MatchSpec, Context0) ->
             %% This is exreemely inefficient, but mnesia also does not recommend
             %% to run select with continuation after write/delete.
             {ReversedRecordMatchSpec, TransformsMap} =
-                lists:foldl(fun({H, C, T}, {I, Spec, Transforms}) ->
+                lists:map(fun({H, C, T}, {I, Spec, Transforms}) ->
                     %% Index
                     {I + 1,
                     %% Each expression result record will be tagged with the index
                      [{H, C, [{{I, '$_'}}]} | Spec],
                     %% Mapping from index to result type
                      maps:put(I, ets:match_spec_compile([{H, [], T}]), Transforms)}
-                end),
+                end, MatchSpec),
             %% Keep original order
             RecordMatchSpec = lists:reverse(ReversedRecordMatchSpec),
             {TaggedRecList0, Context1} =
