@@ -64,6 +64,7 @@
 -type table() :: atom().
 -type context() :: mnevis_context:context().
 -type key() :: term().
+-type key_or_end() :: key() | '$end_of_table'.
 
 -export([record_key/1]).
 
@@ -339,7 +340,8 @@ cleanup_transaction({TransactionId, Locker}) ->
     mnevis_lock_proc:cleanup(TransactionId, Locker).
 
 update_transaction_context(Context) ->
-    put(mnevis_transaction_context, Context).
+    put(mnevis_transaction_context, Context),
+    ok.
 
 clean_transaction_context() ->
     cleanup_all_unlock_messages(),
@@ -796,8 +798,8 @@ check_key(ActivityId, Opaque, Tab, Key, PrevKey, Direction, Context) ->
     end.
 
 -spec key_inserted_between(table(),
-                           key() | '$end_of_table',
-                           key() | '$end_of_table',
+                           key_or_end(),
+                           key_or_end(),
                            prev | next,
                            context()) -> {ok, key()} | none.
 key_inserted_between(Tab, PrevKey, Key, Direction, Context) ->
@@ -841,13 +843,8 @@ with_lock_and_version(Context, LockItem, LockKind, Fun) ->
             cached ->
                 Fun();
             {ok, Version} ->
-                mnevis_read:wait_for_versions([Version]),
-                case LockItem of
-                    {_, _} ->
-                        mark_version_up_to_date(LockItem);
-                    {global, _, _} ->
-                        ok
-                end,
+                ok = mnevis_read:wait_for_versions([Version]),
+                ok = mark_version_up_to_date(LockItem),
                 Fun();
             {error, no_exists} ->
                 Fun();

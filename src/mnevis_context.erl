@@ -107,6 +107,7 @@
 -type read_version() :: {table(), version()} | {{table(), integer()}, version()}.
 
 -type record() :: tuple().
+-type record_or_end() :: record() | '$end_of_table'.
 -type lock_kind() :: read | write.
 -type key() :: term().
 -type table() :: atom().
@@ -287,7 +288,7 @@ add_read(#context{read = Read0} = Context, ReadSpec, RecList) ->
     Read1 = maps:put(ReadSpec, RecList, Read0),
     Context#context{read = Read1}.
 
--spec get_read(context(), read_spec()) -> {ok, record()} | {error, not_found}.
+-spec get_read(context(), read_spec()) -> {ok, record_or_end()} | {error, not_found}.
 get_read(#context{read = Read}, ReadSpec) ->
     case maps:get(ReadSpec, Read, not_found) of
         not_found ->
