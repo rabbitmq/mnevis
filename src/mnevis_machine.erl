@@ -149,21 +149,16 @@ apply(Meta, {commit,
                     end
             end
         end);
-
 %% Table manipulation
 apply(Meta, {create_table, Tab, Opts}, State) ->
     Result = with_ignore_consistent_error(
         fun() ->
-            case mnesia:create_table(Tab, Opts) of
+            case mnesia_create_table(Tab, Opts) of
                 {atomic, ok} ->
                     _ = mnevis_read:init_version(Tab, 0),
                     {atomic, ok};
                 {aborted, _} = Res ->
-                    Res;
-                % TODO: clause not necessary in the future
-                % https://github.com/erlang/otp/pull/2320
-                {aborted, Err0, Err1, Err2} ->
-                    {aborted, {Err0, Err1, Err2}}
+                    Res
             end
         end),
     {State, {ok, Result}, snapshot_effects(Meta, State)};
@@ -285,14 +280,16 @@ update_locker({_, Pid} = Locker, State = #state{locker = {_, CurrentLockerPid}})
     end,
     %% TODO: move committed transactions to memory after implementing
     %% term increase in locker.
-    cleanup_committed_transactions(),
+    ok = cleanup_committed_transactions(),
     {State#state{locker = Locker,
                  locker_status = up,
                  blacklisted = map_sets:new()},
      [{monitor, process, Pid}] ++ MaybeStopEffects}.
 
+-spec cleanup_committed_transactions() -> ok | no_return().
 cleanup_committed_transactions() ->
-    mnesia:clear_table(committed_transaction).
+    {atomic, ok} = mnesia:clear_table(committed_transaction),
+    ok.
 
 create_committed_transaction_table() ->
     CreateResult = mnesia:create_table(committed_transaction,
@@ -371,6 +368,14 @@ snapshot_effects(#{index := RaftIdx}, State) ->
 %% ==========================
 
 %% Mnesia operations
+
+% Note:
+% https://github.com/erlang/otp/pull/2320
+-spec mnesia_create_table(Tab::atom(), Opts::list(term())) ->
+    {atomic, ok} |
+    {aborted, term()}.
+mnesia_create_table(Tab, Opts) when is_list(Opts) ->
+    mnesia:create_table(Tab, Opts).
 
 -spec apply_deletes([mnevis_context:delete_item()]) -> [ok].
 apply_deletes(Deletes) ->
