@@ -892,10 +892,10 @@ do_acquire_lock(Context, LockItem, LockKind, Mode) ->
                                                 mnevis_lock:lock_item(),
                                                 mnevis_lock:lock_kind(),
                                                 mnevis_lock_proc:lock_method()) ->
-    {ok, context()} |
     {ok, term(), context()} |
     {error, locked, context()} |
-    {error, locked_nowait, context()}.
+    {error, locked_nowait, context()} |
+    no_return().
 do_acquire_lock_with_existing_transaction(Context, LockItem, LockKind, Mode) ->
     Tid = mnevis_context:transaction_id(Context),
     case lock_already_acquired(LockItem, LockKind, mnevis_context:locks(Context)) of
@@ -942,8 +942,15 @@ lock_already_acquired_1(LockItem, LockKind, Locks) ->
         {_, none}      -> false
     end.
 
-do_acquire_lock_with_new_transaction(_Context, _LockItem, _LockKind, _Mode, 0) ->
-    mnesia:abort({unable_to_acquire_lock, no_promoted_lock_processes});
+-spec do_acquire_lock_with_new_transaction(mnevis_context:context(),
+                                           mnevis_lock:lock_item(),
+                                           mnevis_lock:lock_kind(),
+                                           mnevis_lock_proc:lock_method(),
+                                           non_neg_integer()) ->
+    {ok, term(), context()} |
+    {error, locked, context()} |
+    {error, locked_nowait, context()} |
+    no_return().
 do_acquire_lock_with_new_transaction(Context, LockItem, LockKind, Mode, Attempts) ->
     ok = mnevis_context:assert_no_transaction(Context),
     Locker = case mnevis_lock_proc:locate() of
@@ -974,7 +981,7 @@ retry_lock_call(Locker, LockRequest, Attempts) ->
             %% This function should block, so it's safe to recursively call
             case mnevis_lock_proc:ensure_lock_proc(Locker) of
                 {ok, NewLocker} ->
-                    retry_lock_call(NewLocker, LockRequest, Attempts);
+                    retry_lock_call(NewLocker, LockRequest, Attempts - 1);
                 {error, {command_error, Reason}} ->
                     mnesia:abort({lock_proc_not_found, Reason});
                 {error, Reason} ->
