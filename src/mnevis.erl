@@ -64,6 +64,7 @@
 -type table() :: atom().
 -type context() :: mnevis_context:context().
 -type key() :: term().
+-type key_or_end() :: key() | '$end_of_table'.
 
 -export([record_key/1]).
 
@@ -112,11 +113,10 @@ clear_table(Tab) ->
     {ok, R} = run_ra_command({clear_table, Tab}),
     R.
 
+-spec table_info(term(), term()) -> term().
 table_info(Tab, Info) ->
-    case consistent_table_info(Tab, Info) of
-        {ok, Res}    -> Res;
-        {error, Err} -> mnesia:abort({aborted, Err})
-    end.
+    {ok, Res} = consistent_table_info(Tab, Info),
+    Res.
 
 %% NOTE: transform table does not support closures
 %% because transform is persisted to the raft log
@@ -317,14 +317,15 @@ commit_transaction() ->
             CommitResult
     end.
 
+-spec read_only_commit(term()) -> ok | no_return().
 read_only_commit(Context) ->
     Locker = mnevis_context:locker(Context),
-    case ra:consistent_query(mnevis_node:node_id(),
-                             {mnevis_machine, check_locker, [Locker]}) of
+    Server = mnevis_node:node_id(),
+    QueryFun = {mnevis_machine, check_locker, [Locker]},
+    case ra:consistent_query(Server, QueryFun) of
         {ok, ok, _}              -> ok;
-        {ok, {error, Reason}, _} -> mnesia:abort(Reason);
-        {error, Reason} -> mnesia:abort(Reason);
-        {timeout, _}    -> mnesia:abort(timeout)
+        {ok, _, not_known}       -> mnesia:abort(not_known);
+        {ok, {error, Reason}, _} -> mnesia:abort(Reason)
     end.
 
 maybe_cleanup_transaction() ->
@@ -339,7 +340,8 @@ cleanup_transaction({TransactionId, Locker}) ->
     mnevis_lock_proc:cleanup(TransactionId, Locker).
 
 update_transaction_context(Context) ->
-    put(mnevis_transaction_context, Context).
+    put(mnevis_transaction_context, Context),
+    ok.
 
 clean_transaction_context() ->
     cleanup_all_unlock_messages(),
@@ -415,7 +417,6 @@ execute_local_read_query({Op, Args} = ReadSpec, Context) ->
             update_transaction_context(NewContext),
             {RecList, NewContext}
     end.
-
 
 match_object(_ActivityId, _Opaque, Tab, Pattern, LockKind) ->
     Context0 = get_transaction_context(),
@@ -573,26 +574,34 @@ index_read(_ActivityId, _Opaque, Tab, SecondaryKey, Pos, LockKind) ->
         mnevis_context:filter_index(Context2, Tab, SecondaryKey, Pos, RecList)
     end).
 
+-spec table_info(term(), term(), term(), term()) -> term() | no_return().
 table_info(_ActivityId, _Opaque, Tab, InfoItem) ->
-    case consistent_table_info(Tab, InfoItem) of
-        {ok, Result}              -> Result;
-        {error, {no_exists, Tab}} -> mnesia:abort({no_exists, Tab, InfoItem})
+    {ok, Result} = consistent_table_info(Tab, InfoItem),
+    Result.
+
+-spec consistent_table_info(mnevis:table(), term()) ->
+    {ok, term()} | no_return().
+consistent_table_info(Tab, Item) ->
+    Server = mnevis_node:node_id(),
+    QueryFun = {mnevis_machine, safe_table_info, [Tab, Item]},
+    case ra:consistent_query(Server, QueryFun) of
+        {ok, _, not_known} ->
+            mnesia:abort(not_known);
+        {ok, {error, {timeout, Timeout}}, _} ->
+            mnesia:abort({table_info_timeout, Timeout});
+        {ok, {error, {no_exists, Tab}}, _} ->
+            mnesia:abort({no_exists, Tab, Item});
+        {ok, {error, Reason}, _} ->
+            mnesia:abort(Reason);
+        {ok, {ok, _}=Result, _} ->
+            Result
     end.
 
-consistent_table_info(Tab, InfoItem) ->
-    case ra:consistent_query(mnevis_node:node_id(),
-                             {mnevis_machine, safe_table_info, [Tab, InfoItem]}) of
-        {ok, Result, _} ->
-            Result;
-        {error, Err} ->
-            mnesia:abort(Err);
-        {timeout, Timeout} ->
-            mnesia:abort({table_info_timeout, Timeout})
-    end.
+-spec local_table_info(term(), atom()) -> term() | no_return().
+local_table_info(Tab, Item) ->
+    mnesia:table_info(undefined, undefined, Tab, Item).
 
-local_table_info(Tab, InfoKey) ->
-    mnesia:table_info(Tab, InfoKey).
-
+-spec clear_table(term(), term(), term(), term()) -> no_return().
 clear_table(_ActivityId, _Opaque, _Tab, _Obj) ->
     mnesia:abort(nested_transaction).
 
@@ -632,22 +641,29 @@ select_with_context(Tab, MatchSpec, Context0) ->
             Compiled = ets:match_spec_compile([{H, [], T}]),
             ets:match_spec_run(FilteredList, Compiled);
         _ ->
+            %% TODO LRB test this case
             %% Complex match spec.
             %% Need to associate each expression with its own set of results
             %% Each match spec result is a tagged record,
             %% which is transformed to the final form by running the match
             %% spec again without conditions.
-            %% This is exreemely inefficient, but mnesia also does not recommend
+            %% This is extremely inefficient, but mnesia also does not recommend
             %% to run select with continuation after write/delete.
-            {ReversedRecordMatchSpec, TransformsMap} =
-                lists:foldl(fun({H, C, T}, {I, Spec, Transforms}) ->
-                    %% Index
-                    {I + 1,
-                    %% Each expression result record will be tagged with the index
-                     [{H, C, [{{I, '$_'}}]} | Spec],
-                    %% Mapping from index to result type
-                     maps:put(I, ets:match_spec_compile([{H, [], T}]), Transforms)}
-                end),
+            %% H = MatchHead
+            %% C = MatchConditions
+            %% B = MatchBody
+            F = fun({H, C, B}, {Idx0, Spec0, Transforms0}) ->
+                        %% Each expression result record will be tagged with the index
+                        %% TODO LRB not sure about the body part of the new spec
+                        Spec1 = [{H, C, [{{Idx0, '$_'}}]} | Spec0],
+                        %% Mapping from index to result type
+                        CompiledSpec = ets:match_spec_compile([{H, [], B}]),
+                        Transforms1 = maps:put(Idx0, CompiledSpec, Transforms0),
+                        Idx1 = Idx0 + 1,
+                        {Idx1, Spec1, Transforms1}
+                end,
+            Acc0 = {0, [], maps:new()},
+            {_, ReversedRecordMatchSpec, TransformsMap} = lists:foldl(F, Acc0, MatchSpec),
             %% Keep original order
             RecordMatchSpec = lists:reverse(ReversedRecordMatchSpec),
             {TaggedRecList0, Context1} =
@@ -700,12 +716,14 @@ get_consistent_version(LockItem) ->
     case ra:consistent_query(mnevis_node:node_id(),
                              {mnevis_machine, get_item_version, [LockItem]},
                              ?CONSISTENT_QUERY_TIMEOUT) of
-        {ok, Result, _} ->
-            Result;
-        {error, Err} ->
-            {error, Err};
-        {timeout, TO} ->
-            {error, {timeout, TO}}
+        {ok, _, not_known} ->
+            mnesia:abort(not_known);
+        {ok, {error, {timeout, Timeout}}, _} ->
+            {error, {timeout, Timeout}};
+        {ok, {error, Reason}, _} ->
+            {error, Reason};
+        {ok, {ok, _}=Result, _} ->
+            Result
     end.
 
 %% ==========================
@@ -780,8 +798,8 @@ check_key(ActivityId, Opaque, Tab, Key, PrevKey, Direction, Context) ->
     end.
 
 -spec key_inserted_between(table(),
-                           key() | '$end_of_table',
-                           key() | '$end_of_table',
+                           key_or_end(),
+                           key_or_end(),
                            prev | next,
                            context()) -> {ok, key()} | none.
 key_inserted_between(Tab, PrevKey, Key, Direction, Context) ->
@@ -825,13 +843,8 @@ with_lock_and_version(Context, LockItem, LockKind, Fun) ->
             cached ->
                 Fun();
             {ok, Version} ->
-                mnevis_read:wait_for_versions([Version]),
-                case LockItem of
-                    {_, _} ->
-                        mark_version_up_to_date(LockItem);
-                    {global, _, _} ->
-                        ok
-                end,
+                ok = mnevis_read:wait_for_versions([Version]),
+                ok = mark_version_up_to_date(LockItem),
                 Fun();
             {error, no_exists} ->
                 Fun();
@@ -879,10 +892,10 @@ do_acquire_lock(Context, LockItem, LockKind, Mode) ->
                                                 mnevis_lock:lock_item(),
                                                 mnevis_lock:lock_kind(),
                                                 mnevis_lock_proc:lock_method()) ->
-    {ok, context()} |
     {ok, term(), context()} |
     {error, locked, context()} |
-    {error, locked_nowait, context()}.
+    {error, locked_nowait, context()} |
+    no_return().
 do_acquire_lock_with_existing_transaction(Context, LockItem, LockKind, Mode) ->
     Tid = mnevis_context:transaction_id(Context),
     case lock_already_acquired(LockItem, LockKind, mnevis_context:locks(Context)) of
@@ -929,8 +942,15 @@ lock_already_acquired_1(LockItem, LockKind, Locks) ->
         {_, none}      -> false
     end.
 
-do_acquire_lock_with_new_transaction(_Context, _LockItem, _LockKind, _Mode, 0) ->
-    mnesia:abort({unable_to_acquire_lock, no_promoted_lock_processes});
+-spec do_acquire_lock_with_new_transaction(mnevis_context:context(),
+                                           mnevis_lock:lock_item(),
+                                           mnevis_lock:lock_kind(),
+                                           mnevis_lock_proc:lock_method(),
+                                           non_neg_integer()) ->
+    {ok, term(), context()} |
+    {error, locked, context()} |
+    {error, locked_nowait, context()} |
+    no_return().
 do_acquire_lock_with_new_transaction(Context, LockItem, LockKind, Mode, Attempts) ->
     ok = mnevis_context:assert_no_transaction(Context),
     Locker = case mnevis_lock_proc:locate() of
@@ -961,7 +981,7 @@ retry_lock_call(Locker, LockRequest, Attempts) ->
             %% This function should block, so it's safe to recursively call
             case mnevis_lock_proc:ensure_lock_proc(Locker) of
                 {ok, NewLocker} ->
-                    retry_lock_call(NewLocker, LockRequest, Attempts);
+                    retry_lock_call(NewLocker, LockRequest, Attempts - 1);
                 {error, {command_error, Reason}} ->
                     mnesia:abort({lock_proc_not_found, Reason});
                 {error, Reason} ->
@@ -985,10 +1005,12 @@ wait_for_transaction(Transaction, Attempts) ->
 maybe_safe_table_info(Tab, InfoKey) ->
     case catch local_table_info(Tab, InfoKey) of
         {'EXIT', {aborted, {no_exists, Tab, InfoKey}}} ->
-            case consistent_table_info(Tab, InfoKey) of
-                {ok, Result}              -> Result;
-                {error, {no_exists, Tab}} -> mnesia:abort({no_exists, Tab})
+            case catch consistent_table_info(Tab, InfoKey) of
+                {'EXIT', {aborted, {no_exists, Tab, InfoKey}}} ->
+                    mnesia:abort({no_exists, Tab});
+                {ok, Result} ->
+                    Result
             end;
-        Res -> Res
+        Res ->
+            Res
     end.
-

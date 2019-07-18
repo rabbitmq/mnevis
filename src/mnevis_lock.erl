@@ -17,10 +17,15 @@
 -type transaction_id() :: integer().
 
 -type lock_item() :: {mnevis:table(), term()} | {table, mnevis:table()} | {global, term(), [node()]}.
+
 -type lock_kind() :: read | write.
 
--type lock_request() :: {lock, transaction_id() | undefined, pid(),
-                               lock_item(), lock_kind()}.
+-type lock_request() :: {lock,
+                         transaction_id() | undefined,
+                         pid(),
+                         lock_item(),
+                         lock_kind(),
+                         mnevis_lock_proc:lock_method()}.
 
 -type lock_result() :: {ok, transaction_id()} |
                        {error, {locked, transaction_id()}} |

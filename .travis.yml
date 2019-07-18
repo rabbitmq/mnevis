@@ -4,15 +4,17 @@ dist: xenial
 sudo: false
 
 language: erlang
+
 notifications:
   email:
     on_success: never
     on_failure: always
+
 cache:
   apt: true
 
 otp_release:
-  - "22.0.2"
+  - "22.0.7"
 
 script:
   - make tests
