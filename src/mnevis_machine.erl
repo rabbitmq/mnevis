@@ -1,7 +1,7 @@
 -module(mnevis_machine).
 -behaviour(ra_machine).
 
--include_lib("ra/include/ra.hrl").
+-include_lib("ra/src/ra.hrl").
 
 -export([
          init/1,

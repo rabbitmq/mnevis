@@ -2,7 +2,7 @@
 
 -behaviour(ra_snapshot).
 
--include_lib("ra/include/ra.hrl").
+-include_lib("ra/src/ra.hrl").
 
 -export([prepare/2,
          write/3,

@@ -21,7 +21,7 @@
          callback_mode/0
          ]).
 
--include_lib("ra/include/ra.hrl").
+-include_lib("ra/src/ra.hrl").
 
 -record(state, {
     term,
