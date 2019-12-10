@@ -87,7 +87,7 @@
 
 start(Term) ->
     error_logger:info_msg("Start mnevis locker"),
-    gen_statem:start(?MODULE, Term, []).
+    gen_statem:start_link(?MODULE, Term, []).
 
 -spec start_new_locker(locker_term()) -> {ok, pid()}.
 start_new_locker(Term) ->
