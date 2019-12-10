@@ -208,6 +208,9 @@ apply(_Meta, {down, Pid, _Reason}, State = #state{locker = {_Term, LockerPid}}) 
     case Pid of
         LockerPid ->
             %% Locker pid is down. We need to start a new locker
+            %% TODO: this could result in fast restart, we should keep track of the
+            %% last start attempt and not re-try too fast
+            %% TODO: should this start a supervisor instead?
             {State#state{locker_status = down}, ok, start_new_locker_effects(State)};
         _ ->
             {State, ok, []}
