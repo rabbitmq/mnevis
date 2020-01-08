@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<launchConfiguration type="org.lamport.tla.toolbox.tool.tlc.modelCheck">
+    <stringAttribute key="configurationName" value="MnevisSafety"/>
+    <intAttribute key="distributedFPSetCount" value="0"/>
+    <stringAttribute key="distributedNetworkInterface" value="192.168.123.1"/>
+    <intAttribute key="distributedNodesCount" value="1"/>
+    <stringAttribute key="distributedTLC" value="off"/>
+    <intAttribute key="fpIndex" value="0"/>
+    <intAttribute key="maxHeapSize" value="80"/>
+    <stringAttribute key="modelBehaviorInit" value="Init"/>
+    <stringAttribute key="modelBehaviorNext" value="Next"/>
+    <stringAttribute key="modelBehaviorSpec" value=""/>
+    <intAttribute key="modelBehaviorSpecType" value="2"/>
+    <stringAttribute key="modelBehaviorVars" value="leader, transaction, locker_next_term, link, link_change_ctr, node_change_ctr, machine, write_log, ooo_writes, locker"/>
+    <stringAttribute key="modelComments" value=""/>
+    <booleanAttribute key="modelCorrectnessCheckDeadlock" value="true"/>
+    <listAttribute key="modelCorrectnessInvariants">
+        <listEntry value="1NoOutOfOrderWritesInvariant"/>
+        <listEntry value="1NoDataLossInvariant"/>
+    </listAttribute>
+    <listAttribute key="modelCorrectnessProperties"/>
+    <intAttribute key="modelEditorOpenTabs" value="2"/>
+    <stringAttribute key="modelExpressionEval" value=""/>
+    <stringAttribute key="modelParameterActionConstraint" value=""/>
+    <listAttribute key="modelParameterConstants">
+        <listEntry value="Started;;Started;1;0"/>
+        <listEntry value="Follower;;Follower;1;0"/>
+        <listEntry value="LockerUpCommand;;LockerUpCommand;1;0"/>
+        <listEntry value="Committed;;Committed;1;0"/>
+        <listEntry value="Up;;Up;1;0"/>
+        <listEntry value="CleanedUp;;CleanedUp;1;0"/>
+        <listEntry value="K;;{k1};1;1"/>
+        <listEntry value="L;;{l1, l2};1;1"/>
+        <listEntry value="N;;{n1, n2};1;1"/>
+        <listEntry value="T;;{t1, t2};1;1"/>
+        <listEntry value="Leader;;Leader;1;0"/>
+        <listEntry value="PendingBlacklistNotify;;PendingBlacklistNotify;1;0"/>
+        <listEntry value="PendingNotifyUp;;PendingNotifyUp;1;0"/>
+        <listEntry value="Aborted;;Aborted;1;0"/>
+        <listEntry value="NotStarted;;NotStarted;1;0"/>
+        <listEntry value="LockNotGranted;;LockNotGranted;1;0"/>
+        <listEntry value="Stopped;;Stopped;1;0"/>
+        <listEntry value="PendingAbort;;PendingAbort;1;0"/>
+        <listEntry value="Offline;;Offline;1;0"/>
+        <listEntry value="BlacklistCommand;;BlacklistCommand;1;0"/>
+        <listEntry value="Blacklisted;;Blacklisted;1;0"/>
+        <listEntry value="PendingConsistentRead;;PendingConsistentRead;1;0"/>
+        <listEntry value="Down;;Down;1;0"/>
+        <listEntry value="Candidate;;Candidate;1;0"/>
+        <listEntry value="PendingBlacklistConfirm;;PendingBlacklistConfirm;1;0"/>
+        <listEntry value="LockerDownCommand;;LockerDownCommand;1;0"/>
+        <listEntry value="CommitCommand;;CommitCommand;1;0"/>
+        <listEntry value="PendingCommitResult;;PendingCommitResult;1;0"/>
+        <listEntry value="LockGranted;;LockGranted;1;0"/>
+        <listEntry value="Nop;;Nop;1;0"/>
+    </listAttribute>
+    <stringAttribute key="modelParameterContraint" value="/\ node_change_ctr &lt; 3&#13;&#10;/\ link_change_ctr &lt; 3&#13;&#10;/\ LastIndexLessThanEq(5)"/>
+    <listAttribute key="modelParameterDefinitions"/>
+    <stringAttribute key="modelParameterModelValues" value="{}"/>
+    <stringAttribute key="modelParameterNewDefinitions" value=""/>
+    <intAttribute key="numberOfWorkers" value="23"/>
+    <stringAttribute key="result.mail.address" value=""/>
+    <stringAttribute key="specName" value="Mnevis"/>
+    <stringAttribute key="tlcResourcesProfile" value="local most"/>
+</launchConfiguration>
