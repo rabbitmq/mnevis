@@ -1,0 +1,8 @@
+{application, 'mnevis', [
+    {description, "mnevis library"},
+    {vsn, "0.1.0"},
+    {modules, ['mnevis','mnevis_context','mnevis_lock','mnevis_lock_proc','mnevis_machine','mnevis_node','mnevis_read','mnevis_snapshot','simple_dgraph']},
+    {registered, []},
+    {applications, [kernel,stdlib,mnesia,ra,map_sets]},
+    {env, []}
+]}.
