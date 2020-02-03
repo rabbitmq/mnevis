@@ -1,9 +1,9 @@
-# Mnesia with RA consensus.
+# Mnesia with Raft Consensus
 
-An attempt to implement a high-consistent mnesia database based on Raft protocol.
+This is an attempt to implement a highly consistent Mnesia transaction implementation on top of the Raft consensus algorithm.
 
-The goal of this project is to remove mnesia clustering and distribution layer,
-because it's causing many issues in presence of network errors.
+The goal of this project is to remove Mnesia's clustering and distribution layer due to it's
+highly opinionated and flawed approach to recovery from network partitions.
 
 This project is created for RabbitMQ and will mostly target features required
 by the RabbitMQ.
