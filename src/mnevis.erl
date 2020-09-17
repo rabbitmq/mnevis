@@ -235,10 +235,10 @@ transaction0(Fun, Args, Retries, _Err) ->
         exit:{aborted, Reason} ->
             ok = maybe_cleanup_transaction(),
             {aborted, Reason};
-        E:R ->
+        E:R:S ->
             error_logger:warning_msg("Mnevis transaction error ~p:~p~n", [E, R]),
             ok = maybe_cleanup_transaction(),
-            {aborted, R}
+            {aborted, {R, S}}
     after
         clean_transaction_context()
     end.

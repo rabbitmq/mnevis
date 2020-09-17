@@ -184,12 +184,17 @@ delete_sample(Tab, Key) ->
     end).
 
 empty_transaction(_Config) ->
-    {atomic, ok} = mnevis:transaction(fun() -> ok end).
+    ?assertEqual(
+       {atomic, ok},
+       mnevis:transaction(fun() -> ok end)).
 empty_transaction_abort(_Config) ->
-    {aborted, error} = mnevis:transaction(fun() -> mnesia:abort(error) end).
+    ?assertEqual(
+       {aborted, error},
+       mnevis:transaction(fun() -> mnesia:abort(error) end)).
 empty_transaction_error(_Config) ->
-    {aborted, {empty_transaction_error_reason, _ST}} = mnevis:transaction(fun() -> error(empty_transaction_error_reason) end).
-
+    ?assertMatch(
+       {aborted, {empty_transaction_error_reason, _ST}},
+       mnevis:transaction(fun() -> error(empty_transaction_error_reason) end)).
 
 nested_empty_transaction(_Config) ->
     {atomic, ok} = mnevis:transaction(fun() ->
