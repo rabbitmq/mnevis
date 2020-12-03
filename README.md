@@ -12,7 +12,7 @@ by the RabbitMQ.
 
 You need to start a mnevis ra node and trigger election:
 
-```
+```erlang
 mnevis:start("my/ra/directory").
 ```
 
@@ -21,7 +21,7 @@ This will start a single node cluster. Not so useful.
 To start a multi-node configuration, you will have to provide `initial_nodes`
 environment variable to the `mnevis` application:
 
-```
+```erlang
 [
 {mnevis, [{initial_nodes, [node1, node2]}]}
 ].
@@ -33,7 +33,7 @@ If your application includes mnevis as a dependency, you will also have to
 provide a ra directory, because it's used by ra on application start,
 **this should be fixed in future ra versions**
 
-```
+```erlang
 [
 {ra, data_dir, "my/ra/directory"},
 {mnevis, [{initial_nodes, [node1, node2]}]}
@@ -41,7 +41,7 @@ provide a ra directory, because it's used by ra on application start,
 ```
 
 In this case you can run
-```
+```erlangerlang
 application:ensure_all_started(mnevis),
 mnevis_node:start().
 ```
@@ -49,7 +49,7 @@ mnevis_node:start().
 To start a node.
 
 To make sure all nodes are started, you can run
-```
+```erlang
 {ok, _, _} = ra:members(mnevis_node:node_id()).
 ```
 
@@ -66,7 +66,7 @@ TODO: more info on configuration
 
 You can run transactions the same way as in mnesia:
 
-```
+```erlang
 {atomic, ok} = mnevis:transaction(fun() -> mnesia:write({foo, bar, baz}) end).
 ```
 
@@ -76,7 +76,7 @@ This project is trying to mimic the mnesia API as close as it makes sense.
 
 For example, to run a transaction:
 
-```
+```erlang
 %% Mnesia transaction
 {atomic, ok} = mnesia:transaction(fun() ->
     ok = mnesia:write({foo, bar, baz}),
