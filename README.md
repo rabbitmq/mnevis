@@ -1,3 +1,6 @@
+# Deprecation
+This project has been discontinued and the work is now focused on [Khepri](https://github.com/rabbitmq/khepri).
+
 # Mnesia with Raft Consensus
 
 This is an attempt to implement a highly consistent Mnesia transaction implementation on top of the Raft consensus algorithm.
